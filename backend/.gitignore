@@ -1,0 +1,21 @@
+# Virtual environment
+.venv/
+
+# Environment variables
+.env
+.env.*
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Logs
+*.log
+output.log
+
+# Debug/temp images
+*.png
+
+# OS files
+.DS_Store

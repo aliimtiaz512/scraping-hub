@@ -1,0 +1,20 @@
+# Python / server
+server/.venv/
+server/documents/
+__pycache__/
+*.pyc
+
+# Node / client
+client/node_modules/
+client/.next/
+client/out/
+
+# Environment
+.env
+.env.local
+server/.env
+client/.env
+
+# Misc
+.DS_Store
+*.log

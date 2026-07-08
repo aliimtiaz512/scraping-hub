@@ -1,0 +1,40 @@
+import logging
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+from app.db import init_db
+from app.scrapers.bidnet.router import router as bidnet_router
+from app.scrapers.myflorida.router import router as myflorida_router
+from app.scrapers.ridemetro.router import router as ridemetro_router
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+logger = logging.getLogger(__name__)
+
+app = FastAPI(title="MFMP Bid Scraper", version="0.1.0")
+
+
+@app.on_event("startup")
+def _startup() -> None:
+    try:
+        init_db()
+        logger.info("Database tables ready")
+    except Exception:  # noqa: BLE001 — the API still serves /categories without a DB
+        logger.exception("Could not initialize database — check DATABASE_URL in .env")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+app.include_router(myflorida_router)
+app.include_router(ridemetro_router)
+app.include_router(bidnet_router)
+
+
+@app.get("/")
+def health() -> dict:
+    return {"status": "ok", "service": "scraping-hub", "scrapers": ["myflorida", "ridemetro", "bidnet"]}
