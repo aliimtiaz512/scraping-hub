@@ -5,7 +5,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import CategorySelect from "@/components/CategorySelect";
 import ResultsTable from "@/components/ResultsTable";
 import RunStatusPanel from "@/components/RunStatus";
-import { getCategories, getRunStatus, startMyFloridaScrape, type Category, type RunStatus } from "@/lib/api";
+import { ErrorBanner, StartButton } from "@/components/ui";
+import { getCategories, getRunStatus, startMyFloridaScrape, type AdStatus, type Category, type RunStatus } from "@/lib/api";
 
 const POLL_INTERVAL_MS = 3000;
 
@@ -13,6 +14,7 @@ export default function MyFloridaPanel() {
   const [categories, setCategories] = useState<Category[]>([]);
   const [selected, setSelected] = useState("");
   const [priority, setPriority] = useState("high");
+  const [adStatuses, setAdStatuses] = useState<AdStatus[]>([]);
   const [run, setRun] = useState<RunStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
@@ -40,7 +42,7 @@ export default function MyFloridaPanel() {
     setError(null);
     setStarting(true);
     try {
-      const { run_id } = await startMyFloridaScrape(selected, priority);
+      const { run_id } = await startMyFloridaScrape(selected, priority, adStatuses);
       const status = await getRunStatus("myflorida", run_id);
       setRun(status);
       stopPolling();
@@ -64,27 +66,22 @@ export default function MyFloridaPanel() {
 
   return (
     <div className="space-y-6">
-      {error && (
-        <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</div>
-      )}
+      {error && <ErrorBanner message={error} />}
 
       <CategorySelect
         categories={categories}
         selected={selected}
         priority={priority}
+        adStatuses={adStatuses}
         disabled={isRunning}
         onSelect={setSelected}
         onPriorityChange={setPriority}
+        onAdStatusChange={setAdStatuses}
       />
 
-      <button
-        type="button"
-        onClick={handleStart}
-        disabled={!selected || starting || isRunning}
-        className="rounded-lg bg-blue-600 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
-      >
-        {isRunning ? "Run in progress…" : starting ? "Starting…" : "Start scrape"}
-      </button>
+      <StartButton onClick={handleStart} disabled={!selected || starting || isRunning} running={isRunning} starting={starting}>
+        Start scrape
+      </StartButton>
 
       {run && <RunStatusPanel run={run} />}
       {run && <ResultsTable bids={run.bids} />}

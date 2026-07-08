@@ -128,6 +128,27 @@ def generate_excel(run_id: str, out_path: str | Path) -> int:
     return count
 
 
+def generate_excel_from_records(records: list[dict[str, Any]], out_path: str | Path) -> int:
+    """Build this run's Excel sheet straight from the in-memory scraped records.
+
+    Used as a fallback when the DB is unavailable, so a run always produces its
+    Excel even though nothing could be persisted. Mirrors generate_excel: only
+    records that carry a reference number are written (same as what save_bid stores).
+    """
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "BidNet Bids"
+    sheet.append([header for _, header in EXCEL_COLUMNS])
+    count = 0
+    for record in records:
+        if not record.get("reference_number"):
+            continue
+        sheet.append([record.get(attr) for attr, _ in EXCEL_COLUMNS])
+        count += 1
+    workbook.save(str(out_path))
+    return count
+
+
 def export_all_excel(out_path: str | Path) -> int:
     """Build an Excel of every stored solicitation (backs the on-demand export)."""
     return _write_workbook(_all_rows(), out_path)

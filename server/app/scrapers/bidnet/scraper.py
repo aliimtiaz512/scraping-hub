@@ -82,6 +82,26 @@ class BidnetScraper(BaseScraper):
             logger.info("[run %s] failed to extract %s: %s", self.run_id, field_name, exc.__class__.__name__)
             return ""
 
+    def _guard_not_blocked(self) -> None:
+        """Fail fast with a clear message if the portal served a bot-block page.
+
+        Without this, a 403/"Access Denied" landing page has none of the expected
+        elements, so the next wait dies with an empty-message TimeoutException that
+        gives no clue why the run failed.
+        """
+        title = (self.driver.title or "").lower()
+        try:
+            heading = self.driver.find_element(By.TAG_NAME, "body").text[:200].lower()
+        except WebDriverException:
+            heading = ""
+        markers = ("403 forbidden", "access denied", "request unsuccessful", "pardon our interruption")
+        if any(m in title or m in heading for m in markers):
+            self.screenshot("blocked")
+            raise WebDriverException(
+                "BidNet Direct returned a bot-block page (e.g. 403 Forbidden). "
+                "The portal is refusing the automated browser."
+            )
+
     def _abs_url(self, href: str) -> str:
         if href.startswith("/"):
             return BASE_URL + href
@@ -92,6 +112,7 @@ class BidnetScraper(BaseScraper):
     def login(self) -> None:
         self.set_step("logging_in")
         self.driver.get(settings.bidnet_direct_link or BASE_URL)
+        self._guard_not_blocked()
         self.wait().until(EC.element_to_be_clickable((By.ID, "header_btnLogin"))).click()
 
         self.wait().until(EC.presence_of_element_located((By.ID, "j_username")))
@@ -352,15 +373,23 @@ class BidnetScraper(BaseScraper):
                         logger.exception("[run %s] save_bid failed", self.run_id)
                         run_manager.add_error(self.run_id, "db save failed for a solicitation")
 
+            self.set_step("generating_excel")
+            label = (run_manager.get_run(self.run_id) or {}).get("label") or timestamp()
+            # Keep the run's Excel alongside its downloaded documents, inside the
+            # per-keyword folder (e.g. Document_Bids_BidnetDirect_AI), not the root.
+            self.excel_path = self.document_folder / f"Document_Bids_BidnetDirect ({label}).xlsx"
             try:
-                label = (run_manager.get_run(self.run_id) or {}).get("label") or timestamp()
-                self.excel_path = settings.documents_root / f"Document_Bids_BidnetDirect ({label}).xlsx"
-                self.set_step("generating_excel")
                 export.generate_excel(self.run_id, self.excel_path)
                 run_manager.update_run(self.run_id, excel_path=str(self.excel_path), excel_exported=True)
-            except Exception:  # noqa: BLE001 — Excel comes from the DB; a DB issue shouldn't fail the run
-                logger.exception("[run %s] Excel generation failed", self.run_id)
-                run_manager.add_error(self.run_id, "excel generation failed (see logs)")
+            except Exception:  # noqa: BLE001 — DB unavailable: fall back to in-memory records
+                logger.exception("[run %s] DB Excel generation failed; writing from records", self.run_id)
+                try:
+                    bids = (run_manager.get_run(self.run_id) or {}).get("bids", [])
+                    export.generate_excel_from_records(bids, self.excel_path)
+                    run_manager.update_run(self.run_id, excel_path=str(self.excel_path), excel_exported=True)
+                except Exception:  # noqa: BLE001 — never fail the run over the Excel
+                    logger.exception("[run %s] Excel generation failed", self.run_id)
+                    run_manager.add_error(self.run_id, "excel generation failed (see logs)")
 
             run_manager.update_run(self.run_id, status="completed", step="done")
         except Exception as exc:  # noqa: BLE001 — a failed run must be reported, not crash the worker

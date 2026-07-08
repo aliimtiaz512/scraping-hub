@@ -46,6 +46,7 @@ export interface RunStatus {
   category?: string;
   category_label?: string;
   priority?: string;
+  ad_statuses?: string[];
   codes?: string[];
   excel_exported?: boolean;
   // RideMetro-only
@@ -82,13 +83,16 @@ export function getCategories(): Promise<CategoriesResponse> {
   return request("/myflorida/categories");
 }
 
+export type AdStatus = "preview" | "open" | "closed" | "withdrawn";
+
 export function startMyFloridaScrape(
   category: string,
   priority: string,
+  adStatuses: AdStatus[] = [],
 ): Promise<{ run_id: string; codes: string[]; folder: string }> {
   return request("/myflorida/scrape", {
     method: "POST",
-    body: JSON.stringify({ category, priority }),
+    body: JSON.stringify({ category, priority, ad_statuses: adStatuses }),
   });
 }
 

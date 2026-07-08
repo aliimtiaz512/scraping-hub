@@ -26,6 +26,14 @@ logger = logging.getLogger(__name__)
 WAIT_TIMEOUT = 30
 DOWNLOAD_TIMEOUT = 120
 
+# A realistic desktop-Chrome UA. Under --headless=new the default UA no longer
+# leaks a "HeadlessChrome" token, but some portals (e.g. BidNet Direct) still
+# 403 the automation fingerprint, so we pin a normal UA to match.
+USER_AGENT = (
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36"
+)
+
 
 class BaseScraper:
     def __init__(self, run_id: str):
@@ -45,6 +53,13 @@ class BaseScraper:
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--window-size=1920,1080")
+        # Strip the automation fingerprint that makes bot-protected portals return
+        # 403 Forbidden: drop the "controlled by automated software" switches and
+        # the AutomationControlled blink feature (which sets navigator.webdriver).
+        options.add_argument("--disable-blink-features=AutomationControlled")
+        options.add_argument(f"--user-agent={USER_AGENT}")
+        options.add_experimental_option("excludeSwitches", ["enable-automation"])
+        options.add_experimental_option("useAutomationExtension", False)
         options.add_experimental_option(
             "prefs",
             {
@@ -52,11 +67,23 @@ class BaseScraper:
                 "download.prompt_for_download": False,
                 "download.directory_upgrade": True,
                 "safebrowsing.enabled": True,
+                # A bid detail page downloads several attachments in a row; without
+                # this Chrome silently blocks every download after the first.
+                "profile.default_content_setting_values.automatic_downloads": 1,
             },
         )
         service = Service(ChromeDriverManager().install())
         self.driver = webdriver.Chrome(service=service, options=options)
         self.driver.set_page_load_timeout(60)
+        # Belt-and-suspenders: ensure navigator.webdriver is undefined on every
+        # document before the page's own scripts run, so bot checks don't see it.
+        try:
+            self.driver.execute_cdp_cmd(
+                "Page.addScriptToEvaluateOnNewDocument",
+                {"source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"},
+            )
+        except WebDriverException:
+            pass
 
     def stop_driver(self) -> None:
         if self.driver:
@@ -90,12 +117,23 @@ class BaseScraper:
         run_manager.update_run(self.run_id, step=step)
 
     def wait_for_download(self, timeout: int = DOWNLOAD_TIMEOUT) -> Path:
-        """Wait for a new file to fully land in the staging download dir."""
+        """Wait for a new file to fully land in the staging download dir.
+
+        Chrome marks an in-progress download with a `.crdownload` suffix or, on
+        Linux, a hidden `.com.google.Chrome.XXXXXX` temp name — a file is only
+        finished once neither pattern is present.
+        """
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            in_progress = list(self.download_dir.glob("*.crdownload"))
-            files = [f for f in self.download_dir.iterdir() if f.is_file() and f.suffix != ".crdownload"]
-            if files and not in_progress:
-                return max(files, key=lambda f: f.stat().st_mtime)
+            partial = [
+                f for f in self.download_dir.iterdir()
+                if f.is_file() and (f.suffix == ".crdownload" or f.name.startswith(".com.google.Chrome."))
+            ]
+            done = [
+                f for f in self.download_dir.iterdir()
+                if f.is_file() and f.suffix != ".crdownload" and not f.name.startswith(".com.google.Chrome.")
+            ]
+            if done and not partial:
+                return max(done, key=lambda f: f.stat().st_mtime)
             time.sleep(0.5)
         raise TimeoutException(f"Download did not complete within {timeout}s")

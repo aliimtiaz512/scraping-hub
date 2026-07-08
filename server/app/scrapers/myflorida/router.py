@@ -15,9 +15,14 @@ from app.scrapers.myflorida.scraper import execute_run
 router = APIRouter(prefix="/myflorida", tags=["myflorida"])
 
 
+AD_STATUS_OPTIONS = {"preview", "open", "closed", "withdrawn"}
+
+
 class ScrapeRequest(BaseModel):
     category: str
     priority: str = "high"  # high | high_medium | all
+    # Any of preview | open | closed | withdrawn; empty = no filter (every status).
+    ad_statuses: list[str] = []
 
 
 @router.get("/categories")
@@ -37,6 +42,11 @@ def start_scrape(request: ScrapeRequest, background_tasks: BackgroundTasks) -> d
         raise HTTPException(status_code=400, detail=f"Unknown category: {request.category}")
     if request.priority not in PRIORITY_LEVELS:
         raise HTTPException(status_code=400, detail=f"Unknown priority level: {request.priority}")
+    # De-duplicate while preserving order; an empty list means "no status filter".
+    ad_statuses = list(dict.fromkeys(request.ad_statuses))
+    unknown = [s for s in ad_statuses if s not in AD_STATUS_OPTIONS]
+    if unknown:
+        raise HTTPException(status_code=400, detail=f"Unknown ad status: {', '.join(unknown)}")
 
     codes = get_codes(request.category, request.priority)
     folder = run_manager.make_run_folder(f"run_{datetime.now():%Y-%m-%d_%H-%M-%S}")
@@ -47,11 +57,12 @@ def start_scrape(request: ScrapeRequest, background_tasks: BackgroundTasks) -> d
             "category": request.category,
             "category_label": CATEGORIES[request.category]["label"],
             "priority": request.priority,
+            "ad_statuses": ad_statuses,
             "codes": codes,
             "excel_exported": False,
         },
     )
-    background_tasks.add_task(execute_run, run["run_id"], codes)
+    background_tasks.add_task(execute_run, run["run_id"], codes, ad_statuses)
     return {"run_id": run["run_id"], "codes": codes, "folder": run["folder"]}
 
 

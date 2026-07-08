@@ -13,8 +13,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "MFMP Bid Scraper",
-  description: "Scrape MyFloridaMarketPlace bid advertisements by commodity-code category",
+  title: "Scraping Hub — Bid Crawler Console",
+  description: "Run and monitor bid scrapers for public procurement portals from one console.",
 };
 
 export default function RootLayout({
@@ -27,7 +27,9 @@ export default function RootLayout({
       lang="en"
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
-      <body className="min-h-full flex flex-col">{children}</body>
+      <body className="min-h-full flex flex-col" suppressHydrationWarning>
+        {children}
+      </body>
     </html>
   );
 }

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import BidnetResults from "@/components/BidnetResults";
 import RunStatusPanel from "@/components/RunStatus";
+import { ErrorBanner, SectionLabel, StartButton } from "@/components/ui";
 import { getRunStatus, startBidnetScrape, type RunStatus } from "@/lib/api";
 
 const POLL_INTERVAL_MS = 3000;
@@ -57,40 +58,34 @@ export default function BidnetPanel() {
 
   return (
     <div className="space-y-6">
-      <p className="text-sm text-slate-500">
+      <p className="text-sm leading-relaxed text-slate-400">
         Searches BidNet Direct for a keyword, filters to Member Agency Bids, downloads every
-        solicitation&apos;s documents, and saves an Excel of the results to the BidNet documents
-        folder when the run completes.
+        solicitation&apos;s documents, and saves an Excel of the results when the run completes.
       </p>
 
-      {error && (
-        <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</div>
-      )}
+      {error && <ErrorBanner message={error} />}
 
-      <div className="flex flex-wrap items-end gap-3">
-        <label className="flex-1">
-          <span className="mb-1 block text-xs font-medium text-slate-600">Search keyword</span>
-          <input
-            type="text"
-            value={keyword}
-            onChange={(e) => setKeyword(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !starting && !isRunning) handleStart();
-            }}
-            placeholder="e.g. AI, graphic design, software"
-            disabled={isRunning}
-            className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-blue-500 focus:ring-1 focus:ring-blue-500 disabled:bg-slate-100"
-          />
-        </label>
-
-        <button
-          type="button"
-          onClick={handleStart}
-          disabled={starting || isRunning}
-          className="rounded-lg bg-blue-600 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          {isRunning ? "Run in progress…" : starting ? "Starting…" : "Start scrape"}
-        </button>
+      <div>
+        <SectionLabel>Search keyword</SectionLabel>
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="flex flex-1 items-center gap-2 rounded-xl border border-white/10 bg-slate-950/50 px-3 py-2.5 transition focus-within:border-emerald-400/40 focus-within:ring-1 focus-within:ring-emerald-400/30">
+            <span className="font-mono text-sm text-emerald-500">⌕</span>
+            <input
+              type="text"
+              value={keyword}
+              onChange={(e) => setKeyword(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !starting && !isRunning) handleStart();
+              }}
+              placeholder="e.g. AI, graphic design, software"
+              disabled={isRunning}
+              className="w-full bg-transparent text-sm text-slate-100 outline-none placeholder:text-slate-600 disabled:opacity-50"
+            />
+          </div>
+          <StartButton onClick={handleStart} disabled={starting || isRunning} running={isRunning} starting={starting}>
+            Start scrape
+          </StartButton>
+        </div>
       </div>
 
       {run && <RunStatusPanel run={run} />}
