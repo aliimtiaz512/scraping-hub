@@ -19,6 +19,24 @@ export interface CategoriesResponse {
   priority_levels: string[];
 }
 
+export type KeywordTier = "tier1" | "tier2";
+
+export interface KeywordItem {
+  term: string;
+  tier: KeywordTier;
+  notes: string;
+}
+
+export interface KeywordGroup {
+  key: string;
+  label: string;
+  keywords: KeywordItem[];
+}
+
+export interface KeywordCatalog {
+  groups: KeywordGroup[];
+}
+
 export interface BidResult {
   // MyFlorida
   number?: string;
@@ -31,6 +49,7 @@ export interface BidResult {
   solicitation_type?: string;
   closing_date?: string;
   documents_count?: string;
+  matched_keyword?: string;
   // shared
   documents: string[];
   error: string | null;
@@ -54,6 +73,7 @@ export interface RunStatus {
   excel_path?: string | null;
   // BidNet-only
   keyword?: string;
+  keywords?: string[];
   // shared
   started_at: string;
   finished_at: string | null;
@@ -104,12 +124,16 @@ export function startRideMetroScrape(): Promise<{ run_id: string; folder: string
 
 // -- BidNet Direct -----------------------------------------------------------
 
+export function getBidnetKeywords(): Promise<KeywordCatalog> {
+  return request("/bidnet/keywords");
+}
+
 export function startBidnetScrape(
-  keyword: string,
-): Promise<{ run_id: string; keyword: string; folder: string }> {
+  keywords: string[],
+): Promise<{ run_id: string; keywords: string[]; folder: string }> {
   return request("/bidnet/scrape", {
     method: "POST",
-    body: JSON.stringify({ keyword }),
+    body: JSON.stringify({ keywords }),
   });
 }
 

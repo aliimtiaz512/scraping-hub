@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 _BID_FIELDS = {
     "reference_number", "solicitation_number", "solicitation_type", "title",
     "publication_date", "question_acceptance_deadline", "closing_date",
-    "documents_count",
+    "documents_count", "matched_keyword",
 }
 
 

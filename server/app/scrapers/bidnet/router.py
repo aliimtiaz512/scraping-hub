@@ -10,6 +10,7 @@ from app.core import run_manager
 from app.core.filenames import timestamp
 from app.db import get_session
 from app.scrapers.bidnet import export
+from app.scrapers.bidnet.keywords import get_keyword_catalog
 from app.scrapers.bidnet.models import EXCEL_COLUMNS, BidnetBid
 from app.scrapers.bidnet.scraper import execute_run
 
@@ -17,23 +18,36 @@ router = APIRouter(prefix="/bidnet", tags=["bidnet"])
 
 
 class ScrapeRequest(BaseModel):
-    keyword: str
+    # One or more keywords; each is searched separately in the same run.
+    keywords: list[str]
+
+
+@router.get("/keywords")
+def keywords() -> dict:
+    """Return the curated keyword catalog, grouped by sourcing track."""
+    return {"groups": get_keyword_catalog()}
 
 
 @router.post("/scrape")
 def start_scrape(request: ScrapeRequest, background_tasks: BackgroundTasks) -> dict:
-    keyword = request.keyword.strip()
-    if not keyword:
-        raise HTTPException(status_code=400, detail="keyword must not be empty")
+    # Strip, drop blanks, de-duplicate while preserving order.
+    keywords = list(dict.fromkeys(kw.strip() for kw in request.keywords if kw.strip()))
+    if not keywords:
+        raise HTTPException(status_code=400, detail="at least one keyword is required")
     label = timestamp()  # e.g. 2026-07-08 14-30-05
     folder = run_manager.make_run_folder(f"Document_Bids_BidnetDirect ({label})")
     run = run_manager.create_run(
         "bidnet",
         folder,
-        {"label": label, "keyword": keyword, "excel_exported": False},
+        {
+            "label": label,
+            "keyword": ", ".join(keywords),
+            "keywords": keywords,
+            "excel_exported": False,
+        },
     )
-    background_tasks.add_task(execute_run, run["run_id"], keyword)
-    return {"run_id": run["run_id"], "keyword": keyword, "folder": run["folder"]}
+    background_tasks.add_task(execute_run, run["run_id"], keywords)
+    return {"run_id": run["run_id"], "keywords": keywords, "folder": run["folder"]}
 
 
 @router.get("/scrape/status/{run_id}")

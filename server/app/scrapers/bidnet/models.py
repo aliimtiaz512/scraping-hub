@@ -53,6 +53,7 @@ class BidnetBid(Base):
     question_acceptance_deadline: Mapped[str | None] = mapped_column(String(64))
     closing_date: Mapped[str | None] = mapped_column(String(64))
     documents_count: Mapped[str | None] = mapped_column(String(32))
+    matched_keyword: Mapped[str | None] = mapped_column(Text)
 
     run: Mapped["BidnetRun"] = relationship(back_populates="bids")
 
@@ -68,4 +69,5 @@ EXCEL_COLUMNS: list[tuple[str, str]] = [
     ("question_acceptance_deadline", "Question Acceptance Deadline"),
     ("closing_date", "Closing Date"),
     ("documents_count", "Documents Count"),
+    ("matched_keyword", "Matched Keyword"),
 ]

@@ -46,25 +46,22 @@ DETAIL_FIELDS: dict[str, str] = {
 }
 
 
-def _safe_keyword(keyword: str) -> str:
-    cleaned = "".join(c if (c.isalnum() or c in (" ", "_", "-")) else "" for c in keyword)
-    cleaned = cleaned.strip().replace(" ", "_")
-    return cleaned or "bids"
-
-
 def _safe_title(title: str) -> str:
     cleaned = "".join(c for c in title if c.isalpha() or c.isdigit() or c == " ").rstrip()
     return cleaned or "Bid"
 
 
 class BidnetScraper(BaseScraper):
-    def __init__(self, run_id: str, keyword: str):
+    def __init__(self, run_id: str, keywords: list[str]):
         super().__init__(run_id)
-        self.keyword = keyword
-        # Per-keyword download folder under the shared documents root, matching the
-        # original naming: <documents>/Document_Bids_BidnetDirect_<keyword>.
-        base = settings.documents_root / "Document_Bids_BidnetDirect"
-        self.document_folder = Path(f"{base}_{_safe_keyword(keyword)}")
+        self.keywords = keywords
+        # A combined run spans many keywords, so everything (documents + Excel)
+        # lives in the single per-run folder the router already created
+        # (e.g. <documents>/Document_Bids_BidnetDirect (<label>)), with a per-bid
+        # subfolder inside it.
+        run = run_manager.get_run(run_id) or {}
+        folder = run.get("folder") or str(settings.documents_root / "Document_Bids_BidnetDirect")
+        self.document_folder = Path(folder)
         self.document_folder.mkdir(parents=True, exist_ok=True)
         self.excel_path: Path | None = None
 
@@ -126,11 +123,11 @@ class BidnetScraper(BaseScraper):
             self.screenshot("login_error")
             raise
 
-    def search(self) -> None:
-        self.set_step("searching")
+    def search(self, keyword: str) -> None:
+        self.set_step(f"searching: {keyword}")
         box = self.wait().until(EC.presence_of_element_located((By.ID, "solicitationSingleBoxSearch")))
         box.clear()
-        box.send_keys(self.keyword)
+        box.send_keys(keyword)
         self.driver.find_element(By.ID, "topSearchButton").click()
         time.sleep(3)
         self.wait().until(EC.visibility_of_element_located((By.CSS_SELECTOR, ".searchContentGroupContainer")))
@@ -352,19 +349,40 @@ class BidnetScraper(BaseScraper):
         try:
             self.start_driver()
             self.login()
-            self.search()
-            self.filter_member_agency()
-            links = self.collect_links()
-            logger.info("[run %s] found %s solicitations for '%s'", self.run_id, len(links), self.keyword)
 
-            for link in links:
+            # Search each keyword separately (never concatenated — one keyword per
+            # query gives the best results) and collect its solicitation links,
+            # deduplicating by link across keywords. Each link remembers every
+            # keyword that surfaced it.
+            link_keywords: dict[str, list[str]] = {}
+            for keyword in self.keywords:
+                try:
+                    self.search(keyword)
+                    self.filter_member_agency()
+                    links = self.collect_links()
+                except (TimeoutException, WebDriverException) as exc:
+                    run_manager.add_error(self.run_id, f"search failed for '{keyword}': {exc.__class__.__name__}")
+                    self.screenshot(f"search_{keyword}")
+                    continue
+                for link in links:
+                    matched = link_keywords.setdefault(link, [])
+                    if keyword not in matched:
+                        matched.append(keyword)
+                logger.info("[run %s] '%s' -> %s links (unique total %s)", self.run_id, keyword, len(links), len(link_keywords))
+
+            run_manager.update_run(self.run_id, bids_found=len(link_keywords))
+            logger.info("[run %s] %s unique solicitations across %s keyword(s)", self.run_id, len(link_keywords), len(self.keywords))
+
+            # Process each unique solicitation once, recording all matching keywords.
+            for index, (link, matched) in enumerate(link_keywords.items()):
                 record = {"reference_number": None, "title": None, "documents": [], "error": None}
                 try:
                     record = self.process_bid(link)
                 except (TimeoutException, WebDriverException) as exc:
                     record["error"] = str(exc)[:300]
                     run_manager.add_error(self.run_id, f"bid failed: {exc.__class__.__name__}")
-                    self.screenshot(f"bid_{links.index(link)}")
+                    self.screenshot(f"bid_{index}")
+                record["matched_keyword"] = ", ".join(matched)
                 run_manager.add_bid_result(self.run_id, record)
                 if record.get("reference_number"):
                     try:
@@ -412,5 +430,5 @@ class BidnetScraper(BaseScraper):
             logger.exception("[run %s] save_run failed", self.run_id)
 
 
-def execute_run(run_id: str, keyword: str) -> None:
-    BidnetScraper(run_id, keyword).run()
+def execute_run(run_id: str, keywords: list[str]) -> None:
+    BidnetScraper(run_id, keywords).run()

@@ -11,6 +11,7 @@ export default function BidnetResults({ bids }: { bids: BidResult[] }) {
       headers={[
         { label: "Reference #" },
         { label: "Title" },
+        { label: "Matched Keyword" },
         { label: "Type" },
         { label: "Closing" },
         { label: "Docs", className: "text-center" },
@@ -22,6 +23,9 @@ export default function BidnetResults({ bids }: { bids: BidResult[] }) {
           <td className="px-4 py-2.5 font-mono text-xs text-emerald-300">{bid.reference_number ?? "—"}</td>
           <td className="max-w-xs truncate px-4 py-2.5 text-slate-300" title={bid.title ?? ""}>
             {bid.title ?? "—"}
+          </td>
+          <td className="px-4 py-2.5 text-xs text-emerald-300/80" title={bid.matched_keyword ?? ""}>
+            {bid.matched_keyword ?? "—"}
           </td>
           <td className="px-4 py-2.5 text-xs text-slate-400">{bid.solicitation_type ?? "—"}</td>
           <td className="px-4 py-2.5 font-mono text-xs text-slate-400">{bid.closing_date ?? "—"}</td>

@@ -3,18 +3,26 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import BidnetResults from "@/components/BidnetResults";
+import KeywordSelect from "@/components/KeywordSelect";
 import RunStatusPanel from "@/components/RunStatus";
-import { ErrorBanner, SectionLabel, StartButton } from "@/components/ui";
-import { getRunStatus, startBidnetScrape, type RunStatus } from "@/lib/api";
+import { ErrorBanner, StartButton } from "@/components/ui";
+import { getBidnetKeywords, getRunStatus, startBidnetScrape, type KeywordGroup, type RunStatus } from "@/lib/api";
 
 const POLL_INTERVAL_MS = 3000;
 
 export default function BidnetPanel() {
-  const [keyword, setKeyword] = useState("");
+  const [groups, setGroups] = useState<KeywordGroup[]>([]);
+  const [selected, setSelected] = useState<string[]>([]);
   const [run, setRun] = useState<RunStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => {
+    getBidnetKeywords()
+      .then((data) => setGroups(data.groups))
+      .catch((e: Error) => setError(`Could not load keywords — is the API running? (${e.message})`));
+  }, []);
 
   const stopPolling = useCallback(() => {
     if (pollRef.current) {
@@ -26,15 +34,14 @@ export default function BidnetPanel() {
   useEffect(() => stopPolling, [stopPolling]);
 
   const handleStart = async () => {
-    const trimmed = keyword.trim();
-    if (!trimmed) {
-      setError("Enter a keyword to search.");
+    if (selected.length === 0) {
+      setError("Select at least one keyword to search.");
       return;
     }
     setError(null);
     setStarting(true);
     try {
-      const { run_id } = await startBidnetScrape(trimmed);
+      const { run_id } = await startBidnetScrape(selected);
       const status = await getRunStatus("bidnet", run_id);
       setRun(status);
       stopPolling();
@@ -65,28 +72,16 @@ export default function BidnetPanel() {
 
       {error && <ErrorBanner message={error} />}
 
-      <div>
-        <SectionLabel>Search keyword</SectionLabel>
-        <div className="flex flex-wrap items-center gap-3">
-          <div className="flex flex-1 items-center gap-2 rounded-xl border border-white/10 bg-slate-950/50 px-3 py-2.5 transition focus-within:border-emerald-400/40 focus-within:ring-1 focus-within:ring-emerald-400/30">
-            <span className="font-mono text-sm text-emerald-500">⌕</span>
-            <input
-              type="text"
-              value={keyword}
-              onChange={(e) => setKeyword(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !starting && !isRunning) handleStart();
-              }}
-              placeholder="e.g. AI, graphic design, software"
-              disabled={isRunning}
-              className="w-full bg-transparent text-sm text-slate-100 outline-none placeholder:text-slate-600 disabled:opacity-50"
-            />
-          </div>
-          <StartButton onClick={handleStart} disabled={starting || isRunning} running={isRunning} starting={starting}>
-            Start scrape
-          </StartButton>
-        </div>
-      </div>
+      <KeywordSelect groups={groups} selected={selected} disabled={isRunning} onChange={setSelected} />
+
+      <StartButton
+        onClick={handleStart}
+        disabled={selected.length === 0 || starting || isRunning}
+        running={isRunning}
+        starting={starting}
+      >
+        Start scrape
+      </StartButton>
 
       {run && <RunStatusPanel run={run} />}
       {run && <BidnetResults bids={run.bids} />}
