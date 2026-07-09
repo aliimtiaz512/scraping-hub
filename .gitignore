@@ -1,6 +1,7 @@
 # Python / server
 server/.venv/
 server/documents/
+data/
 __pycache__/
 *.pyc
 

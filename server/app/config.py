@@ -28,7 +28,10 @@ class Settings(BaseSettings):
     bidnet_username: str = ""
     bidnet_password: str = ""
 
-    download_dir: str = "./documents"
+    # Kept outside the server/ tree so downloads don't trip the uvicorn --reload
+    # file watcher (which would restart the process mid-scrape). Resolved against
+    # SERVER_ROOT when relative — see documents_root below.
+    download_dir: str = "../data/documents"
     headless: bool = True
 
     # SQLAlchemy URL for the Postgres database that holds scraped bids.
@@ -39,6 +42,7 @@ class Settings(BaseSettings):
         path = Path(self.download_dir)
         if not path.is_absolute():
             path = SERVER_ROOT / path
+        path = path.resolve()  # normalize away '..' so downloads land cleanly outside server/
         path.mkdir(parents=True, exist_ok=True)
         return path
 

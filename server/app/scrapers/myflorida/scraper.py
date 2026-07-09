@@ -137,7 +137,11 @@ class MFMPScraper(BaseScraper):
             options = self.wait().until(EC.presence_of_all_elements_located(SEL["ad_status_options"]))
             matched = set()
             for option in options:
-                text = option.text.strip().lower()
+                # Read textContent rather than .text: the label lives in a nested
+                # .mat-list-text div and Selenium's .text returns "" for options that
+                # are below the fold or mid-animation, which would spuriously report
+                # every status as "option not found".
+                text = (option.get_attribute("textContent") or "").strip().lower()
                 if text in wanted:
                     self.scroll_into_view(option)
                     option.click()

@@ -3,6 +3,7 @@ import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.core import run_manager
 from app.db import init_db
 from app.scrapers.bidnet.router import router as bidnet_router
 from app.scrapers.myflorida.router import router as myflorida_router
@@ -21,6 +22,9 @@ def _startup() -> None:
         logger.info("Database tables ready")
     except Exception:  # noqa: BLE001 — the API still serves /categories without a DB
         logger.exception("Could not initialize database — check DATABASE_URL in .env")
+    # Recover runs that were in flight when the process last stopped, so the
+    # frontend polling them sees a terminal status instead of a 404.
+    run_manager.load_persisted_runs()
 
 app.add_middleware(
     CORSMiddleware,
