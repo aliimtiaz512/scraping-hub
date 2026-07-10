@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 _BID_FIELDS = {
     "project", "ref_number", "department", "opportunity_type", "status",
     "open_date", "intent_to_bid_due_date", "question_due_date", "close_date",
-    "days_left", "contact_information", "project_description",
+    "days_left", "project_description",
 }
 
 

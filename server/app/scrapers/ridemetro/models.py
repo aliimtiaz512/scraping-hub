@@ -53,7 +53,6 @@ class RideMetroBid(Base):
     question_due_date: Mapped[str | None] = mapped_column(String(64))
     close_date: Mapped[str | None] = mapped_column(String(64))
     days_left: Mapped[str | None] = mapped_column(String(64))
-    contact_information: Mapped[str | None] = mapped_column(Text)
     project_description: Mapped[str | None] = mapped_column(Text)
 
     # Provenance.
@@ -64,20 +63,16 @@ class RideMetroBid(Base):
     run: Mapped["RideMetroRun"] = relationship(back_populates="bids")
 
 
-# Column order for the generated Excel, mapped to friendly headers.
+# Column order for the generated Excel, mapped to friendly headers. Only the
+# fields read from the opportunities list are exported; the detail-page-only
+# columns (Type, dates, description, documents) are left out since we no longer
+# open individual opportunity pages.
 EXCEL_COLUMNS: list[tuple[str, str]] = [
     ("project", "Project"),
     ("ref_number", "Ref. #"),
     ("department", "Department"),
-    ("opportunity_type", "Type"),
     ("status", "Status"),
-    ("open_date", "Open Date"),
-    ("intent_to_bid_due_date", "Intent to Bid Due Date"),
-    ("question_due_date", "Question Due Date"),
     ("close_date", "Close Date"),
     ("days_left", "Days Left"),
-    ("contact_information", "Contact Information"),
-    ("project_description", "Project Description"),
     ("opportunity_url", "Opportunity URL"),
-    ("zip_filename", "Documents Zip"),
 ]

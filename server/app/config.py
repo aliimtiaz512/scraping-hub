@@ -28,6 +28,9 @@ class Settings(BaseSettings):
     bidnet_username: str = ""
     bidnet_password: str = ""
 
+    # Wisconsin eSupplier (PeopleSoft) — public bidder portal, no login.
+    wisconsin_url: str = "https://esupplier.wi.gov/psp/esupplier/SUPPLIER/ERP/h/?tab=WI_BIDDER"
+
     # Kept outside the server/ tree so downloads don't trip the uvicorn --reload
     # file watcher (which would restart the process mid-scrape). Resolved against
     # SERVER_ROOT when relative — see documents_root below.

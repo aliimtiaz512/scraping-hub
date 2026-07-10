@@ -1,6 +1,6 @@
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
-export type Portal = "myflorida" | "ridemetro" | "bidnet";
+export type Portal = "myflorida" | "ridemetro" | "bidnet" | "wisconsin";
 
 export interface CommodityCode {
   code: string;
@@ -50,6 +50,14 @@ export interface BidResult {
   closing_date?: string;
   documents_count?: string;
   matched_keyword?: string;
+  // Wisconsin
+  event_number?: string;
+  solicitation_reference?: string;
+  event_type?: string;
+  event_title?: string;
+  agency?: string;
+  event_status?: string;
+  due_datetime?: string;
   // shared
   documents: string[];
   error: string | null;
@@ -74,6 +82,10 @@ export interface RunStatus {
   // BidNet-only
   keyword?: string;
   keywords?: string[];
+  // Wisconsin-only
+  search?: string;
+  agency?: string;
+  nigp_code?: string;
   // shared
   started_at: string;
   finished_at: string | null;
@@ -134,6 +146,19 @@ export function startBidnetScrape(
   return request("/bidnet/scrape", {
     method: "POST",
     body: JSON.stringify({ keywords }),
+  });
+}
+
+// -- Wisconsin eSupplier -----------------------------------------------------
+
+export function startWisconsinScrape(
+  keyword: string,
+  agency: string,
+  nigpCode: string,
+): Promise<{ run_id: string; search: string; folder: string }> {
+  return request("/wisconsin/scrape", {
+    method: "POST",
+    body: JSON.stringify({ keyword, agency, nigp_code: nigpCode }),
   });
 }
 

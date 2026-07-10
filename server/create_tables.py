@@ -12,4 +12,7 @@ if __name__ == "__main__":
     safe = url.split("@")[-1] if "@" in url else url
     print(f"Creating tables on …@{safe}")
     init_db()
-    print("Done. Tables: scrape_runs, mfmp_bids, ridemetro_runs, ridemetro_bids, bidnet_runs, bidnet_bids")
+    print(
+        "Done. Tables: scrape_runs, mfmp_bids, ridemetro_runs, ridemetro_bids, "
+        "bidnet_runs, bidnet_bids, wisconsin_runs, wisconsin_bids"
+    )

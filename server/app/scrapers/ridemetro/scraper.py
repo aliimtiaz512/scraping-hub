@@ -1,17 +1,18 @@
 """Selenium automation for the RideMetro (Bonfire) vendor portal.
 
-Flow: login -> Open Public Opportunities list -> for each opportunity click
-"View Opportunity" -> scrape the Project Details section -> download the
-"Download All files" zip -> store details in the DB -> generate an Excel from
-the DB into the run folder.
+Flow: login -> open the "Open Public Opportunities" list -> read every row of
+the opportunities table -> store the bid info in the DB -> generate an Excel
+from the DB into the run folder.
 
-NOTE: The selectors below are best-guess placeholders and MUST be verified
-against the live portal (run with HEADLESS=false and adjust).
+We deliberately do NOT open individual opportunity pages or download documents:
+the /opportunities/* pages sit behind a Cloudflare "verify you are human"
+challenge that manual browsing avoids but automation trips, and repeatedly
+solving it on a real vendor account is risky. Everything we export is read from
+the opportunities list, which loads cleanly. To pull an opportunity's documents,
+open its "Opportunity URL" in a browser and download them by hand.
 """
 
 import logging
-import shutil
-import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -23,54 +24,40 @@ from selenium.webdriver.support import expected_conditions as EC
 
 from app.config import settings
 from app.core import run_manager
-from app.core.base_scraper import DOWNLOAD_TIMEOUT, BaseScraper
-from app.core.filenames import sanitize_filename, timestamp
+from app.core.base_scraper import BaseScraper
+from app.core.filenames import timestamp
 from app.scrapers.ridemetro import export
 
 logger = logging.getLogger(__name__)
 
-ZIP_DOWNLOAD_TIMEOUT = 300  # zips can be large
-
-# column key -> visible label in the Project Details section
-PROJECT_DETAIL_FIELDS: dict[str, str] = {
-    "project": "Project",
-    "ref_number": "Ref. #",
-    "department": "Department",
-    "opportunity_type": "Type",
-    "status": "Status",
-    "open_date": "Open Date",
-    "intent_to_bid_due_date": "Intent to Bid Due Date",
-    "question_due_date": "Question Due Date",
-    "close_date": "Close Date",
-    "days_left": "Days Left",
-    "contact_information": "Contact Information",
-    "project_description": "Project Description",
+# Opportunities-table column header -> RideMetroBid field. The "Action" column
+# (the "View Opportunity" link) is handled separately to capture the URL.
+COLUMN_KEYS: dict[str, str] = {
+    "Status": "status",
+    "Ref. #": "ref_number",
+    "Project": "project",
+    "Department": "department",
+    "Close Date": "close_date",
+    "Days Left": "days_left",
 }
 
 # ---------------------------------------------------------------------------
-# Selectors — placeholders to verify against the live portal (HEADLESS=false)
+# Selectors
+#
+# The Bonfire/Euna portal renders the opportunities list client-side: the
+# "Open Public Opportunities" tab is active on load, but its table
+# (#DataTables_Table_0) is filled by an AJAX call that only fires after the
+# My Opportunities / Auctions calls resolve. So we click the tab and wait for
+# the real data rows before reading them.
 # ---------------------------------------------------------------------------
 SEL = {
     "login_email": (By.CSS_SELECTOR, "input[name='email'], #input-email, input[type='email']"),
     "login_password": (By.CSS_SELECTOR, "input[name='password'], #input-password, input[type='password']"),
     "login_submit": (By.CSS_SELECTOR, "button[type='submit']"),
-    "opportunity_rows": (By.CSS_SELECTOR, "table tbody tr"),
-    "view_button": (By.XPATH, ".//a[contains(., 'View')] | .//button[contains(., 'View')]"),
-    "next_page": (By.XPATH, "//a[@rel='next'] | //button[@aria-label='Next' and not(@disabled)]"),
-    "project_details_section": (By.XPATH, "//*[contains(normalize-space(), 'Project Details')]"),
-    "supporting_docs_section": (By.XPATH, "//*[contains(normalize-space(), 'Supporting Documentation')]"),
-    "download_all_button": (By.XPATH, "//a[contains(., 'Download All')] | //button[contains(., 'Download All')]"),
+    "open_opportunities_tab": (By.CSS_SELECTOR, "#openOpportunitiesTab a"),
+    "header_cells": (By.CSS_SELECTOR, "#DataTables_Table_0 thead th"),
+    "opportunity_rows": (By.CSS_SELECTOR, "#DataTables_Table_0 tbody tr"),
 }
-
-
-def _xpath_literal(text: str) -> str:
-    """Quote a string for use inside an XPath expression."""
-    if "'" not in text:
-        return f"'{text}'"
-    if '"' not in text:
-        return f'"{text}"'
-    parts = text.split("'")
-    return "concat('" + "', \"'\", '".join(parts) + "')"
 
 
 class RideMetroScraper(BaseScraper):
@@ -122,144 +109,79 @@ class RideMetroScraper(BaseScraper):
                     raise
 
     def open_opportunities(self) -> None:
+        """Navigate to the portal and wait for the Open Opportunities rows.
+
+        The tab is active on load, but its table is populated by an AJAX call
+        that only fires once the My Opportunities / Auctions calls resolve, so we
+        click the tab to be sure it's selected, then wait (generously) for the
+        data rows. If the portal genuinely has no open opportunities DataTables
+        still renders a single "no projects" row, so this won't hang.
+        """
         self.set_step("opening_opportunities")
         self.driver.get(settings.ridemetro_opportunities_url)
-        self.wait().until(EC.presence_of_element_located(SEL["opportunity_rows"]))
-
-    def process_all_pages(self) -> None:
-        """Walk every page of the opportunities table, processing each row."""
-        processed = 0
-        while True:
-            count = len(self.driver.find_elements(*SEL["opportunity_rows"]))
-            for index in range(count):
-                self.process_opportunity(index)
-                processed += 1
-                run_manager.update_run(self.run_id, bids_found=max(processed, count))
-
-            next_buttons = self.driver.find_elements(*SEL["next_page"])
-            if not next_buttons:
-                break
-            next_buttons[0].click()
-            time.sleep(1)
-            self.wait().until(EC.presence_of_element_located(SEL["opportunity_rows"]))
-        run_manager.update_run(self.run_id, bids_found=processed)
-
-    def process_opportunity(self, index: int) -> None:
-        """Open one opportunity (by row index), scrape it, download its zip, store it.
-
-        Always restores the list context and records a result — a failure on one
-        opportunity never aborts the run.
-        """
-        result: dict[str, Any] = {"ref_number": None, "project": None, "documents": [], "error": None}
-        before = self.driver.window_handles
-        new_tab = False
         try:
-            rows = self.driver.find_elements(*SEL["opportunity_rows"])
-            if index >= len(rows):
-                return
-            button = rows[index].find_element(*SEL["view_button"])
-            self.scroll_into_view(button)
-            self.set_step(f"opening_opportunity:{index + 1}")
-            button.click()
-            time.sleep(1)
+            self.wait().until(EC.element_to_be_clickable(SEL["open_opportunities_tab"])).click()
+        except (TimeoutException, WebDriverException):
+            pass
+        self.wait(60).until(EC.presence_of_element_located(SEL["opportunity_rows"]))
 
-            after = self.driver.window_handles
-            new_tab = len(after) > len(before)
-            if new_tab:
-                self.driver.switch_to.window(after[-1])
-            self.wait().until(EC.presence_of_element_located(SEL["project_details_section"]))
+    def scrape_opportunities(self) -> None:
+        """Read every row of the opportunities table and store it.
 
-            details = self.scrape_project_details()
-            url = self.driver.current_url
-            result["ref_number"] = details.get("ref_number")
-            result["project"] = details.get("project")
-
-            zip_name = None
+        The whole list renders into #DataTables_Table_0 at once (no server-side
+        pagination), so a single pass over the rows captures everything.
+        """
+        self.set_step("scraping_opportunities")
+        # thead cells are visually collapsed (height:0), so read textContent, not
+        # the (empty) rendered text, to map columns to fields by header label.
+        headers = [
+            (th.get_attribute("textContent") or "").strip()
+            for th in self.driver.find_elements(*SEL["header_cells"])
+        ]
+        rows = self.driver.find_elements(*SEL["opportunity_rows"])
+        processed = 0
+        for index, row in enumerate(rows):
+            details, url = self._extract_row(row, headers)
+            # Skip the "There are no open projects at this time." placeholder row.
+            if not details.get("ref_number"):
+                continue
+            result: dict[str, Any] = {
+                "ref_number": details.get("ref_number"),
+                "project": details.get("project"),
+                "documents": [],
+                "error": None,
+            }
             try:
-                zip_name = self.download_all_files(details)
-                if zip_name:
-                    result["documents"].append(zip_name)
-            except (TimeoutException, WebDriverException) as exc:
-                result["error"] = f"download failed: {exc.__class__.__name__}"
-                self.screenshot(f"download_{index}")
-
-            try:
-                export.save_bid(self.run_id, details, url, zip_name)
+                export.save_bid(self.run_id, details, url, None)
             except Exception:  # noqa: BLE001 — DB issues shouldn't abort the run
                 logger.exception("[run %s] save_bid failed for row %s", self.run_id, index)
                 run_manager.add_error(self.run_id, f"db save failed for opportunity {index + 1}")
-        except (TimeoutException, WebDriverException) as exc:
-            result["error"] = str(exc)[:300]
-            run_manager.add_error(self.run_id, f"opportunity {index + 1}: {exc.__class__.__name__}")
-            self.screenshot(f"opportunity_{index}")
-        finally:
-            # Return to the opportunities list.
-            try:
-                if new_tab:
-                    self.driver.close()
-                    self.driver.switch_to.window(before[0])
-                else:
-                    self.driver.back()
-                    self.wait().until(EC.presence_of_element_located(SEL["opportunity_rows"]))
-            except WebDriverException:
-                logger.exception("[run %s] failed to return to list after row %s", self.run_id, index)
+                result["error"] = "db save failed"
             run_manager.add_bid_result(self.run_id, result)
+            processed += 1
+            run_manager.update_run(self.run_id, bids_found=processed)
+        run_manager.update_run(self.run_id, bids_found=processed)
 
-    def scrape_project_details(self) -> dict[str, Any]:
-        self.set_step("scraping_project_details")
+    def _extract_row(self, row, headers: list[str]) -> tuple[dict[str, Any], str | None]:
+        """Pull the bid fields and the opportunity URL out of one table row."""
+        cells = row.find_elements(By.TAG_NAME, "td")
         details: dict[str, Any] = {"raw_data": {}}
-        for key, label in PROJECT_DETAIL_FIELDS.items():
-            value = self._read_field(label)
-            if value:
-                details[key] = value
-                details["raw_data"][label] = value
-        return details
-
-    def _read_field(self, label: str) -> str | None:
-        """Best-effort: find the label element and read its adjacent value."""
-        lit = _xpath_literal(label)
-        candidates = [
-            f"//*[normalize-space(text())={lit}]/following-sibling::*[1]",
-            f"//*[normalize-space(text())={lit}]/../following-sibling::*[1]",
-            f"//dt[normalize-space(text())={lit}]/following-sibling::dd[1]",
-        ]
-        for xpath in candidates:
-            try:
-                element = self.driver.find_element(By.XPATH, xpath)
-                text = element.text.strip()
-                if text:
-                    return text
-            except WebDriverException:
-                continue
-        return None
-
-    def download_all_files(self, details: dict[str, Any]) -> str | None:
-        ref = details.get("ref_number") or "opportunity"
-        self.set_step(f"downloading_zip:{ref}")
-        section = self.wait().until(EC.presence_of_element_located(SEL["supporting_docs_section"]))
-        self.scroll_into_view(section)
-        button = self.wait().until(EC.element_to_be_clickable(SEL["download_all_button"]))
-        self.scroll_into_view(button)
-        button.click()
-
-        downloaded = self.wait_for_download(timeout=ZIP_DOWNLOAD_TIMEOUT)
-        project = details.get("project") or ""
-        base = sanitize_filename(f"{ref} - {project}".strip(" -")) or ref
-        target = self._unique_path(self.run_dir / f"{base}{downloaded.suffix or '.zip'}")
-        shutil.move(str(downloaded), str(target))
-        return target.name
-
-    @staticmethod
-    def _unique_path(path: Path) -> Path:
-        if not path.exists():
-            return path
-        stem, suffix = path.stem, path.suffix
-        counter = 2
-        while True:
-            candidate = path.with_name(f"{stem} ({counter}){suffix}")
-            if not candidate.exists():
-                return candidate
-            counter += 1
+        url: str | None = None
+        for i, header in enumerate(headers):
+            if i >= len(cells):
+                break
+            cell = cells[i]
+            key = COLUMN_KEYS.get(header)
+            if key:
+                value = cell.text.strip()
+                if value:
+                    details[key] = value
+                    details["raw_data"][header] = value
+            elif header == "Action":
+                links = cell.find_elements(By.CSS_SELECTOR, "a[href*='/opportunities/']")
+                if links:
+                    url = links[0].get_attribute("href")
+        return details, url
 
     # -- orchestration ------------------------------------------------------
 
@@ -270,7 +192,7 @@ class RideMetroScraper(BaseScraper):
             self.start_driver()
             self.login()
             self.open_opportunities()
-            self.process_all_pages()
+            self.scrape_opportunities()
 
             try:
                 label = (run_manager.get_run(self.run_id) or {}).get("label") or timestamp()

@@ -8,6 +8,7 @@ from app.db import init_db
 from app.scrapers.bidnet.router import router as bidnet_router
 from app.scrapers.myflorida.router import router as myflorida_router
 from app.scrapers.ridemetro.router import router as ridemetro_router
+from app.scrapers.wisconsin.router import router as wisconsin_router
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -39,8 +40,9 @@ app.add_middleware(
 app.include_router(myflorida_router)
 app.include_router(ridemetro_router)
 app.include_router(bidnet_router)
+app.include_router(wisconsin_router)
 
 
 @app.get("/")
 def health() -> dict:
-    return {"status": "ok", "service": "scraping-hub", "scrapers": ["myflorida", "ridemetro", "bidnet"]}
+    return {"status": "ok", "service": "scraping-hub", "scrapers": ["myflorida", "ridemetro", "bidnet", "wisconsin"]}

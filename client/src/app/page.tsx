@@ -5,6 +5,7 @@ import { useState } from "react";
 import BidnetPanel from "@/components/BidnetPanel";
 import MyFloridaPanel from "@/components/MyFloridaPanel";
 import RideMetroPanel from "@/components/RideMetroPanel";
+import WisconsinPanel from "@/components/WisconsinPanel";
 import type { Portal } from "@/lib/api";
 
 const PORTALS: {
@@ -17,6 +18,7 @@ const PORTALS: {
   { key: "myflorida", label: "MyFlorida", host: "vendor.myfloridamarketplace.com", dot: "bg-sky-400", glow: "shadow-[0_0_10px_2px_rgba(56,189,248,0.7)]" },
   { key: "ridemetro", label: "RideMetro", host: "ridemetro.bonfirehub.com", dot: "bg-violet-400", glow: "shadow-[0_0_10px_2px_rgba(167,139,250,0.7)]" },
   { key: "bidnet", label: "BidNet Direct", host: "bidnetdirect.com", dot: "bg-emerald-400", glow: "shadow-[0_0_10px_2px_rgba(52,211,153,0.7)]" },
+  { key: "wisconsin", label: "Wisconsin", host: "esupplier.wi.gov", dot: "bg-amber-400", glow: "shadow-[0_0_10px_2px_rgba(251,191,36,0.7)]" },
 ];
 
 export default function Home() {
@@ -89,6 +91,7 @@ export default function Home() {
         {portal === "myflorida" && <MyFloridaPanel />}
         {portal === "ridemetro" && <RideMetroPanel />}
         {portal === "bidnet" && <BidnetPanel />}
+        {portal === "wisconsin" && <WisconsinPanel />}
       </section>
 
       <footer className="mt-auto pt-4 text-center font-mono text-[11px] text-slate-600">
