@@ -18,6 +18,7 @@ from typing import Any
 
 from selenium.common.exceptions import TimeoutException, WebDriverException
 from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support import expected_conditions as EC
 
 from app.config import settings
@@ -50,8 +51,8 @@ PROJECT_DETAIL_FIELDS: dict[str, str] = {
 # Selectors — placeholders to verify against the live portal (HEADLESS=false)
 # ---------------------------------------------------------------------------
 SEL = {
-    "login_email": (By.CSS_SELECTOR, "input[type='email'], input[name='email'], #email"),
-    "login_password": (By.CSS_SELECTOR, "input[type='password'], #password"),
+    "login_email": (By.CSS_SELECTOR, "input[name='email'], #input-email, input[type='email']"),
+    "login_password": (By.CSS_SELECTOR, "input[name='password'], #input-password, input[type='password']"),
     "login_submit": (By.CSS_SELECTOR, "button[type='submit']"),
     "opportunity_rows": (By.CSS_SELECTOR, "table tbody tr"),
     "view_button": (By.XPATH, ".//a[contains(., 'View')] | .//button[contains(., 'View')]"),
@@ -82,14 +83,43 @@ class RideMetroScraper(BaseScraper):
     def login(self) -> None:
         self.set_step("logging_in")
         self.driver.get(settings.ridemetro_login_url)
+        # Bonfire/Euna uses an identifier-first flow: the first screen shows only
+        # the email field and a "Continue" button. The password field is not in
+        # the DOM until the email is submitted, so we fill and submit email first,
+        # then wait for the password field to appear before filling it.
         email = self.wait().until(EC.element_to_be_clickable(SEL["login_email"]))
         email.clear()
         email.send_keys(settings.ridemetro_email)
-        password = self.driver.find_element(*SEL["login_password"])
+        self.driver.find_element(*SEL["login_submit"]).click()
+
+        password = self.wait().until(EC.element_to_be_clickable(SEL["login_password"]))
         password.clear()
         password.send_keys(settings.ridemetro_password)
-        self.driver.find_element(*SEL["login_submit"]).click()
-        self.wait().until(lambda d: "login" not in d.current_url.lower())
+
+        # Submit and confirm we actually leave the login page. This React form
+        # sometimes swallows the submit click when it lands during a re-render
+        # (the button stays put with the form still filled), so we verify the
+        # navigation and, if it didn't happen, re-submit — pressing Enter in the
+        # password field the second time as a more reliable native submit.
+        def left_login(d) -> bool:
+            return "login" not in d.current_url.lower()
+
+        for attempt in range(3):
+            try:
+                if attempt == 0:
+                    self.driver.find_element(*SEL["login_submit"]).click()
+                else:
+                    self.driver.find_element(*SEL["login_password"]).send_keys(Keys.RETURN)
+            except WebDriverException:
+                # Field/button went stale mid-navigation — that usually means the
+                # submit already took, so let the wait below decide.
+                pass
+            try:
+                self.wait(15).until(left_login)
+                return
+            except TimeoutException:
+                if attempt == 2:
+                    raise
 
     def open_opportunities(self) -> None:
         self.set_step("opening_opportunities")
