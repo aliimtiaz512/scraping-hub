@@ -36,7 +36,10 @@ AGENCY_ID = "WI_SS_BIDR_SRCH_WI_SS_SRCH_AGENCY"
 NIGP_ID = "WI_SS_BIDR_SRCH_CATEGORY_CD"
 SEARCH_BTN_ID = "WI_SS_BIDR_SRCH_SEARCH"
 
-# Results grid: data rows, the page-range dropdown, and the "next range" control.
+# Results grid: data rows, the page-range dropdown (read-only, for the "X-Y of
+# Total" indicator), and the "show next row" anchor that advances one page. The
+# anchor's href is javascript:submitAction_win0(...); activating it posts back
+# reliably, whereas calling submitAction directly from execute_script does not.
 ROW_CSS = "tr[id^='trWI_SS_BIDALL_VW']"
 PAGE_SELECT_ID = "WI_SS_BIDALL_VW$hpage$0"
 NEXT_ID = "WI_SS_BIDALL_VW$hdown$0"
@@ -146,16 +149,42 @@ class WisconsinScraper(BaseScraper):
     # -- search -------------------------------------------------------------
 
     def search(self) -> None:
+        """Fill the criteria and submit via a native Search click.
+
+        The Agency box is a server-side EXACT-match filter (verified against the
+        live portal: "Department of Military Affairs" -> 138 rows; the partial
+        "Military Affairs" -> 0 rows; blank -> every agency), so we type the name
+        and let the portal return a grid already scoped to that agency. Only a
+        native WebDriver click actually triggers the search postback here.
+        """
         self.set_step("searching")
+        # The form lives in the content iframe; make sure we're focused there.
+        self._focus_target((By.ID, SEARCH_BTN_ID))
         if self.keyword:
             self._fill(KEYWORD_ID, self.keyword)
         if self.agency:
             self._fill(AGENCY_ID, self.agency)
         if self.nigp_code:
             self._fill(NIGP_ID, self.nigp_code)
+        # Log the values actually sitting in the fields right before we submit —
+        # if a criterion didn't register, the grid comes back unfiltered.
+        try:
+            vals = self.driver.execute_script(
+                "return Array.prototype.slice.call(arguments).map("
+                "  id => { var e = document.getElementById(id); return e ? e.value : null; });",
+                KEYWORD_ID, AGENCY_ID, NIGP_ID,
+            )
+            logger.info("[run %s] submitting search: keyword=%r agency=%r nigp=%r",
+                        self.run_id, *(vals or [None, None, None]))
+        except WebDriverException:
+            pass
         self.driver.find_element(By.ID, SEARCH_BTN_ID).click()
-        # The postback reloads the content iframe; re-focus it. A search may
-        # legitimately return no rows, so don't hard-fail if none appear.
+        # PeopleSoft runs the search as an AJAX postback behind a "processing"
+        # overlay while the old (pre-search) grid is still on screen; wait for it
+        # to finish so we don't scrape the stale grid. A search may legitimately
+        # return no rows (e.g. an agency the portal can't resolve), so don't
+        # hard-fail if none appear.
+        self._wait_search_settled()
         if not self._focus_target((By.CSS_SELECTOR, ROW_CSS)):
             logger.info("[run %s] no result rows appeared after search", self.run_id)
 
@@ -163,6 +192,42 @@ class WisconsinScraper(BaseScraper):
         el = self.wait().until(EC.presence_of_element_located((By.ID, elem_id)))
         el.clear()
         el.send_keys(value)
+
+    def _is_processing(self) -> bool:
+        """Whether PeopleSoft's 'processing' overlay is currently visible (a
+        postback/AJAX update is in flight and the grid is not yet settled)."""
+        try:
+            return bool(self.driver.execute_script(
+                "var e = document.getElementById('processing');"
+                "if (!e) return false;"
+                "var s = window.getComputedStyle(e);"
+                "return ((e.offsetWidth || e.offsetHeight) > 0)"
+                "  && s.display !== 'none' && s.visibility !== 'hidden';"
+            ))
+        except WebDriverException:
+            return False
+
+    def _wait_search_settled(self, timeout: int = 40) -> None:
+        """Block until the search postback finishes so we read the filtered grid,
+        not the stale pre-search one. The overlay appears within a moment of the
+        click and clears when results render; if it never shows within a short
+        grace we assume there was nothing to wait for and proceed.
+        """
+        deadline = time.monotonic() + timeout
+        grace = time.monotonic() + 3
+        seen_busy = False
+        while time.monotonic() < deadline:
+            self._focus_target((By.CSS_SELECTOR, ROW_CSS), timeout=5)
+            if self._is_processing():
+                seen_busy = True
+            elif seen_busy:
+                logger.info("[run %s] search postback settled", self.run_id)
+                return
+            elif time.monotonic() > grace:
+                logger.info("[run %s] search: no processing overlay observed; proceeding",
+                            self.run_id)
+                return
+            time.sleep(0.2)
 
     # -- results ------------------------------------------------------------
 
@@ -180,7 +245,11 @@ class WisconsinScraper(BaseScraper):
         pages = 0
         last_end = 0
         while True:
-            if not self._focus_target((By.CSS_SELECTOR, ROW_CSS), timeout=40 if pages == 0 else 15):
+            # Wait until the grid is fully rendered before reading it: match the
+            # rendered row count to the range indicator's "X-Y of Total" so a
+            # slow paint can't be read as a short final page and stop the run.
+            rendered = self._wait_for_grid(timeout=40 if pages == 0 else 25)
+            if rendered == 0:
                 break
             pages += 1
             for rec in self._scrape_page():
@@ -205,13 +274,17 @@ class WisconsinScraper(BaseScraper):
             logger.info("[run %s] page %s scraped (total saved %s)", self.run_id, pages, saved)
 
             end, total = self._page_indicator()
+            logger.info("[run %s] page %s range indicator: end=%s total=%s last_end=%s",
+                        self.run_id, pages, end, total, last_end)
             if end is None or total is None or end >= total or end <= last_end:
+                logger.info("[run %s] pagination stop: no further range to fetch", self.run_id)
                 break
             last_end = end
             if pages >= MAX_PAGES:
                 run_manager.add_error(self.run_id, f"stopped at page cap ({MAX_PAGES})")
                 break
             if not self._go_next_page():
+                logger.info("[run %s] pagination stop: could not advance past page %s", self.run_id, pages)
                 break
 
     # A single atomic read of the current grid page — returns a list of 7-string
@@ -228,6 +301,70 @@ class WisconsinScraper(BaseScraper):
         }
         return out;
     """
+
+    # One atomic read of the grid's current state: how many data rows are
+    # rendered and the page-range dropdown's selected text ("X-Y of Total").
+    _JS_GRID_INFO = """
+        const rows = document.querySelectorAll("tr[id^='trWI_SS_BIDALL_VW']").length;
+        const e = document.getElementById(arguments[0]);
+        let pager = null;
+        if (e) {
+          if (e.tagName === 'SELECT') { const o = e.options[e.selectedIndex]; pager = o ? o.text : null; }
+          else pager = e.textContent;
+        }
+        const p = document.getElementById('processing');
+        let busy = false;
+        if (p) { const s = window.getComputedStyle(p);
+                 busy = ((p.offsetWidth || p.offsetHeight) > 0)
+                        && s.display !== 'none' && s.visibility !== 'hidden'; }
+        return {rows: rows, pager: pager, busy: busy};
+    """
+
+    def _wait_for_grid(self, timeout: int) -> int:
+        """Focus the grid iframe and wait until the page is fully rendered.
+
+        Returns the number of data rows rendered (0 if the grid never appeared).
+
+        When the range indicator is present we know exactly how many rows this
+        page should have (Y - X + 1) and wait for that many to paint; without a
+        pager (a single page of results) we wait for the row count to settle.
+        """
+        deadline = time.monotonic() + timeout
+        prev = 0
+        stable = 0
+        while time.monotonic() < deadline:
+            if not self._focus_target((By.CSS_SELECTOR, ROW_CSS), timeout=5):
+                continue
+            try:
+                info = self.driver.execute_script(self._JS_GRID_INFO, PAGE_SELECT_ID)
+            except WebDriverException:
+                info = None
+            if (info or {}).get("busy"):
+                # A postback is still repainting the grid — don't read it yet.
+                stable = 0
+                time.sleep(0.6)
+                continue
+            rows = int((info or {}).get("rows") or 0)
+            pager = (info or {}).get("pager")
+            expected = None
+            if pager:
+                m = re.search(r"(\d+)\s*-\s*(\d+)\s+of\s+([\d,]+)", pager)
+                if m:
+                    expected = int(m.group(2)) - int(m.group(1)) + 1
+            if expected is not None:
+                if rows >= expected:
+                    return rows
+            elif rows > 0 and rows == prev:
+                stable += 1
+                if stable >= 2:
+                    return rows
+            else:
+                stable = 0
+            prev = rows
+            time.sleep(0.6)
+        if prev:
+            logger.warning("[run %s] grid render wait timed out with %s rows", self.run_id, prev)
+        return prev
 
     def _scrape_page(self) -> list[dict[str, Any]]:
         try:
@@ -286,29 +423,72 @@ class WisconsinScraper(BaseScraper):
         except WebDriverException:
             return None
 
-    def _go_next_page(self) -> bool:
-        """Advance to the next range via the site's own postback and wait for it.
-
-        We trigger submitAction_win0 (what the "next" control does) instead of
-        clicking a possibly-stale element, then re-focus the rebuilt iframe and
-        wait until the grid *body* actually turns over — the first row's Event
-        Number changing is the reliable signal that new rows have rendered (the
-        range indicator can update a beat before the body does, which would
-        otherwise let us re-read the old page).
+    def _await_turnover(self, before: str | None, timeout: int) -> str | None:
+        """Re-focus the rebuilt grid iframe and wait until its first row's Event
+        Number differs from `before`. Returns the new first Event Number on
+        success (the grid turned over to a new page), else None.
         """
-        before = self._first_event_number()
-        try:
-            self.driver.execute_script("submitAction_win0(document.win0, arguments[0]);", NEXT_ID)
-        except WebDriverException:
-            return False
-        deadline = time.monotonic() + 40
+        deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             time.sleep(0.8)
             if not self._focus_target((By.CSS_SELECTOR, ROW_CSS), timeout=5):
                 continue
             first = self._first_event_number()
             if first and first != before:
+                return first
+        return None
+
+    def _go_next_page(self) -> bool:
+        """Advance one page using the grid's "next row" arrow (WI_SS_BIDALL_VW$hdown$0).
+
+        The arrow is an <a> whose href is javascript:submitAction_win0(...). We
+        try two activations, each confirmed by the grid *body* turning over (the
+        first row's Event Number changing — the range indicator can update a beat
+        before the body does, which would otherwise let us re-read the old page):
+
+        1. A real native WebDriver click, which best emulates the user clicking
+           the arrow. If the element isn't actionable (it is tabindex="-1" and
+           wraps an <img>) the click raises and we move on without advancing.
+        2. Failing that, invoke the anchor's own click() so the browser evaluates
+           its javascript: href in the page's real context — this posts back even
+           when calling submitAction directly from execute_script does not.
+
+        We only fall through to (2) after (1) clearly did not turn the grid over,
+        so we never skip a page by advancing twice.
+        """
+        before = self._first_event_number()
+
+        # (1) native click
+        try:
+            nxt = self.wait(10).until(EC.element_to_be_clickable((By.ID, NEXT_ID)))
+            self.scroll_into_view(nxt)
+            nxt.click()
+            first = self._await_turnover(before, timeout=40)
+            if first:
+                logger.info("[run %s] next-page (native click): turned over to first=%s",
+                            self.run_id, first)
                 return True
+            logger.info("[run %s] next-page: native click did not turn the grid over; "
+                        "trying anchor href", self.run_id)
+        except WebDriverException as exc:
+            logger.info("[run %s] next-page: native click unavailable (%s); trying anchor href",
+                        self.run_id, type(exc).__name__)
+
+        # (2) fire the anchor's javascript: href via its own click()
+        try:
+            self.driver.execute_script(
+                "var a = document.getElementById(arguments[0]); if (a) a.click();", NEXT_ID
+            )
+        except WebDriverException:
+            pass  # href navigation may tear down the context; turnover is the judge
+        first = self._await_turnover(before, timeout=40)
+        if first:
+            logger.info("[run %s] next-page (anchor href): turned over to first=%s",
+                        self.run_id, first)
+            return True
+
+        logger.warning("[run %s] next-page: grid did not turn over by either method (still first=%s)",
+                       self.run_id, before)
         return False
 
     # -- orchestration ------------------------------------------------------
