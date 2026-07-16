@@ -31,6 +31,7 @@ from app.core import run_manager
 from app.core.base_scraper import BaseScraper
 from app.core.filenames import sanitize_filename
 from app.scrapers.myflorida.ingest import ingest_excel
+from app.scrapers.myflorida.workbook import merge_exports
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +84,11 @@ SEL = {
     "overlay_backdrop": (By.CSS_SELECTOR, ".cdk-overlay-backdrop-showing"),
     "search_button": (By.XPATH, "//button[normalize-space(.)='Search']"),
     "results_rows": (By.CSS_SELECTOR, "tbody tr"),
+    # The async loading spinner shown while a search runs. The portal renders no
+    # "no results" message and the results table exists before a search is even
+    # submitted, so a spinner cycle (appear -> clear) is the only signal that the
+    # search actually executed. See submit_search.
+    "progress_spinner": (By.CSS_SELECTOR, "mat-progress-spinner, mat-spinner"),
     "document_links": (By.CSS_SELECTOR, "a.document-link"),
     "export_excel": (By.XPATH, "//button[contains(., 'Export')]"),
 }
@@ -95,6 +101,16 @@ MAX_RESULTS = "100"  # portal offers 25/50/75/100
 # The login form renders after the Angular bundle boots, which on a degraded
 # network runs well past the default element wait.
 LOGIN_FORM_TIMEOUT = 60
+
+# Breathing room after the ads landing page reports ready, so its async summary
+# cards finish reflowing before we click Advanced Search. The intercepts this
+# prevents are a too-early click, not a too-short wait — hence a settle here
+# rather than a bigger WAIT_TIMEOUT.
+LANDING_SETTLE_SECONDS = 2
+
+# Politeness gap between keyword passes; the portal degrades under rapid repeated
+# navigation and a keyword run reloads the heavy landing page once per keyword.
+KEYWORD_PAUSE_SECONDS = 2
 
 # Ad Status options, keyed by API value -> the list-option text shown in the portal.
 AD_STATUS_LABELS = {
@@ -190,21 +206,51 @@ class MFMPScraper(BaseScraper):
         # Successful login leaves the /login page.
         self.wait().until(lambda d: "login" not in d.current_url.lower())
 
-    def open_advertisements(self) -> None:
+    def open_advertisements(self, attempts: int = 3) -> None:
+        """Load the ads landing page and let it settle before anyone clicks it.
+
+        Two portal behaviours make this fiddly. The landing page renders its
+        "Advertisement Summary" chart and "Recommended Advertisements" cards
+        asynchronously, and they reflow the page around the Advanced Search button
+        after it first becomes clickable — click too early and the cards take it.
+        Separately the page intermittently comes back blank under repeated rapid
+        navigation (a keyword run loads it once per keyword), so a stalled render
+        gets retried rather than losing the whole pass, as login() does.
+        """
         self.set_step("opening_advertisements")
-        self.driver.get(ADS_URL)
-        self.wait().until(EC.element_to_be_clickable(SEL["advanced_search_button"]))
+        for attempt in range(1, attempts + 1):
+            try:
+                self.driver.get(ADS_URL)
+                button = self.wait().until(EC.element_to_be_clickable(SEL["advanced_search_button"]))
+                self.scroll_into_view(button)
+                self._wait_no_backdrop()
+                time.sleep(LANDING_SETTLE_SECONDS)
+                return
+            except (TimeoutException, WebDriverException) as exc:
+                if attempt == attempts:
+                    raise
+                logger.warning("[run %s] ads page stalled (attempt %d/%d), retrying",
+                               self.run_id, attempt, attempts)
+                run_manager.add_warning(
+                    self.run_id,
+                    f"ads page stalled (attempt {attempt}/{attempts}) — retrying "
+                    f"({exc.__class__.__name__})",
+                )
+                # A hung load leaves the tab mid-navigation; stop it before retrying.
+                try:
+                    self.driver.execute_script("window.stop();")
+                except WebDriverException:
+                    pass
 
     def open_advanced_search(self) -> None:
         self.set_step("opening_advanced_search")
-        self.wait().until(EC.element_to_be_clickable(SEL["advanced_search_button"])).click()
+        self._robust_click(SEL["advanced_search_button"])
         self._set_max_results(MAX_RESULTS)
         if not self.keyword_mode:
             # Expand the Commodity Codes accordion so its multi-select renders.
             header = self.wait().until(EC.element_to_be_clickable(SEL["commodity_panel_header"]))
-            self.scroll_into_view(header)
             if header.get_attribute("aria-expanded") != "true":
-                header.click()
+                self._robust_click(header)
             # The select loads its options asynchronously and stays disabled until ready.
             self.wait().until(self._commodity_enabled)
 
@@ -228,10 +274,12 @@ class MFMPScraper(BaseScraper):
         """
         wanted = {label.lower(): label for label in labels}
         try:
+            # _set_max_results has just closed a mat-select overlay, whose backdrop
+            # can still be animating out and would swallow the panel click.
+            self._wait_no_backdrop()
             header = self.wait().until(EC.element_to_be_clickable(SEL[header_key]))
-            self.scroll_into_view(header)
             if header.get_attribute("aria-expanded") != "true":
-                header.click()
+                self._robust_click(header)
             options = self.wait().until(EC.presence_of_all_elements_located(SEL[options_key]))
             matched = set()
             for option in options:
@@ -241,8 +289,7 @@ class MFMPScraper(BaseScraper):
                 # every option as "option not found".
                 text = (option.get_attribute("textContent") or "").strip().lower()
                 if text in wanted:
-                    self.scroll_into_view(option)
-                    option.click()
+                    self._robust_click(option)
                     time.sleep(0.5)
                     matched.add(text)
             for missing in wanted.keys() - matched:
@@ -289,17 +336,68 @@ class MFMPScraper(BaseScraper):
         field.clear()
         field.send_keys(keyword[:100])  # the portal caps this input at 100 chars
 
-    def submit_search(self) -> None:
+    # Search outcomes returned by submit_search.
+    RESULTS = "results"            # rows came back
+    EMPTY = "empty"                # spinner cycled (search ran) but zero rows
+    EMPTY_UNCONFIRMED = "empty_unconfirmed"  # no spinner seen and zero rows
+
+    def submit_search(self) -> str:
+        """Run the search and report what came back.
+
+        The portal renders no "no results" message, and the results table exists
+        before a search is submitted, so a zero-result search is DOM-identical to
+        one that never ran. We therefore key off the loading spinner: it appears
+        while the query runs and clears when it finishes. Counting *displayed*
+        spinners against a pre-click baseline tolerates any always-on decorative
+        spinners on the page.
+        """
         self.set_step("searching")
         button = self.wait().until(EC.element_to_be_clickable(SEL["search_button"]))
         self.scroll_into_view(button)
+        baseline = self._spinner_count()
         button.click()
-        # Results render asynchronously; tolerate an empty result set.
         try:
-            self.wait(20).until(EC.presence_of_element_located(SEL["results_rows"]))
+            # A new spinner over the baseline means the search fired.
+            self.wait(8).until(lambda _d: self._spinner_count() > baseline)
+            spinner_seen = True
         except TimeoutException:
-            pass
-        time.sleep(2)
+            spinner_seen = False
+
+        if spinner_seen:
+            # Wait for it to settle back to baseline — the search has finished.
+            try:
+                self.wait(30).until(lambda _d: self._spinner_count() <= baseline)
+            except TimeoutException:
+                pass
+        else:
+            # Instant/cached result, or a click that never fired. Give the grid a
+            # short beat to populate before we decide it's empty.
+            try:
+                self.wait(8).until(EC.presence_of_element_located(SEL["results_rows"]))
+            except TimeoutException:
+                pass
+        time.sleep(1)
+
+        if self.driver.find_elements(*SEL["results_rows"]):
+            return self.RESULTS
+        if spinner_seen:
+            return self.EMPTY
+        # Never saw the search run and no rows appeared — surface it as empty for
+        # the operator, but screenshot it so a silently-broken search is auditable.
+        self.screenshot("empty_unconfirmed")
+        return self.EMPTY_UNCONFIRMED
+
+    def _spinner_count(self) -> int:
+        """Number of currently-*displayed* progress spinners. Hidden spinners the
+        portal keeps in the DOM at rest don't count; a search adds a visible one."""
+        count = 0
+        for element in self.driver.find_elements(*SEL["progress_spinner"]):
+            try:
+                if element.is_displayed():
+                    count += 1
+            except WebDriverException:
+                pass
+        return count
 
     # -- advanced-search helpers -------------------------------------------
 
@@ -315,6 +413,34 @@ class MFMPScraper(BaseScraper):
             self.wait(10).until_not(EC.presence_of_element_located(SEL["overlay_backdrop"]))
         except TimeoutException:
             pass
+
+    def _robust_click(self, target, attempts: int = 3) -> None:
+        """Click something an overlay or a still-rendering card may be sitting on top of.
+
+        `target` is a locator tuple or an already-resolved element. Each attempt
+        re-resolves a locator (the element may have been re-rendered underneath us),
+        scrolls it into view and waits out any backdrop before clicking. The last
+        attempt falls back to the JS click used elsewhere in this file, which fires
+        the handler regardless of what is painted over the element.
+        """
+        for attempt in range(1, attempts + 1):
+            try:
+                element = (
+                    self.wait().until(EC.element_to_be_clickable(target))
+                    if isinstance(target, tuple)
+                    else target
+                )
+                self.scroll_into_view(element)
+                self._wait_no_backdrop()
+                if attempt == attempts:
+                    self.driver.execute_script("arguments[0].click();", element)
+                else:
+                    element.click()
+                return
+            except (TimeoutException, WebDriverException):
+                if attempt == attempts:
+                    raise
+                time.sleep(1)
 
     def _dismiss_overlay(self) -> None:
         try:
@@ -391,7 +517,7 @@ class MFMPScraper(BaseScraper):
         self.wait().until(lambda d: "/detail/" in d.current_url)
         time.sleep(2)  # let the detail page (incl. document list) render
 
-        bid_dir = self.run_dir / sanitize_filename(title or number)
+        bid_dir = self.run_dir / self._bid_folder_name(bid)
         bid_dir.mkdir(parents=True, exist_ok=True)
 
         doc_links = self.driver.find_elements(*SEL["document_links"])
@@ -402,10 +528,13 @@ class MFMPScraper(BaseScraper):
                 # the anchor's download is driven by its click handler regardless.
                 self.driver.execute_script("arguments[0].click();", doc_link)
                 downloaded = self.wait_for_download()
-                new_name = f"{sanitize_filename(title or number)}_{index}{downloaded.suffix}"
-                target = bid_dir / new_name
+                # Keep the portal's real filename; only prefix an index if two
+                # attachments on this bid happen to share a name.
+                target = bid_dir / downloaded.name
+                if target.exists():
+                    target = bid_dir / f"{index}_{downloaded.name}"
                 shutil.move(str(downloaded), str(target))
-                result["documents"].append(new_name)
+                result["documents"].append(target.name)
             except (TimeoutException, WebDriverException, OSError) as exc:
                 result.setdefault("document_errors", []).append(f"doc {index}: {exc.__class__.__name__}")
 
@@ -425,15 +554,36 @@ class MFMPScraper(BaseScraper):
         except (TimeoutException, WebDriverException):
             pass
 
+    def _bid_folder_name(self, bid: dict) -> str:
+        """`<ad number>_<title>` — the ad number leads because it's the stable ID
+        you'd search by; the title (truncated) follows for readability."""
+        number = sanitize_filename((bid.get("number") or "").strip(), max_length=64)
+        # sanitize_filename truncates after its own strip, so a title cut mid-word
+        # can still end in a space or dot — strip again on this side of the cut.
+        title = sanitize_filename((bid.get("title") or "").strip(), max_length=60).strip(" ._")
+        if number and title:
+            return f"{number}_{title}"
+        return number or title or "untitled"
+
+    def _niche_label(self) -> str:
+        """Human label for the run's niche, used for the merged workbook name."""
+        run = run_manager.get_run(self.run_id) or {}
+        return run.get("category_label") or run.get("category") or "MyFlorida"
+
     def export_excel(self, suffix: str = "") -> Path:
-        """Export the current result set. `suffix` keeps one keyword's export from
-        overwriting the next one's, since a keyword run exports once per pass."""
+        """Export the current result set into the run's `_exports/` staging folder.
+
+        `suffix` keeps one keyword's export from overwriting the next one's, since a
+        keyword run exports once per pass. The raw per-keyword exports are stashed
+        here and stitched into one `<Niche>_bids.xlsx` at the end (see _finalize)."""
         self.set_step("exporting_excel")
         button = self.wait().until(EC.element_to_be_clickable(SEL["export_excel"]))
         button.click()
         downloaded = self.wait_for_download()
+        exports_dir = self.run_dir / "_exports"
+        exports_dir.mkdir(parents=True, exist_ok=True)
         name = f"bids_export_{sanitize_filename(suffix)}" if suffix else "bids_export"
-        target = self.run_dir / f"{name}{downloaded.suffix or '.xlsx'}"
+        target = exports_dir / f"{name}{downloaded.suffix or '.xlsx'}"
         shutil.move(str(downloaded), str(target))
         self.excel_path = target
         run_manager.update_run(self.run_id, excel_exported=True)
@@ -451,11 +601,13 @@ class MFMPScraper(BaseScraper):
 
     # -- orchestration ------------------------------------------------------
 
-    def _search_pass(self, keyword: str | None = None) -> list[dict]:
-        """Fill in one Advanced Search and return its result rows.
+    def _search_pass(self, keyword: str | None = None) -> tuple[str, list[dict]]:
+        """Fill in one Advanced Search; return (outcome, rows).
 
         Assumes the ads page is open. A keyword pass searches on the keyword; a
         code pass selects the run's commodity codes. Ad Status/Type apply to both.
+        `outcome` is one of RESULTS/EMPTY/EMPTY_UNCONFIRMED; rows are only read
+        when the search returned some.
         """
         self.open_advanced_search()
         if keyword is None:
@@ -464,17 +616,40 @@ class MFMPScraper(BaseScraper):
             self.enter_keyword(keyword)
         self.select_ad_status()
         self.select_ad_type()
-        self.submit_search()
-        return self.collect_bids()
+        outcome = self.submit_search()
+        bids = self.collect_bids() if outcome == self.RESULTS else []
+        return outcome, bids
 
-    def _export_and_ingest(self, suffix: str = "") -> None:
-        """Capture the current result set before crawling documents, so a failure
-        in the per-bid crawl still leaves the run's data on disk and in the DB."""
+    def _export(self, suffix: str = "") -> Path | None:
+        """Capture the current result set to the exports staging folder before
+        crawling documents, so a failure in the per-bid crawl still leaves the
+        run's data on disk. Returns the export path, or None if the export failed."""
         try:
-            self.export_excel(suffix)
+            return self.export_excel(suffix)
         except (TimeoutException, WebDriverException) as exc:
             run_manager.add_error(self.run_id, f"excel export failed: {exc.__class__.__name__}")
             self.screenshot("export_excel")
+            return None
+
+    def _finalize(self, exports: list[Path], found: dict[str, dict]) -> None:
+        """Merge the per-pass exports into one workbook, then ingest it once.
+
+        `found` maps ad number -> the accumulated bid dict (carrying matched
+        keywords), used to fill the merged workbook's Matched Keyword / Folder
+        columns. Both steps are best-effort: the files on disk are the source of
+        truth, so neither a merge nor a DB failure fails the run."""
+        if not exports:
+            return
+        self.set_step("merging_workbook")
+        keyword_by_ad = {num: ", ".join(entry.get("matched_keywords", [])) for num, entry in found.items()}
+        folder_by_ad = {num: self._bid_folder_name(entry) for num, entry in found.items()}
+        try:
+            self.excel_path = merge_exports(
+                exports, self.run_dir, self._niche_label(), keyword_by_ad, folder_by_ad
+            )
+        except Exception as exc:  # noqa: BLE001 — a merge failure shouldn't fail the run
+            logger.exception("[run %s] workbook merge failed", self.run_id)
+            run_manager.add_error(self.run_id, f"workbook merge failed: {exc.__class__.__name__}")
             return
         try:
             self.ingest_to_db()
@@ -504,34 +679,60 @@ class MFMPScraper(BaseScraper):
     def _run_codes(self) -> None:
         """One search across every selected commodity code."""
         self.open_advertisements()
-        bids = self._search_pass()
+        _outcome, bids = self._search_pass()
+        if not bids:
+            run_manager.add_warning(self.run_id, "no bids found for the selected commodity codes")
+            run_manager.update_run(self.run_id, no_results=True)
+            return
         run_manager.update_run(self.run_id, bids_found=len(bids))
-        self._export_and_ingest()
+        export = self._export()
         self._process_bids(bids, set())
+        # No keyword in code mode — folder column still wants the ad->bid mapping.
+        found = {b["number"]: {**b, "matched_keywords": []} for b in bids}
+        self._finalize([export] if export else [], found)
 
     def _run_keywords(self) -> None:
-        """One search per keyword, each with its own export, merged by ad number.
+        """One search per keyword, exports merged into one workbook by ad number.
 
         Each pass restarts from the ads page so the form is clean rather than
-        carrying the previous keyword's criteria.
+        carrying the previous keyword's criteria. A keyword that matches nothing
+        records a warning and exports nothing (no header-only workbook); if every
+        keyword comes back empty the run is flagged no_results.
         """
         processed: set[str] = set()
         found: dict[str, dict] = {}
+        exports: list[Path] = []
+        any_results = False
         for index, keyword in enumerate(self.keywords, start=1):
             run_manager.update_run(self.run_id, keyword=keyword, keyword_progress=f"{index}/{len(self.keywords)}")
+            if index > 1:
+                time.sleep(KEYWORD_PAUSE_SECONDS)
             try:
                 self.open_advertisements()
-                bids = self._search_pass(keyword)
+                _outcome, bids = self._search_pass(keyword)
             except (TimeoutException, WebDriverException) as exc:
                 run_manager.add_error(self.run_id, f"keyword {keyword!r}: search failed ({exc.__class__.__name__})")
                 self.screenshot(f"keyword_{sanitize_filename(keyword)}")
                 continue
+            if not bids:
+                run_manager.add_warning(self.run_id, f"keyword '{keyword}' — no bids found")
+                continue
+            any_results = True
             for bid in bids:
-                # Record which keyword surfaced the ad; first match wins.
-                found.setdefault(bid["number"], {**bid, "matched_keyword": keyword})
+                # Accumulate every keyword that surfaced the ad (comma-joined later).
+                entry = found.get(bid["number"])
+                if entry is None:
+                    found[bid["number"]] = {**bid, "matched_keywords": [keyword]}
+                elif keyword not in entry["matched_keywords"]:
+                    entry["matched_keywords"].append(keyword)
             run_manager.update_run(self.run_id, bids_found=len(found))
-            self._export_and_ingest(keyword)
+            export = self._export(keyword)
+            if export:
+                exports.append(export)
             self._process_bids([found[b["number"]] for b in bids], processed)
+        if not any_results:
+            run_manager.update_run(self.run_id, no_results=True)
+        self._finalize(exports, found)
 
     def run(self) -> None:
         run_manager.update_run(self.run_id, status="running")

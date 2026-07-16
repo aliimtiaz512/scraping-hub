@@ -52,6 +52,9 @@ class Bid(Base):
     # Best-effort mapped bid fields from the export.
     ad_number: Mapped[str | None] = mapped_column(String(128), index=True)
     title: Mapped[str | None] = mapped_column(Text)
+    # In keyword mode, the niche keyword(s) whose title search surfaced this ad
+    # (comma-joined when several matched). Null for commodity-code runs.
+    matched_keyword: Mapped[str | None] = mapped_column(Text)
     agency: Mapped[str | None] = mapped_column(Text)
     ad_type: Mapped[str | None] = mapped_column(String(128))
     status: Mapped[str | None] = mapped_column(String(64))

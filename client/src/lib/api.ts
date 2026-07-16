@@ -100,6 +100,11 @@ export interface RunStatus {
   bids_processed: number;
   documents_downloaded: number;
   errors: string[];
+  // Non-fatal notices, e.g. a keyword that matched nothing (MyFlorida).
+  warnings?: string[];
+  // True when every search pass returned zero rows — the search worked, the
+  // portal simply has nothing matching (MyFlorida).
+  no_results?: boolean;
   bids: BidResult[];
 }
 

@@ -21,6 +21,18 @@ plan.md
 plan_*.md
 BidNet_Direct_Keyword_Reference.docx
 
+# Editors / local tooling
+.vscode/
+.idea/
+.claude/settings.local.json
+
+# Caches
+.venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.tsbuildinfo
+
 # Misc
 .DS_Store
 *.log

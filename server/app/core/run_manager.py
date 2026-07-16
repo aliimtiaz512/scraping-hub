@@ -117,6 +117,13 @@ def create_run(scraper: str, folder: Path, fields: dict[str, Any] | None = None)
         "bids_processed": 0,
         "documents_downloaded": 0,
         "errors": [],
+        # Non-fatal notices (e.g. a keyword that matched nothing). Kept separate
+        # from errors so a run full of legitimate zero-result searches still reads
+        # as completed rather than failed.
+        "warnings": [],
+        # Set true when every search pass returned zero rows — lets the UI say
+        # "search worked, portal has nothing" instead of a silent green tick.
+        "no_results": False,
         "bids": [],
     }
     if fields:
@@ -157,6 +164,20 @@ def add_error(run_id: str, message: str) -> None:
         if not run:
             return
         run["errors"].append(message)
+        snapshot = dict(run)
+    _persist(snapshot)
+
+
+def add_warning(run_id: str, message: str) -> None:
+    """Append a non-fatal notice (parallel to add_error). Deduplicated so a
+    repeated message doesn't stack up."""
+    with _lock:
+        run = _runs.get(run_id)
+        if not run:
+            return
+        warnings = run.setdefault("warnings", [])
+        if message not in warnings:
+            warnings.append(message)
         snapshot = dict(run)
     _persist(snapshot)
 

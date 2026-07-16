@@ -30,6 +30,8 @@ def _normalize(header: str) -> str:
 FIELD_CANDIDATES: dict[str, tuple[str, ...]] = {
     "ad_number": ("adnumber", "advertisementnumber", "adid", "number", "solicitationnumber", "bidnumber"),
     "title": ("title", "adtitle", "name", "solicitationtitle"),
+    # Added by the merged workbook (workbook.py), not present in the portal's own export.
+    "matched_keyword": ("matchedkeyword",),
     "agency": ("agency", "organization", "customer", "department", "buyer"),
     "ad_type": ("adtype", "type", "solicitationtype", "method"),
     "status": ("status", "state"),
@@ -45,7 +47,7 @@ FIELD_CANDIDATES: dict[str, tuple[str, ...]] = {
 }
 
 STRING_FIELDS = {
-    "ad_number", "title", "agency", "ad_type", "status", "description",
+    "ad_number", "title", "matched_keyword", "agency", "ad_type", "status", "description",
     "commodity_codes", "contact_name", "contact_email", "contact_phone",
     "ad_date", "open_date", "close_date",
 }

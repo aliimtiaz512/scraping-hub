@@ -1,4 +1,5 @@
 from datetime import datetime
+from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import BaseModel
@@ -7,6 +8,7 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from app.core import run_manager
+from app.core.filenames import sanitize_filename
 from app.db import get_session
 from app.scrapers.myflorida.commodity_codes import CATEGORIES, get_codes, get_keywords
 from app.scrapers.myflorida.models import Bid
@@ -93,7 +95,10 @@ def start_scrape(request: ScrapeRequest, background_tasks: BackgroundTasks) -> d
     else:
         keywords = _resolve_subset(request.keywords, get_keywords(request.category), "keyword")
 
-    folder = run_manager.make_run_folder(f"run_{datetime.now():%Y-%m-%d_%H-%M-%S}")
+    # Nested, niche-separated and self-describing: MyFlorida/<niche>/<timestamp>/.
+    niche = sanitize_filename(CATEGORIES[request.category]["label"], max_length=80)
+    timestamp = f"{datetime.now():%Y-%m-%d_%H-%M-%S}"
+    folder = run_manager.make_run_folder(str(Path("MyFlorida") / niche / timestamp))
     run = run_manager.create_run(
         "myflorida",
         folder,

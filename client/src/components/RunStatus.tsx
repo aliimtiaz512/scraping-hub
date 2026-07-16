@@ -14,6 +14,7 @@ const STEP_LABELS: Record<string, string> = {
   searching: "Running search",
   collecting_bids: "Collecting bid list",
   exporting_excel: "Exporting Excel",
+  merging_workbook: "Merging results workbook",
   storing_in_db: "Storing bids in database",
   // RideMetro
   opening_opportunities: "Opening opportunities list",
@@ -93,6 +94,29 @@ export default function RunStatus({ run }: { run: RunStatusData }) {
             {run.errors.map((error, i) => (
               <li key={i} className="font-mono">
                 {error}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {run.no_results && (
+        <div className="rounded-lg border border-amber-400/25 bg-amber-400/[0.07] p-3">
+          <p className="font-mono text-[11px] text-amber-300/90">
+            Search ran successfully — this niche currently has no matching ads.
+          </p>
+        </div>
+      )}
+
+      {run.warnings && run.warnings.length > 0 && (
+        <div className="rounded-lg border border-amber-500/20 bg-amber-500/[0.06] p-3">
+          <p className="mb-1 font-mono text-[11px] font-semibold uppercase tracking-wide text-amber-400">
+            no results ({run.warnings.length})
+          </p>
+          <ul className="max-h-24 space-y-0.5 overflow-y-auto text-xs text-amber-300/90">
+            {run.warnings.map((warning, i) => (
+              <li key={i} className="font-mono">
+                {warning}
               </li>
             ))}
           </ul>
