@@ -1,157 +1,155 @@
-"""Curated MFMP commodity codes grouped by search category.
+"""Curated MFMP search niches: commodity codes plus screening keywords.
 
-Source: filtered MFMP commodity-code reference (105 codes, 6 categories).
-Priority guide: high = most directly relevant, medium = useful adjacent match,
-related = broad parent or supporting code.
+Each niche carries both search paths the portal supports, and a run uses exactly
+one of them (see SearchMode in the router):
+
+  codes    — the MFMP commodity codes to select in Advanced Search.
+  keywords — free-text terms, each searched separately in its own run pass.
+
+Source: the recommended codes/keywords brief. Codes are the class-level and
+specific commodity codes that have appeared in MFMP opportunities or align
+closely with the requested service areas; keywords are that niche's
+"search and screen for" terms.
 """
 
 CATEGORIES = {
-    "design_graphic_creative": {
-        "label": "Design / Graphic / Creative",
+    "graphic_design_creative": {
+        "label": "Graphic Design & Creative Services",
         "codes": [
-            {"code": "81111512", "priority": "high", "title": "Computer graphics service"},
-            {"code": "82000000", "priority": "high", "title": "Editorial and Design and Graphic and Fine Art Services"},
-            {"code": "82140000", "priority": "high", "title": "Graphic design"},
-            {"code": "82141500", "priority": "high", "title": "Art design services"},
-            {"code": "82141501", "priority": "high", "title": "Layout or graphics editing services"},
-            {"code": "82141502", "priority": "high", "title": "Art design or graphics"},
-            {"code": "82141505", "priority": "high", "title": "Computer generated design services"},
-            {"code": "80111619", "priority": "medium", "title": "Temporary creative services"},
-            {"code": "82121501", "priority": "medium", "title": "Planning or layout of graphic production"},
-            {"code": "82141504", "priority": "medium", "title": "Chart or graph design services"},
-            {"code": "82141506", "priority": "medium", "title": "Package design services"},
-            {"code": "82141600", "priority": "medium", "title": "Graphic display services"},
-            {"code": "82141700", "priority": "medium", "title": "Three dimensional 3D visualization services"},
-            {"code": "82111700", "priority": "related", "title": "Creative writing"},
-            {"code": "82111704", "priority": "related", "title": "Copywriting"},
+            {"code": "82141501", "title": "Layout or graphics editing services"},
+            {"code": "82141502", "title": "Art design or graphics"},
+            {"code": "82141600", "title": "Graphic display services"},
+            {"code": "82121501", "title": "Planning or layout of graphic production"},
+        ],
+        "keywords": [
+            "graphic design",
+            "creative services",
+            "branding",
+            "visual communications",
+            "publication design",
+            "layout",
+            "annual report",
+            "signage",
+            "exhibit design",
+            "presentation design",
+            "artwork",
         ],
     },
-    "branding_marketing": {
-        "label": "Design / Branding / Marketing",
+    "digital_marketing_outreach": {
+        "label": "Digital Marketing, Advertising & Outreach",
         "codes": [
-            {"code": "80141604", "priority": "medium", "title": "Branding of product naming services"},
-            {"code": "80171702", "priority": "medium", "title": "Brand promotion and management service"},
-            {"code": "82101603", "priority": "medium", "title": "Internet advertising"},
-            {"code": "82101801", "priority": "medium", "title": "Advertising campaign services"},
-            {"code": "80171600", "priority": "related", "title": "Publicity and marketing support services"},
-            {"code": "80171603", "priority": "related", "title": "Publicity and marketing advisory service"},
-            {"code": "80171700", "priority": "related", "title": "Reputation and brand management services"},
-            {"code": "82100000", "priority": "related", "title": "Advertising"},
+            {"code": "80171600", "title": "Publicity and marketing support services"},
+            {"code": "80171602", "title": "Online and social media publicity service"},
+            {"code": "80171603", "title": "Publicity and marketing advisory service"},
+            {"code": "80171604", "title": "Public information campaign service"},
+            {"code": "82101603", "title": "Internet advertising"},
+            {"code": "82101800", "title": "Advertising agency services"},
+            {"code": "82101801", "title": "Advertising campaign services"},
+            {"code": "82101900", "title": "Media placement and fulfillment"},
+        ],
+        "keywords": [
+            "digital marketing",
+            "advertising",
+            "social media",
+            "public relations",
+            "strategic communications",
+            "community outreach",
+            "media buying",
+            "media planning",
+            "SEO",
+            "paid media",
+            "content marketing",
+            "email marketing",
+            "campaign management",
         ],
     },
-    "ui_ux_web_design": {
-        "label": "UI/UX / Web Design",
+    "printing_production": {
+        "label": "Printing & Print Production",
         "codes": [
-            {"code": "43232404", "priority": "high", "title": "Graphical user interface development software"},
-            {"code": "81111820", "priority": "high", "title": "System usability services"},
-            {"code": "81112103", "priority": "high", "title": "World wide web WWW site design services"},
-            {"code": "43232100", "priority": "medium", "title": "Content authoring and editing software"},
-            {"code": "43232200", "priority": "medium", "title": "Content management software"},
-            {"code": "43232306", "priority": "medium", "title": "Data base user interface and query software"},
-            {"code": "43232408", "priority": "medium", "title": "Web platform development software"},
-            {"code": "81112104", "priority": "related", "title": "Web search engine providers"},
-            {"code": "81112105", "priority": "related", "title": "World wide web WWW site operation host services"},
-            {"code": "81112106", "priority": "related", "title": "Application service providers"},
+            {"code": "82121500", "title": "Printing"},
+            {"code": "82121503", "title": "Digital printing"},
+            {"code": "82121505", "title": "Promotional or advertising printing"},
+            {"code": "82121506", "title": "Publication printing"},
+            {"code": "82121507", "title": "Stationery or business form printing"},
+            {"code": "82121700", "title": "Photocopying"},
+        ],
+        "keywords": [
+            "printing",
+            "commercial printing",
+            "digital printing",
+            "publication printing",
+            "brochures",
+            "booklets",
+            "annual reports",
+            "postcards",
+            "direct mail",
+            "large-format printing",
+            "banners",
+            "signage",
+            "fulfillment",
         ],
     },
-    "software_development_it": {
-        "label": "Software Development / IT",
+    "software_web_development": {
+        "label": "Software, Web & Application Development",
         "codes": [
-            {"code": "43232400", "priority": "high", "title": "Development software"},
-            {"code": "43232402", "priority": "high", "title": "Development environment software"},
-            {"code": "43232406", "priority": "high", "title": "Program testing software"},
-            {"code": "43232407", "priority": "high", "title": "Requirements analysis and system architecture software"},
-            {"code": "81111500", "priority": "high", "title": "Software or hardware engineering"},
-            {"code": "81111502", "priority": "high", "title": "Personal computer PC application design"},
-            {"code": "81111503", "priority": "high", "title": "Systems integration design"},
-            {"code": "81111504", "priority": "high", "title": "Application programming services"},
-            {"code": "81111506", "priority": "high", "title": "Client or server programming services"},
-            {"code": "81111507", "priority": "high", "title": "ERP or database applications programming services"},
-            {"code": "81111508", "priority": "high", "title": "Application implementation services"},
-            {"code": "81111509", "priority": "high", "title": "Internet or intranet client application development services"},
-            {"code": "81111510", "priority": "high", "title": "Internet or intranet server application development services"},
-            {"code": "81111511", "priority": "high", "title": "System or application programming management service"},
-            {"code": "81111600", "priority": "high", "title": "Computer programmers"},
-            {"code": "81111704", "priority": "high", "title": "Database design"},
-            {"code": "81111808", "priority": "high", "title": "System analysis service"},
-            {"code": "81111810", "priority": "high", "title": "Software coding service"},
-            {"code": "43232403", "priority": "medium", "title": "Enterprise application integration software"},
-            {"code": "43232405", "priority": "medium", "title": "Object or component oriented development software"},
-            {"code": "81111501", "priority": "medium", "title": "Mainframe software applications design"},
-            {"code": "81111505", "priority": "medium", "title": "Operating system programming services"},
-            {"code": "81111601", "priority": "medium", "title": "Programming for Visual Basic"},
-            {"code": "81111602", "priority": "medium", "title": "Programming for Java"},
-            {"code": "81111603", "priority": "medium", "title": "Programming for HTML"},
-            {"code": "81111607", "priority": "medium", "title": "Programming for C or C++"},
-            {"code": "81111612", "priority": "medium", "title": "Programming or Proprietary Languages"},
-            {"code": "81111705", "priority": "medium", "title": "Systems architecture"},
-            {"code": "81111819", "priority": "medium", "title": "Quality assurance services"},
-            {"code": "81112202", "priority": "medium", "title": "Software patches or upgrades"},
-            {"code": "81112209", "priority": "medium", "title": "Development software maintenance"},
-            {"code": "43000000", "priority": "related", "title": "Information Technology Broadcasting and Telecommunications"},
-            {"code": "43230000", "priority": "related", "title": "Software"},
-            {"code": "81112200", "priority": "related", "title": "Software maintenance and support"},
+            {"code": "81111500", "title": "Software or hardware engineering"},
+            {"code": "81111503", "title": "Systems integration design"},
+            {"code": "81111504", "title": "Application programming services"},
+            {"code": "81111508", "title": "Application implementation services"},
+            {"code": "81111509", "title": "Internet or intranet client application development services"},
+            {"code": "81111510", "title": "Internet or intranet server application development services"},
+            {"code": "81112103", "title": "World Wide Web site design services"},
+        ],
+        "keywords": [
+            "software development",
+            "application development",
+            "web development",
+            "website redesign",
+            "system modernization",
+            "systems integration",
+            "portal development",
+            "mobile application",
+            "SaaS",
+            "cloud platform",
+            "database development",
+            "API integration",
+            "content management system",
         ],
     },
     "ai_data_automation": {
-        "label": "AI / Data / Automation",
+        "label": "AI, Data & Automation",
         "codes": [
-            {"code": "43231511", "priority": "high", "title": "Expert system software"},
-            {"code": "43232301", "priority": "high", "title": "Categorization or classification software"},
-            {"code": "43232302", "priority": "high", "title": "Clustering software"},
-            {"code": "43232307", "priority": "high", "title": "Data mining software"},
-            {"code": "43232309", "priority": "high", "title": "Information retrieval or search software"},
-            {"code": "43232314", "priority": "high", "title": "Business intelligence and data analysis software"},
-            {"code": "43232615", "priority": "high", "title": "Facial recognition software"},
-            {"code": "80101508", "priority": "high", "title": "Business intelligence consulting services"},
-            {"code": "81112009", "priority": "high", "title": "Content or data classification services"},
-            {"code": "43211717", "priority": "medium", "title": "Optical character recognition systems"},
-            {"code": "43211731", "priority": "medium", "title": "Image analyzer"},
-            {"code": "43232509", "priority": "medium", "title": "Voice synthesizer and recognition software"},
-            {"code": "43232618", "priority": "medium", "title": "Radar image treatment software"},
-            {"code": "43232619", "priority": "medium", "title": "Satellite image treatment software"},
-            {"code": "81111806", "priority": "medium", "title": "Database analysis service"},
-            {"code": "81111900", "priority": "medium", "title": "Information retrieval systems"},
-            {"code": "81111901", "priority": "medium", "title": "Database information retrieval"},
-            {"code": "81111902", "priority": "medium", "title": "Online database information retrieval service"},
-            {"code": "81112000", "priority": "medium", "title": "Data services"},
-            {"code": "81112001", "priority": "medium", "title": "Online data processing service"},
-            {"code": "81112002", "priority": "medium", "title": "Data processing or preparation services"},
-            {"code": "81112007", "priority": "medium", "title": "Content or data standardization services"},
-            {"code": "81112010", "priority": "medium", "title": "Data conversion service"},
-            {"code": "23153200", "priority": "related", "title": "Robotics"},
-            {"code": "32150000", "priority": "related", "title": "Automation control devices and components and accessories"},
-            {"code": "32152000", "priority": "related", "title": "Process control or packaged automation systems"},
-            {"code": "48140000", "priority": "related", "title": "Professional service robot"},
-            {"code": "81103100", "priority": "related", "title": "Technology research and development service"},
-            {"code": "81141902", "priority": "related", "title": "Application or technology research and development service"},
+            {"code": "43232314", "title": "Business intelligence and data analysis software"},
+            {"code": "43232400", "title": "Development software"},
+            {"code": "43232403", "title": "Enterprise application integration software"},
+            {"code": "43232701", "title": "Application server software"},
+            {"code": "81111504", "title": "Application programming services"},
+            {"code": "81111705", "title": "Systems architecture"},
         ],
-    },
-    "it_consulting_cloud": {
-        "label": "IT Consulting / Staffing / Cloud",
-        "codes": [
-            {"code": "80101507", "priority": "high", "title": "Information technology consultation services"},
-            {"code": "81162000", "priority": "high", "title": "Cloud-based software as a service"},
-            {"code": "81162100", "priority": "high", "title": "Cloud-based platform as a service"},
-            {"code": "80111608", "priority": "medium", "title": "Temporary information technology software developers"},
-            {"code": "80111609", "priority": "medium", "title": "Temporary information technology systems or database administrators"},
-            {"code": "80111711", "priority": "medium", "title": "Permanent information technology software developers"},
-            {"code": "81111513", "priority": "medium", "title": "Internet cloud storage service"},
-            {"code": "81111514", "priority": "medium", "title": "Cloud support services"},
-            {"code": "81162200", "priority": "medium", "title": "Cloud-based infrastructure as a service"},
+        "keywords": [
+            "artificial intelligence",
+            "generative AI",
+            "machine learning",
+            "predictive analytics",
+            "natural language processing",
+            "NLP",
+            "chatbot",
+            "virtual assistant",
+            "computer vision",
+            "intelligent automation",
+            "document processing",
+            "business intelligence",
+            "large language model",
         ],
     },
 }
 
-PRIORITY_LEVELS = {
-    "high": ("high",),
-    "high_medium": ("high", "medium"),
-    "all": ("high", "medium", "related"),
-}
+
+def get_codes(category_key: str) -> list[str]:
+    """Every commodity code in a niche."""
+    return [entry["code"] for entry in CATEGORIES[category_key]["codes"]]
 
 
-def get_codes(category_key: str, priority: str = "high") -> list[str]:
-    """Return the commodity codes for a category filtered by priority level."""
-    category = CATEGORIES[category_key]
-    allowed = PRIORITY_LEVELS[priority]
-    return [entry["code"] for entry in category["codes"] if entry["priority"] in allowed]
+def get_keywords(category_key: str) -> list[str]:
+    """Every screening keyword in a niche."""
+    return list(CATEGORIES[category_key]["keywords"])

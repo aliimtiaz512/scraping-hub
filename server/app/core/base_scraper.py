@@ -43,6 +43,8 @@ class BaseScraper:
         self.download_dir = self.run_dir / "_downloads"
         self.download_dir.mkdir(parents=True, exist_ok=True)
         self.driver: webdriver.Chrome | None = None
+        # Last step reported via set_step — used to say where a failure happened.
+        self.current_step: str | None = None
 
     # -- lifecycle ----------------------------------------------------------
 
@@ -53,6 +55,12 @@ class BaseScraper:
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--window-size=1920,1080")
+        # Return from driver.get() at DOMContentLoaded instead of the load event.
+        # These portals pull third-party subresources (fonts, analytics) that can
+        # stall for a minute on a flaky network, and waiting for the load event
+        # times the renderer out even though the page itself is ready and usable.
+        # Every flow here waits for the elements it needs anyway.
+        options.page_load_strategy = "eager"
         # Strip the automation fingerprint that makes bot-protected portals return
         # 403 Forbidden: drop the "controlled by automated software" switches and
         # the AutomationControlled blink feature (which sets navigator.webdriver).
@@ -114,6 +122,7 @@ class BaseScraper:
 
     def set_step(self, step: str) -> None:
         logger.info("[run %s] %s", self.run_id, step)
+        self.current_step = step
         run_manager.update_run(self.run_id, step=step)
 
     def wait_for_download(self, timeout: int = DOWNLOAD_TIMEOUT) -> Path:

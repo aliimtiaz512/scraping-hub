@@ -9,6 +9,8 @@ const STEP_LABELS: Record<string, string> = {
   opening_advertisements: "Opening Advertisements",
   opening_advanced_search: "Opening Advanced Search",
   entering_commodity_codes: "Entering commodity codes",
+  selecting_ad_status: "Selecting ad status",
+  selecting_ad_type: "Selecting ad type",
   searching: "Running search",
   collecting_bids: "Collecting bid list",
   exporting_excel: "Exporting Excel",
@@ -28,10 +30,17 @@ function stepLabel(step: string): string {
   if (step.startsWith("downloading_documents:")) return `Downloading documents for bid ${step.split(":")[1]}`;
   if (step.startsWith("opening_opportunity:")) return `Opening opportunity ${step.split(":")[1]}`;
   if (step.startsWith("downloading_zip:")) return `Downloading documents (${step.split(":")[1]})`;
+  // The keyword itself can contain no colon, so everything after the first is it.
+  if (step.startsWith("entering_keyword:")) return `Searching title for “${step.slice("entering_keyword:".length)}”`;
   return STEP_LABELS[step] ?? step;
 }
 
 function runSubtitle(run: RunStatusData): string {
+  // A keyword run works through one keyword at a time — show which.
+  if (run.category_label && run.mode === "keywords" && run.keyword) {
+    const progress = run.keyword_progress ? ` ${run.keyword_progress}` : "";
+    return `${run.category_label} · “${run.keyword}”${progress}`;
+  }
   if (run.category_label) return run.category_label;
   if (run.scraper === "bidnet") return run.keyword ? `“${run.keyword}”` : "BidNet Direct";
   if (run.scraper === "ridemetro") return "RideMetro";

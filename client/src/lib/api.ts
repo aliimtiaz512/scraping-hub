@@ -4,19 +4,22 @@ export type Portal = "myflorida" | "ridemetro" | "bidnet" | "wisconsin";
 
 export interface CommodityCode {
   code: string;
-  priority: "high" | "medium" | "related";
   title: string;
 }
+
+// A run searches either the niche's commodity codes or its keywords, never both.
+export type SearchMode = "codes" | "keywords";
 
 export interface Category {
   key: string;
   label: string;
   codes: CommodityCode[];
+  keywords: string[];
 }
 
 export interface CategoriesResponse {
   categories: Category[];
-  priority_levels: string[];
+  search_modes: SearchMode[];
 }
 
 export type KeywordTier = "tier1" | "tier2";
@@ -72,16 +75,19 @@ export interface RunStatus {
   // MyFlorida-only
   category?: string;
   category_label?: string;
-  priority?: string;
+  mode?: SearchMode;
   ad_statuses?: string[];
+  ad_types?: string[];
   codes?: string[];
   excel_exported?: boolean;
   // RideMetro-only
   label?: string;
   excel_path?: string | null;
-  // BidNet-only
+  // BidNet, and MyFlorida keyword runs: the keyword being searched right now.
   keyword?: string;
   keywords?: string[];
+  // MyFlorida keyword runs only, e.g. "3/11".
+  keyword_progress?: string;
   // Wisconsin-only
   search?: string;
   agency?: string;
@@ -117,14 +123,52 @@ export function getCategories(): Promise<CategoriesResponse> {
 
 export type AdStatus = "preview" | "open" | "closed" | "withdrawn";
 
-export function startMyFloridaScrape(
-  category: string,
-  priority: string,
-  adStatuses: AdStatus[] = [],
-): Promise<{ run_id: string; codes: string[]; folder: string }> {
+export type AdType =
+  | "agency_decision"
+  | "grant_opportunities"
+  | "informational_notice"
+  | "invitation_to_bid"
+  | "invitation_to_negotiate"
+  | "request_for_proposals"
+  | "public_meeting_notice"
+  | "request_for_information"
+  | "request_for_statement_of_qualifications"
+  | "single_source";
+
+export interface StartMyFloridaScrapeOptions {
+  category: string;
+  mode: SearchMode;
+  // Subsets of the niche's catalog; the UI sends what is still checked.
+  codes?: string[];
+  keywords?: string[];
+  adStatuses?: AdStatus[];
+  adTypes?: AdType[];
+}
+
+export function startMyFloridaScrape({
+  category,
+  mode,
+  codes = [],
+  keywords = [],
+  adStatuses = [],
+  adTypes = [],
+}: StartMyFloridaScrapeOptions): Promise<{
+  run_id: string;
+  mode: SearchMode;
+  codes: string[];
+  keywords: string[];
+  folder: string;
+}> {
   return request("/myflorida/scrape", {
     method: "POST",
-    body: JSON.stringify({ category, priority, ad_statuses: adStatuses }),
+    body: JSON.stringify({
+      category,
+      mode,
+      codes,
+      keywords,
+      ad_statuses: adStatuses,
+      ad_types: adTypes,
+    }),
   });
 }
 

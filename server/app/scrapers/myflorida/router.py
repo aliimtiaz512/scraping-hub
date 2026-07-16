@@ -8,47 +8,91 @@ from sqlalchemy.orm import Session
 
 from app.core import run_manager
 from app.db import get_session
-from app.scrapers.myflorida.commodity_codes import CATEGORIES, PRIORITY_LEVELS, get_codes
+from app.scrapers.myflorida.commodity_codes import CATEGORIES, get_codes, get_keywords
 from app.scrapers.myflorida.models import Bid
-from app.scrapers.myflorida.scraper import execute_run
+from app.scrapers.myflorida.scraper import AD_TYPE_LABELS, execute_run
 
 router = APIRouter(prefix="/myflorida", tags=["myflorida"])
 
 
 AD_STATUS_OPTIONS = {"preview", "open", "closed", "withdrawn"}
+AD_TYPE_OPTIONS = set(AD_TYPE_LABELS)
+SEARCH_MODES = {"codes", "keywords"}
 
 
 class ScrapeRequest(BaseModel):
     category: str
-    priority: str = "high"  # high | high_medium | all
+    # Which search path the run takes: the niche's commodity codes, or its
+    # keywords (searched one at a time). Exactly one per run.
+    mode: str = "codes"
+    # Subsets of the niche's catalog; empty means "everything in the niche".
+    codes: list[str] = []
+    keywords: list[str] = []
     # Any of preview | open | closed | withdrawn; empty = no filter (every status).
     ad_statuses: list[str] = []
+    # Any key from AD_TYPE_LABELS; empty = no filter (every ad type).
+    ad_types: list[str] = []
 
 
 @router.get("/categories")
 def categories() -> dict:
     return {
         "categories": [
-            {"key": key, "label": value["label"], "codes": value["codes"]}
+            {
+                "key": key,
+                "label": value["label"],
+                "codes": value["codes"],
+                "keywords": value["keywords"],
+            }
             for key, value in CATEGORIES.items()
         ],
-        "priority_levels": list(PRIORITY_LEVELS.keys()),
+        "search_modes": sorted(SEARCH_MODES),
     }
+
+
+def _resolve_subset(requested: list[str], available: list[str], name: str) -> list[str]:
+    """De-duplicate a requested subset and check it against the niche's catalog.
+
+    An empty request means the whole catalog — the UI starts with everything
+    selected, so this is also what a client that omits the field gets.
+    """
+    subset = list(dict.fromkeys(requested))
+    if not subset:
+        return list(available)
+    unknown = [item for item in subset if item not in available]
+    if unknown:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{name} not in this category: {', '.join(unknown)}",
+        )
+    return subset
 
 
 @router.post("/scrape")
 def start_scrape(request: ScrapeRequest, background_tasks: BackgroundTasks) -> dict:
     if request.category not in CATEGORIES:
         raise HTTPException(status_code=400, detail=f"Unknown category: {request.category}")
-    if request.priority not in PRIORITY_LEVELS:
-        raise HTTPException(status_code=400, detail=f"Unknown priority level: {request.priority}")
+    if request.mode not in SEARCH_MODES:
+        raise HTTPException(status_code=400, detail=f"Unknown search mode: {request.mode}")
     # De-duplicate while preserving order; an empty list means "no status filter".
     ad_statuses = list(dict.fromkeys(request.ad_statuses))
     unknown = [s for s in ad_statuses if s not in AD_STATUS_OPTIONS]
     if unknown:
         raise HTTPException(status_code=400, detail=f"Unknown ad status: {', '.join(unknown)}")
+    ad_types = list(dict.fromkeys(request.ad_types))
+    unknown_types = [t for t in ad_types if t not in AD_TYPE_OPTIONS]
+    if unknown_types:
+        raise HTTPException(status_code=400, detail=f"Unknown ad type: {', '.join(unknown_types)}")
 
-    codes = get_codes(request.category, request.priority)
+    # Only the chosen mode's list is resolved; the other stays empty so the run
+    # record shows exactly what was searched.
+    codes: list[str] = []
+    keywords: list[str] = []
+    if request.mode == "codes":
+        codes = _resolve_subset(request.codes, get_codes(request.category), "commodity code")
+    else:
+        keywords = _resolve_subset(request.keywords, get_keywords(request.category), "keyword")
+
     folder = run_manager.make_run_folder(f"run_{datetime.now():%Y-%m-%d_%H-%M-%S}")
     run = run_manager.create_run(
         "myflorida",
@@ -56,14 +100,22 @@ def start_scrape(request: ScrapeRequest, background_tasks: BackgroundTasks) -> d
         {
             "category": request.category,
             "category_label": CATEGORIES[request.category]["label"],
-            "priority": request.priority,
+            "mode": request.mode,
             "ad_statuses": ad_statuses,
+            "ad_types": ad_types,
             "codes": codes,
+            "keywords": keywords,
             "excel_exported": False,
         },
     )
-    background_tasks.add_task(execute_run, run["run_id"], codes, ad_statuses)
-    return {"run_id": run["run_id"], "codes": codes, "folder": run["folder"]}
+    background_tasks.add_task(execute_run, run["run_id"], codes, ad_statuses, ad_types, keywords)
+    return {
+        "run_id": run["run_id"],
+        "mode": request.mode,
+        "codes": codes,
+        "keywords": keywords,
+        "folder": run["folder"],
+    }
 
 
 @router.get("/scrape/status/{run_id}")
