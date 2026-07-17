@@ -105,6 +105,11 @@ export function runTarget(run: RunStatus): string {
     if (!search || search === "all current solicitations") return "All current solicitations";
     return search;
   }
+  if (run.scraper === "northdakota") {
+    const search = run.search?.trim();
+    if (!search || search === "all public solicitations") return "All public solicitations";
+    return search;
+  }
   if (run.scraper === "ridemetro") return "All open opportunities";
 
   if (run.keywords?.length) return run.keywords.join(", ");

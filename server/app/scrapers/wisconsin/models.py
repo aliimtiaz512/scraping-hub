@@ -3,6 +3,7 @@
 from datetime import datetime
 
 from sqlalchemy import BigInteger, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -45,6 +46,10 @@ class WisconsinBid(Base):
     agency: Mapped[str | None] = mapped_column(Text)
     event_status: Mapped[str | None] = mapped_column(String(128))
     due_datetime: Mapped[str | None] = mapped_column(String(64))
+
+    # Complete original scraped record: {field -> value}. Preserved so nothing is
+    # lost even when the portal's fields differ from what we mapped.
+    raw_data: Mapped[dict] = mapped_column(JSONB, default=dict)
 
     run: Mapped["WisconsinRun"] = relationship(back_populates="bids")
 

@@ -19,7 +19,7 @@ export interface PortalMeta {
   description: string;
   /** What the run produces, listed as capability pills in the hero. */
   outputs: string[];
-  icon: "florida" | "transit" | "network" | "capitol";
+  icon: "florida" | "transit" | "network" | "capitol" | "prairie";
   accent: {
     /** Icon tile: background + foreground. */
     tile: string;
@@ -99,6 +99,23 @@ export const PORTALS: PortalMeta[] = [
       dot: "bg-amber-500",
       rail: "bg-amber-500",
       wash: "from-amber-50",
+    },
+  },
+  {
+    key: "northdakota",
+    label: "North Dakota",
+    operator: "State of North Dakota (ND Buys)",
+    host: "public.ndbuys.nd.gov",
+    tagline: "Public solicitation requests",
+    description:
+      "Sign in to ND Buys, open Public Solicitation Requests, and search by keyword (or commodity) — then capture every matching solicitation across the results grid to the database and an Excel sheet.",
+    outputs: ["Keyword & commodity search", "Full solicitation grid", "Excel export"],
+    icon: "prairie",
+    accent: {
+      tile: "bg-rose-50 text-rose-600 ring-rose-100",
+      dot: "bg-rose-500",
+      rail: "bg-rose-500",
+      wash: "from-rose-50",
     },
   },
 ];

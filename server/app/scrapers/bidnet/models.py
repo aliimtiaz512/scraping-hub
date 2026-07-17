@@ -8,6 +8,7 @@ don't clobber each other.
 from datetime import datetime
 
 from sqlalchemy import BigInteger, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -54,6 +55,10 @@ class BidnetBid(Base):
     closing_date: Mapped[str | None] = mapped_column(String(64))
     documents_count: Mapped[str | None] = mapped_column(String(32))
     matched_keyword: Mapped[str | None] = mapped_column(Text)
+
+    # Complete original scraped record: {field -> value}. Preserved so nothing is
+    # lost even when the portal's fields differ from what we mapped.
+    raw_data: Mapped[dict] = mapped_column(JSONB, default=dict)
 
     run: Mapped["BidnetRun"] = relationship(back_populates="bids")
 

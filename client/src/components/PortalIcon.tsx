@@ -58,5 +58,15 @@ export default function PortalIcon({ name, className = "h-5 w-5" }: { name: Port
           <path d="M4 20.5h16M3.5 17.5h17" />
         </svg>
       );
+    case "prairie":
+      // Wheat and horizon: North Dakota's northern plains.
+      return (
+        <svg {...common}>
+          <path d="M12 4v13" />
+          <path d="M12 7.5c-1.4-.3-2.6-1.1-3-2.6 1.5 0 2.7.6 3 2.6ZM12 7.5c1.4-.3 2.6-1.1 3-2.6-1.5 0-2.7.6-3 2.6Z" />
+          <path d="M12 11c-1.4-.3-2.6-1.1-3-2.6 1.5 0 2.7.6 3 2.6ZM12 11c1.4-.3 2.6-1.1 3-2.6-1.5 0-2.7.6-3 2.6Z" />
+          <path d="M4 20.5h16" />
+        </svg>
+      );
   }
 }

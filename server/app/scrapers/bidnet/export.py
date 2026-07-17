@@ -38,9 +38,19 @@ def _parse_dt(value: Any) -> datetime | None:
         return None
 
 
-def save_run(run: dict[str, Any]) -> None:
-    """Upsert the run-level row in bidnet_runs."""
-    values = {
+def _jsonable(value: Any) -> Any:
+    """Return a JSON-serializable copy of `value` for a JSONB column."""
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, dict):
+        return {str(k): _jsonable(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(v) for v in value]
+    return str(value)
+
+
+def _run_values(run: dict[str, Any]) -> dict[str, Any]:
+    return {
         "run_id": run["run_id"],
         "status": run.get("status"),
         "started_at": _parse_dt(run.get("started_at")),
@@ -51,14 +61,24 @@ def save_run(run: dict[str, Any]) -> None:
         "folder": run.get("folder"),
         "excel_path": run.get("excel_path"),
     }
+
+
+def _upsert_run(session, run: dict[str, Any]) -> None:
+    """Upsert the run-level row within the given session (no commit)."""
+    values = _run_values(run)
+    stmt = pg_insert(BidnetRun).values(**values)
+    stmt = stmt.on_conflict_do_update(
+        index_elements=[BidnetRun.run_id],
+        set_={k: v for k, v in values.items() if k != "run_id"},
+    )
+    session.execute(stmt)
+
+
+def save_run(run: dict[str, Any]) -> None:
+    """Upsert the run-level row in bidnet_runs (its own transaction)."""
     session = SessionLocal()
     try:
-        stmt = pg_insert(BidnetRun).values(**values)
-        stmt = stmt.on_conflict_do_update(
-            index_elements=[BidnetRun.run_id],
-            set_={k: v for k, v in values.items() if k != "run_id"},
-        )
-        session.execute(stmt)
+        _upsert_run(session, run)
         session.commit()
     except Exception:
         session.rollback()
@@ -67,22 +87,44 @@ def save_run(run: dict[str, Any]) -> None:
         session.close()
 
 
-def save_bid(run_id: str, record: dict[str, Any]) -> None:
-    """Upsert one solicitation into bidnet_bids (keyed by run_id + reference_number)."""
-    values: dict[str, Any] = {k: (record.get(k) or None) for k in _BID_FIELDS}
-    values["run_id"] = run_id
+def save_bids(run: dict[str, Any], records: list[dict[str, Any]]) -> int:
+    """Upsert a run's solicitations into bidnet_bids in one transaction.
+
+    Mirrors MyFlorida's ingest: a single session upserts the run row and every
+    bid, de-duplicated by reference number within the run, with the complete
+    scraped record kept in `raw_data`, and one commit at the end. Rolls back and
+    re-raises on any error so the caller can fall back to an Excel-from-records.
+    Returns the number of rows stored.
+    """
     session = SessionLocal()
     try:
-        if values.get("reference_number"):
-            stmt = pg_insert(BidnetBid).values(**values)
-            stmt = stmt.on_conflict_do_update(
-                constraint="uq_bidnet_run_ref",
-                set_={k: v for k, v in values.items() if k not in ("run_id", "reference_number")},
-            )
-            session.execute(stmt)
-        else:
-            session.add(BidnetBid(**values))
+        _upsert_run(session, run)
+
+        stored = 0
+        seen_refs: set[str] = set()
+        for record in records:
+            values: dict[str, Any] = {k: (record.get(k) or None) for k in _BID_FIELDS}
+            values["run_id"] = run["run_id"]
+            values["raw_data"] = _jsonable({k: v for k, v in record.items() if k != "documents"})
+
+            ref = values.get("reference_number")
+            if ref and ref in seen_refs:
+                continue
+            if ref:
+                seen_refs.add(ref)
+                stmt = pg_insert(BidnetBid).values(**values)
+                stmt = stmt.on_conflict_do_update(
+                    constraint="uq_bidnet_run_ref",
+                    set_={k: v for k, v in values.items() if k not in ("run_id", "reference_number")},
+                )
+                session.execute(stmt)
+            else:
+                session.add(BidnetBid(**values))
+            stored += 1
+
         session.commit()
+        logger.info("[run %s] stored %d bid rows in DB", run.get("run_id"), stored)
+        return stored
     except Exception:
         session.rollback()
         raise
@@ -133,7 +175,7 @@ def generate_excel_from_records(records: list[dict[str, Any]], out_path: str | P
 
     Used as a fallback when the DB is unavailable, so a run always produces its
     Excel even though nothing could be persisted. Mirrors generate_excel: only
-    records that carry a reference number are written (same as what save_bid stores).
+    records that carry a reference number are written (same as what save_bids stores).
     """
     workbook = Workbook()
     sheet = workbook.active
