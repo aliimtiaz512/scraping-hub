@@ -1,0 +1,62 @@
+import type { PortalMeta } from "@/lib/portals";
+
+/**
+ * Line-art glyph per data source. Each one hints at the issuing body — a coast,
+ * a transit line, a network, a capitol — so sources stay distinguishable at a
+ * glance in the sidebar.
+ */
+export default function PortalIcon({ name, className = "h-5 w-5" }: { name: PortalMeta["icon"]; className?: string }) {
+  const common = {
+    viewBox: "0 0 24 24",
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: 1.6,
+    strokeLinecap: "round" as const,
+    strokeLinejoin: "round" as const,
+    className,
+    "aria-hidden": true,
+  };
+
+  switch (name) {
+    case "florida":
+      // Sun over water: the state's coastal procurement marketplace.
+      return (
+        <svg {...common}>
+          <circle cx="12" cy="8" r="3.25" />
+          <path d="M12 2.5v1M12 12.5v1M17.5 8h1M5.5 8h1M15.9 4.1l.7-.7M7.4 12.6l.7-.7M15.9 11.9l.7.7M7.4 3.4l.7.7" />
+          <path d="M3 17.5c1.8 0 1.8 1.5 3.6 1.5s1.8-1.5 3.6-1.5 1.8 1.5 3.6 1.5 1.8-1.5 3.6-1.5 1.8 1.5 3.6 1.5" />
+        </svg>
+      );
+    case "transit":
+      // Transit car on a line.
+      return (
+        <svg {...common}>
+          <rect x="5" y="3.5" width="14" height="13" rx="3" />
+          <path d="M5 11h14M9 3.5v13M15 3.5v13" />
+          <circle cx="8.5" cy="13.75" r=".85" fill="currentColor" stroke="none" />
+          <circle cx="15.5" cy="13.75" r=".85" fill="currentColor" stroke="none" />
+          <path d="M8 20.5l-1.5 2M16 20.5l1.5 2M4 20.5h16" />
+        </svg>
+      );
+    case "network":
+      // Hub and spokes: a multi-agency purchasing network.
+      return (
+        <svg {...common}>
+          <circle cx="12" cy="12" r="2.5" />
+          <circle cx="12" cy="4" r="1.75" />
+          <circle cx="19" cy="16" r="1.75" />
+          <circle cx="5" cy="16" r="1.75" />
+          <path d="M12 9.5v-3.6M14.2 13.4l3.2 1.8M9.8 13.4l-3.2 1.8" />
+        </svg>
+      );
+    case "capitol":
+      // Government building: the state supplier system.
+      return (
+        <svg {...common}>
+          <path d="M12 2.5l8 4.5H4l8-4.5Z" />
+          <path d="M6.5 10v7M10 10v7M14 10v7M17.5 10v7" />
+          <path d="M4 20.5h16M3.5 17.5h17" />
+        </svg>
+      );
+  }
+}

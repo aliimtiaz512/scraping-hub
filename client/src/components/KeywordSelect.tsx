@@ -3,7 +3,7 @@
 import { useState } from "react";
 
 import type { KeywordGroup } from "@/lib/api";
-import { SectionLabel } from "@/components/ui";
+import { Card, MiniButton } from "@/components/ui";
 
 interface Props {
   groups: KeywordGroup[];
@@ -39,61 +39,65 @@ export default function KeywordSelect({ groups, selected, disabled, onChange }: 
 
   return (
     <div className="space-y-5">
-      {groups.map((group) => (
-        <div key={group.key}>
-          <div className="mb-2 flex items-center justify-between gap-3">
-            <SectionLabel>{group.label}</SectionLabel>
-            <div className="flex gap-1.5 text-[10px]">
-              <button
-                type="button"
-                disabled={disabled}
-                onClick={() => addAllTier1(group)}
-                className="rounded-full border border-white/10 px-2 py-0.5 text-slate-400 transition hover:border-emerald-400/40 hover:text-emerald-200 disabled:opacity-50"
-              >
-                + all Tier 1
-              </button>
-              <button
-                type="button"
-                disabled={disabled}
-                onClick={() => clearGroup(group)}
-                className="rounded-full border border-white/10 px-2 py-0.5 text-slate-400 transition hover:border-white/20 hover:text-slate-200 disabled:opacity-50"
-              >
-                clear
-              </button>
+      {groups.map((group) => {
+        const chosen = group.keywords.filter((k) => selectedSet.has(k.term)).length;
+        return (
+          <Card
+            key={group.key}
+            title={group.label}
+            description="Tier 1 terms are the highest-yield searches for this group."
+            actions={
+              <>
+                <span className="tabular mr-1 text-xs text-ink-500">{chosen} selected</span>
+                <MiniButton disabled={disabled} onClick={() => addAllTier1(group)}>
+                  Add Tier 1
+                </MiniButton>
+                <MiniButton disabled={disabled} onClick={() => clearGroup(group)}>
+                  Clear
+                </MiniButton>
+              </>
+            }
+          >
+            <div className="flex flex-wrap gap-2">
+              {group.keywords.map((kw) => {
+                const isActive = selectedSet.has(kw.term);
+                const isTier1 = kw.tier === "tier1";
+                return (
+                  <button
+                    key={kw.term}
+                    type="button"
+                    title={kw.notes}
+                    disabled={disabled}
+                    onClick={() => toggle(kw.term)}
+                    aria-pressed={isActive}
+                    className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs transition disabled:cursor-not-allowed disabled:opacity-50 ${
+                      isActive
+                        ? "border-gold-200 bg-gold-50 font-medium text-gold-700 hover:bg-gold-100"
+                        : isTier1
+                          ? "border-ink-300 bg-white font-medium text-ink-800 hover:border-ink-400 hover:bg-ink-50"
+                          : "border-ink-200 bg-white text-ink-600 hover:border-ink-300 hover:bg-ink-50 hover:text-ink-900"
+                    }`}
+                  >
+                    {kw.term}
+                    {isTier1 && (
+                      <span
+                        className={`rounded px-1 py-px text-[10px] font-semibold leading-none ${
+                          isActive ? "bg-gold-200/70 text-gold-700" : "bg-ink-100 text-ink-500"
+                        }`}
+                      >
+                        T1
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
             </div>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            {group.keywords.map((kw) => {
-              const isActive = selectedSet.has(kw.term);
-              const isTier1 = kw.tier === "tier1";
-              return (
-                <button
-                  key={kw.term}
-                  type="button"
-                  title={kw.notes}
-                  disabled={disabled}
-                  onClick={() => toggle(kw.term)}
-                  className={`rounded-full border px-3 py-1 text-xs transition disabled:opacity-50 ${
-                    isActive
-                      ? "border-emerald-400/40 bg-emerald-400/15 text-emerald-200"
-                      : isTier1
-                        ? "border-white/15 bg-white/[0.04] text-slate-200 hover:border-white/25"
-                        : "border-white/10 bg-white/[0.02] text-slate-400 hover:border-white/20 hover:text-slate-200"
-                  }`}
-                >
-                  {kw.term}
-                  {isTier1 && !isActive && <span className="ml-1.5 text-[9px] text-emerald-500/70">T1</span>}
-                </button>
-              );
-            })}
-          </div>
-        </div>
-      ))}
+          </Card>
+        );
+      })}
 
-      <div>
-        <SectionLabel>Add custom keyword</SectionLabel>
-        <div className="flex items-center gap-2 rounded-xl border border-white/10 bg-slate-950/50 px-3 py-2 transition focus-within:border-emerald-400/40 focus-within:ring-1 focus-within:ring-emerald-400/30">
-          <span className="font-mono text-sm text-emerald-500">+</span>
+      <Card title="Custom keyword" description="Search a term that isn't in the catalog above.">
+        <div className="flex gap-2">
           <input
             type="text"
             value={custom}
@@ -104,37 +108,65 @@ export default function KeywordSelect({ groups, selected, disabled, onChange }: 
                 addCustom();
               }
             }}
-            placeholder="Type a keyword and press Enter"
+            placeholder="e.g. fleet maintenance services"
             disabled={disabled}
-            className="w-full bg-transparent text-sm text-slate-100 outline-none placeholder:text-slate-600 disabled:opacity-50"
+            className="w-full rounded-lg border border-ink-200 bg-white px-3 py-2 text-sm text-ink-900 shadow-sm transition placeholder:text-ink-400 focus:border-gold-400 focus:outline-none focus:ring-2 focus:ring-gold-400/20 disabled:cursor-not-allowed disabled:bg-ink-50"
           />
+          <button
+            type="button"
+            onClick={addCustom}
+            disabled={disabled || custom.trim() === ""}
+            className="shrink-0 rounded-lg border border-ink-200 bg-white px-3.5 py-2 text-sm font-medium text-ink-700 shadow-sm transition hover:bg-ink-50 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Add
+          </button>
         </div>
-        <p className="mt-1.5 text-[11px] text-slate-500">Each keyword is searched separately for the best results.</p>
-      </div>
+        <p className="mt-2 text-xs text-ink-500">Each keyword is searched separately for the best results.</p>
+      </Card>
 
-      <div>
-        <SectionLabel>
-          Selected keywords ({selected.length})
-          {selected.length === 0 && <span className="ml-1 normal-case tracking-normal text-slate-600">— none yet</span>}
-        </SectionLabel>
-        {selected.length > 0 && (
-          <div className="flex max-h-40 flex-wrap gap-1.5 overflow-y-auto rounded-xl border border-white/10 bg-slate-950/40 p-3">
+      <Card
+        title="Selected keywords"
+        description={
+          selected.length === 0
+            ? "Nothing selected yet — pick at least one keyword to run a search."
+            : `${selected.length} ${selected.length === 1 ? "search" : "searches"} will run, one per keyword.`
+        }
+        actions={
+          selected.length > 0 ? (
+            <MiniButton disabled={disabled} onClick={() => onChange([])}>
+              Clear all
+            </MiniButton>
+          ) : undefined
+        }
+      >
+        {selected.length === 0 ? (
+          <div className="rounded-lg border border-dashed border-ink-200 bg-ink-50/60 px-4 py-6 text-center">
+            <p className="text-sm text-ink-500">Selected keywords will appear here.</p>
+          </div>
+        ) : (
+          <div className="flex max-h-44 flex-wrap gap-2 overflow-y-auto">
             {selected.map((term) => (
-              <button
+              <span
                 key={term}
-                type="button"
-                disabled={disabled}
-                onClick={() => remove(term)}
-                title="Remove"
-                className="group flex items-center gap-1 rounded-md border border-emerald-400/30 bg-emerald-400/10 px-2 py-0.5 text-[11px] text-emerald-200 transition hover:border-red-400/40 hover:bg-red-400/10 hover:text-red-200 disabled:opacity-50"
+                className="group inline-flex items-center gap-1.5 rounded-full border border-gold-200 bg-gold-50 py-1 pl-3 pr-1.5 text-xs font-medium text-gold-700"
               >
                 {term}
-                <span className="text-emerald-500/60 group-hover:text-red-300">×</span>
-              </button>
+                <button
+                  type="button"
+                  disabled={disabled}
+                  onClick={() => remove(term)}
+                  aria-label={`Remove ${term}`}
+                  className="flex h-4 w-4 items-center justify-center rounded-full text-gold-500 transition hover:bg-gold-200 hover:text-gold-700 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <svg viewBox="0 0 10 10" className="h-2.5 w-2.5" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden>
+                    <path d="M1.5 1.5l7 7M8.5 1.5l-7 7" strokeLinecap="round" />
+                  </svg>
+                </button>
+              </span>
             ))}
           </div>
         )}
-      </div>
+      </Card>
     </div>
   );
 }

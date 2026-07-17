@@ -1,97 +1,159 @@
 @import "tailwindcss";
 
+/**
+ * Editorial palette: a warm paper canvas, deep navy ink, and gold reserved for
+ * accents. Navy carries every primary action; gold is punctuation — rules,
+ * marks, active states — never large fills, which is what makes it read as
+ * premium rather than gaudy.
+ */
+@theme {
+  --color-ink-950: #061224;
+  --color-ink-900: #0b1f3a;
+  --color-ink-800: #14304f;
+  --color-ink-700: #1f4269;
+  --color-ink-600: #325a83;
+  --color-ink-500: #55779b;
+  --color-ink-400: #8399b3;
+  --color-ink-300: #b3c2d2;
+  --color-ink-200: #d6dfe8;
+  --color-ink-100: #e9eff4;
+  --color-ink-50: #f4f7fa;
+
+  --color-gold-700: #7d5620;
+  --color-gold-600: #99692a;
+  --color-gold-500: #b9873c;
+  --color-gold-400: #d2a55c;
+  --color-gold-300: #e4c48e;
+  --color-gold-200: #f0dcbb;
+  --color-gold-100: #f7edda;
+  --color-gold-50: #fcf8f0;
+
+  /* Warm neutrals — a paper canvas rather than a cool grey one. */
+  --color-paper: #faf9f6;
+  --color-paper-dim: #f3f1ec;
+}
+
 @theme inline {
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
+  --font-display: var(--font-display-serif);
 }
 
 html {
-  color-scheme: dark;
+  color-scheme: light;
   height: 100%;
 }
 
 body {
   min-height: 100%;
-  color: #e2e8f0;
+  color: var(--color-ink-900);
   font-family: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
-  background-color: #04060d;
-  background-image:
-    radial-gradient(55rem 40rem at 50% -18%, rgba(16, 185, 129, 0.16), transparent 60%),
-    radial-gradient(45rem 40rem at 88% 6%, rgba(34, 211, 238, 0.1), transparent 55%),
-    radial-gradient(40rem 40rem at 8% 30%, rgba(99, 102, 241, 0.08), transparent 55%);
-  background-attachment: fixed;
+  background-color: var(--color-paper);
 }
 
-/* Faint blueprint grid, faded toward the edges. */
-body::before {
-  content: "";
-  position: fixed;
-  inset: 0;
-  z-index: 0;
-  pointer-events: none;
-  background-image:
-    linear-gradient(rgba(148, 163, 184, 0.05) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(148, 163, 184, 0.05) 1px, transparent 1px);
-  background-size: 46px 46px;
-  -webkit-mask-image: radial-gradient(120% 90% at 50% 0%, #000 30%, transparent 78%);
-  mask-image: radial-gradient(120% 90% at 50% 0%, #000 30%, transparent 78%);
+/* Display type: tighter tracking and optical sizing for large editorial text. */
+.font-display {
+  font-family: var(--font-display-serif), ui-serif, Georgia, serif;
+  font-variation-settings: "opsz" 40;
+  letter-spacing: -0.015em;
+}
+
+/* Numbers that line up column-to-column. */
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Small caps-ish eyebrow used above section headings. */
+.eyebrow {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
 }
 
 * {
   scrollbar-width: thin;
-  scrollbar-color: rgba(148, 163, 184, 0.2) transparent;
+  scrollbar-color: var(--color-ink-300) transparent;
 }
 *::-webkit-scrollbar {
   width: 8px;
   height: 8px;
 }
 *::-webkit-scrollbar-thumb {
-  background: rgba(148, 163, 184, 0.18);
+  background: var(--color-ink-300);
   border-radius: 9999px;
 }
 *::-webkit-scrollbar-thumb:hover {
-  background: rgba(148, 163, 184, 0.32);
+  background: var(--color-ink-400);
 }
 
-/* Blinking caret used in the "current step" terminal line. */
-@keyframes caret-blink {
+::selection {
+  background: var(--color-gold-200);
+  color: var(--color-ink-900);
+}
+
+/* Nav strips scroll on narrow screens; the bar itself would be visual noise. */
+.no-scrollbar {
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+/* Indeterminate bar shown while a run is in flight. */
+@keyframes progress-slide {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(400%);
+  }
+}
+.progress-slide {
+  animation: progress-slide 1.6s ease-in-out infinite;
+}
+
+/* Soft pulse on the "live" dot of an active run. */
+@keyframes status-pulse {
   0%,
   100% {
     opacity: 1;
-  }
-  50% {
-    opacity: 0;
-  }
-}
-.caret-blink {
-  animation: caret-blink 1.1s step-end infinite;
-}
-
-/* Slow drift for the ambient glow behind the header mark. */
-@keyframes glow-pulse {
-  0%,
-  100% {
-    opacity: 0.55;
     transform: scale(1);
   }
   50% {
-    opacity: 0.9;
-    transform: scale(1.08);
+    opacity: 0.45;
+    transform: scale(0.88);
   }
 }
-.glow-pulse {
-  animation: glow-pulse 4.5s ease-in-out infinite;
+.status-pulse {
+  animation: status-pulse 1.8s ease-in-out infinite;
 }
 
-@keyframes sweep {
+/* Panels fade up as the user moves between views. */
+@keyframes rise-in {
   from {
-    transform: rotate(0deg);
+    opacity: 0;
+    transform: translateY(6px);
   }
   to {
-    transform: rotate(360deg);
+    opacity: 1;
+    transform: translateY(0);
   }
 }
-.animate-sweep {
-  animation: sweep 3.6s linear infinite;
-  transform-origin: center;
+.rise-in {
+  animation: rise-in 0.28s ease-out both;
+}
+
+/* Landing: staggered entrance. Delay is set inline per element. */
+.reveal {
+  animation: rise-in 0.6s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .progress-slide,
+  .status-pulse,
+  .rise-in,
+  .reveal {
+    animation: none;
+  }
 }

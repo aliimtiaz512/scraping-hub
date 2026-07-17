@@ -5,7 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import CategorySelect from "@/components/CategorySelect";
 import ResultsTable from "@/components/ResultsTable";
 import RunStatusPanel from "@/components/RunStatus";
-import { ErrorBanner, StartButton } from "@/components/ui";
+import { ErrorBanner, LaunchBar, StartButton } from "@/components/ui";
 import {
   getCategories,
   getRunStatus,
@@ -115,16 +115,24 @@ export default function MyFloridaPanel() {
         onAdTypeChange={setAdTypes}
       />
 
-      <StartButton
-        onClick={handleStart}
-        disabled={!selected || nothingSelected || starting || isRunning}
-        running={isRunning}
-        starting={starting}
+      <LaunchBar
+        summary={
+          nothingSelected
+            ? `Select at least one ${mode === "keywords" ? "keyword" : "commodity code"} to run a search.`
+            : mode === "keywords"
+              ? `${selectedKeywords.length} ${selectedKeywords.length === 1 ? "search" : "searches"} · one per keyword`
+              : `${selectedCodes.length} ${selectedCodes.length === 1 ? "code" : "codes"} in a single search`
+        }
       >
-        {mode === "keywords"
-          ? `Start keyword scrape (${selectedKeywords.length} ${selectedKeywords.length === 1 ? "search" : "searches"})`
-          : "Start commodity code scrape"}
-      </StartButton>
+        <StartButton
+          onClick={handleStart}
+          disabled={!selected || nothingSelected || starting || isRunning}
+          running={isRunning}
+          starting={starting}
+        >
+          Start scrape
+        </StartButton>
+      </LaunchBar>
 
       {run && <RunStatusPanel run={run} />}
       {run && <ResultsTable bids={run.bids} />}

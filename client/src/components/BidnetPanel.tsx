@@ -5,7 +5,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import BidnetResults from "@/components/BidnetResults";
 import KeywordSelect from "@/components/KeywordSelect";
 import RunStatusPanel from "@/components/RunStatus";
-import { ErrorBanner, StartButton } from "@/components/ui";
+import { ErrorBanner, LaunchBar, StartButton } from "@/components/ui";
 import { getBidnetKeywords, getRunStatus, startBidnetScrape, type KeywordGroup, type RunStatus } from "@/lib/api";
 
 const POLL_INTERVAL_MS = 3000;
@@ -65,23 +65,26 @@ export default function BidnetPanel() {
 
   return (
     <div className="space-y-6">
-      <p className="text-sm leading-relaxed text-slate-400">
-        Searches BidNet Direct for a keyword, filters to Member Agency Bids, downloads every
-        solicitation&apos;s documents, and saves an Excel of the results when the run completes.
-      </p>
-
       {error && <ErrorBanner message={error} />}
 
       <KeywordSelect groups={groups} selected={selected} disabled={isRunning} onChange={setSelected} />
 
-      <StartButton
-        onClick={handleStart}
-        disabled={selected.length === 0 || starting || isRunning}
-        running={isRunning}
-        starting={starting}
+      <LaunchBar
+        summary={
+          selected.length === 0
+            ? "Select at least one keyword to run a search."
+            : `${selected.length} ${selected.length === 1 ? "search" : "searches"} · one per keyword`
+        }
       >
-        Start scrape
-      </StartButton>
+        <StartButton
+          onClick={handleStart}
+          disabled={selected.length === 0 || starting || isRunning}
+          running={isRunning}
+          starting={starting}
+        >
+          Start scrape
+        </StartButton>
+      </LaunchBar>
 
       {run && <RunStatusPanel run={run} />}
       {run && <BidnetResults bids={run.bids} />}

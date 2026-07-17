@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import { Fraunces, Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -12,9 +12,19 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
+// Editorial display face, used for headings only — body stays sans.
+const displaySerif = Fraunces({
+  variable: "--font-display-serif",
+  subsets: ["latin"],
+});
+
 export const metadata: Metadata = {
-  title: "Scraping Hub — Bid Crawler Console",
-  description: "Run and monitor bid scrapers for public procurement portals from one console.",
+  title: {
+    default: "Scraping Hub — Bid Intelligence",
+    template: "%s · Scraping Hub",
+  },
+  description:
+    "Scraping Hub monitors public procurement portals, collects every matching solicitation and its documents, and exports them to a spreadsheet.",
 };
 
 export default function RootLayout({
@@ -25,9 +35,9 @@ export default function RootLayout({
   return (
     <html
       lang="en"
-      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+      className={`${geistSans.variable} ${geistMono.variable} ${displaySerif.variable} h-full antialiased`}
     >
-      <body className="min-h-full flex flex-col" suppressHydrationWarning>
+      <body className="flex min-h-full flex-col bg-paper text-ink-900" suppressHydrationWarning>
         {children}
       </body>
     </html>

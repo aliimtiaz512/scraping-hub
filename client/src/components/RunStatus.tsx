@@ -1,6 +1,7 @@
 "use client";
 
 import type { RunStatus as RunStatusData } from "@/lib/api";
+import { RunBadge } from "@/components/ui";
 
 const STEP_LABELS: Record<string, string> = {
   queued: "Queued",
@@ -49,94 +50,122 @@ function runSubtitle(run: RunStatusData): string {
   return "";
 }
 
-const STATUS_STYLE: Record<string, string> = {
-  pending: "border-slate-500/30 bg-slate-500/10 text-slate-300",
-  running: "border-sky-400/30 bg-sky-400/10 text-sky-300",
-  completed: "border-emerald-400/30 bg-emerald-400/10 text-emerald-300",
-  failed: "border-red-400/30 bg-red-400/10 text-red-300",
-};
-
 export default function RunStatus({ run }: { run: RunStatusData }) {
-  return (
-    <div className="space-y-4 rounded-2xl border border-white/10 bg-slate-950/40 p-5 backdrop-blur-sm">
-      <div className="flex items-center justify-between gap-3">
-        <div className="flex items-center gap-2.5">
-          <span className={`rounded-full border px-2.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide ${STATUS_STYLE[run.status]}`}>
-            {run.status}
-          </span>
-          <span className="text-sm text-slate-400">{runSubtitle(run)}</span>
-        </div>
-        <span className="font-mono text-[11px] text-slate-600">run:{run.run_id}</span>
-      </div>
+  const inFlight = run.status === "running" || run.status === "pending";
+  const subtitle = runSubtitle(run);
 
-      {/* Terminal-style live step */}
-      {(run.status === "running" || run.status === "pending") && (
-        <div className="flex items-center gap-2 rounded-lg border border-white/5 bg-black/30 px-3 py-2 font-mono text-xs text-emerald-300">
-          <span className="text-emerald-500">$</span>
-          <span>{stepLabel(run.step)}</span>
-          <span className="caret-blink text-emerald-400">▋</span>
+  return (
+    <section className="overflow-hidden rounded-xl border border-ink-200 bg-white shadow-sm">
+      <header className="flex flex-wrap items-center justify-between gap-3 border-b border-ink-100 px-5 py-3.5">
+        <div className="flex min-w-0 items-center gap-2.5">
+          <h3 className="text-sm font-semibold text-ink-900">Run status</h3>
+          {subtitle && <span className="truncate text-sm text-ink-500">{subtitle}</span>}
+        </div>
+        <div className="flex items-center gap-2.5">
+          <span className="font-mono text-xs text-ink-400">{run.run_id}</span>
+          <RunBadge status={run.status} />
+        </div>
+      </header>
+
+      {/* Live step: the current action, with an indeterminate bar underneath.
+          The backend reports steps, not percentages, so no fake completion %. */}
+      {inFlight && (
+        <div className="border-b border-ink-100 bg-ink-50/70 px-5 py-3.5">
+          <div className="flex items-center gap-2.5">
+            <span className="h-3.5 w-3.5 shrink-0 animate-spin rounded-full border-2 border-gold-200 border-t-gold-600" />
+            <span className="text-sm font-medium text-ink-700">{stepLabel(run.step)}</span>
+          </div>
+          <div className="mt-2.5 h-1 overflow-hidden rounded-full bg-ink-200">
+            <div className="progress-slide h-full w-1/4 rounded-full bg-gold-500" />
+          </div>
         </div>
       )}
 
-      <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
+      <div className="grid grid-cols-2 divide-ink-100 sm:grid-cols-4 sm:divide-x">
         <Stat label="Bids found" value={run.bids_found} />
         <Stat label="Processed" value={run.bids_processed} />
-        <Stat label="Documents" value={run.documents_downloaded} accent />
-        <Stat label="Excel" value={run.excel_exported ? "saved" : "—"} />
+        <Stat label="Documents" value={run.documents_downloaded} />
+        <Stat label="Excel export" value={run.excel_exported ? "Saved" : "—"} muted={!run.excel_exported} />
       </div>
 
-      {run.errors.length > 0 && (
-        <div className="rounded-lg border border-red-500/20 bg-red-500/[0.06] p-3">
-          <p className="mb-1 font-mono text-[11px] font-semibold uppercase tracking-wide text-red-400">
-            errors ({run.errors.length})
-          </p>
-          <ul className="max-h-24 space-y-0.5 overflow-y-auto text-xs text-red-300/90">
-            {run.errors.map((error, i) => (
-              <li key={i} className="font-mono">
-                {error}
-              </li>
-            ))}
-          </ul>
+      {(run.errors.length > 0 || run.no_results || (run.warnings?.length ?? 0) > 0 || run.status === "completed") && (
+        <div className="space-y-3 border-t border-ink-100 p-5">
+          {run.errors.length > 0 && (
+            <Notice tone="red" title={`${run.errors.length} ${run.errors.length === 1 ? "error" : "errors"}`}>
+              <ul className="max-h-28 space-y-1 overflow-y-auto">
+                {run.errors.map((error, i) => (
+                  <li key={i} className="font-mono text-xs leading-relaxed">
+                    {error}
+                  </li>
+                ))}
+              </ul>
+            </Notice>
+          )}
+
+          {run.no_results && (
+            <Notice tone="amber" title="No matching ads">
+              The search completed successfully — this niche currently has no ads matching your filters.
+            </Notice>
+          )}
+
+          {run.warnings && run.warnings.length > 0 && (
+            <Notice tone="amber" title={`No results for ${run.warnings.length} ${run.warnings.length === 1 ? "search" : "searches"}`}>
+              <ul className="max-h-28 space-y-1 overflow-y-auto">
+                {run.warnings.map((warning, i) => (
+                  <li key={i} className="font-mono text-xs leading-relaxed">
+                    {warning}
+                  </li>
+                ))}
+              </ul>
+            </Notice>
+          )}
+
+          {run.status === "completed" && (
+            <div className="flex items-center gap-2 rounded-lg border border-ink-200 bg-ink-50 px-3 py-2.5">
+              <svg viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4 shrink-0 text-ink-400" aria-hidden>
+                <path d="M3.5 5.5A2 2 0 0 1 5.5 3.5h2.4c.5 0 1 .2 1.4.6l.8.8h4.4a2 2 0 0 1 2 2v7.6a2 2 0 0 1-2 2h-9a2 2 0 0 1-2-2v-9Z" />
+              </svg>
+              <div className="min-w-0">
+                <p className="text-xs font-medium text-ink-600">Output saved to</p>
+                <p className="truncate font-mono text-xs text-ink-500" title={run.folder}>
+                  {run.folder}
+                </p>
+              </div>
+            </div>
+          )}
         </div>
       )}
+    </section>
+  );
+}
 
-      {run.no_results && (
-        <div className="rounded-lg border border-amber-400/25 bg-amber-400/[0.07] p-3">
-          <p className="font-mono text-[11px] text-amber-300/90">
-            Search ran successfully — this niche currently has no matching ads.
-          </p>
-        </div>
-      )}
-
-      {run.warnings && run.warnings.length > 0 && (
-        <div className="rounded-lg border border-amber-500/20 bg-amber-500/[0.06] p-3">
-          <p className="mb-1 font-mono text-[11px] font-semibold uppercase tracking-wide text-amber-400">
-            no results ({run.warnings.length})
-          </p>
-          <ul className="max-h-24 space-y-0.5 overflow-y-auto text-xs text-amber-300/90">
-            {run.warnings.map((warning, i) => (
-              <li key={i} className="font-mono">
-                {warning}
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-
-      {run.status === "completed" && (
-        <p className="truncate font-mono text-[11px] text-slate-500">
-          <span className="text-slate-600">output ›</span> {run.folder}
-        </p>
-      )}
+function Stat({ label, value, muted }: { label: string; value: string | number; muted?: boolean }) {
+  return (
+    <div className="border-b border-ink-100 px-5 py-4 sm:border-b-0">
+      <div className="text-xs font-medium text-ink-500">{label}</div>
+      <div className={`tabular mt-1 text-2xl font-semibold ${muted ? "text-ink-300" : "text-ink-900"}`}>{value}</div>
     </div>
   );
 }
 
-function Stat({ label, value, accent }: { label: string; value: string | number; accent?: boolean }) {
+function Notice({
+  tone,
+  title,
+  children,
+}: {
+  tone: "red" | "amber";
+  title: string;
+  children: React.ReactNode;
+}) {
+  const cls = {
+    red: { box: "border-red-200 bg-red-50", head: "text-red-800", body: "text-red-700" },
+    amber: { box: "border-amber-200 bg-amber-50", head: "text-amber-800", body: "text-amber-700" },
+  }[tone];
+
   return (
-    <div className="rounded-xl border border-white/5 bg-white/[0.02] p-3 text-center">
-      <div className={`text-xl font-bold ${accent ? "text-emerald-400" : "text-white"}`}>{value}</div>
-      <div className="mt-0.5 font-mono text-[10px] uppercase tracking-wide text-slate-500">{label}</div>
+    <div className={`rounded-lg border p-3.5 ${cls.box}`}>
+      <p className={`mb-1 text-xs font-semibold ${cls.head}`}>{title}</p>
+      <div className={`text-sm ${cls.body}`}>{children}</div>
     </div>
   );
 }

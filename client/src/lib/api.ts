@@ -220,3 +220,17 @@ export function getRunStatus(portal: Portal, runId: string): Promise<RunStatus> 
 export function listRuns(portal: Portal): Promise<{ runs: RunStatus[] }> {
   return request(`/${portal}/scrape/runs`);
 }
+
+/**
+ * Direct link to BidNet's on-demand Excel of every stored solicitation. It is a
+ * file download, so it has to be a real href rather than a fetch. BidNet is the
+ * only portal exposing `/export`.
+ */
+export function bidnetExportUrl(): string {
+  return `${API_URL}/bidnet/export`;
+}
+
+/** FastAPI's generated interactive reference, served by the backend at /docs. */
+export function apiDocsUrl(): string {
+  return `${API_URL}/docs`;
+}

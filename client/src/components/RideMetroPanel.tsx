@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import RideMetroResults from "@/components/RideMetroResults";
 import RunStatusPanel from "@/components/RunStatus";
-import { ErrorBanner, StartButton } from "@/components/ui";
+import { ErrorBanner, LaunchBar, StartButton } from "@/components/ui";
 import { getRunStatus, startRideMetroScrape, type RunStatus } from "@/lib/api";
 
 const POLL_INTERVAL_MS = 3000;
@@ -52,16 +52,13 @@ export default function RideMetroPanel() {
 
   return (
     <div className="space-y-6">
-      <p className="text-sm leading-relaxed text-slate-400">
-        Scrapes every Open Public Opportunity: downloads each opportunity&apos;s documents zip and
-        saves a Project Details spreadsheet, all under a per-run folder.
-      </p>
-
       {error && <ErrorBanner message={error} />}
 
-      <StartButton onClick={handleStart} disabled={starting || isRunning} running={isRunning} starting={starting}>
-        Start scrape
-      </StartButton>
+      <LaunchBar summary="No configuration needed — this run captures every open public opportunity.">
+        <StartButton onClick={handleStart} disabled={starting || isRunning} running={isRunning} starting={starting}>
+          Start scrape
+        </StartButton>
+      </LaunchBar>
 
       {run && <RunStatusPanel run={run} />}
       {run && <RideMetroResults bids={run.bids} />}
