@@ -29,6 +29,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from app.config import settings
 from app.core import run_manager
 from app.core.base_scraper import BaseScraper
+from app.core.filenames import sanitize_filename
 from app.scrapers.septa import export
 
 logger = logging.getLogger(__name__)
@@ -542,11 +543,29 @@ class SeptaScraper(BaseScraper):
                 run_manager.add_error(self.run_id, "db save failed (see logs)")
 
             self.set_step("generating_excel")
-            # The run folder is shared by every run on the same calendar day, so
-            # the run_id keeps each run's sheet distinct (7 runs -> 7 sheets).
-            self.excel_path = (
-                self.run_dir / f"Septa_{datetime.now():%Y-%m-%d_%H-%M-%S}_{self.run_id}.xlsx"
-            )
+            # The run folder is shared by every run on the same calendar day, and
+            # the sheet name is the run's search criteria (no date/time — the
+            # folder already carries the date), e.g.
+            #   Septa_(keyword=graphic design, daterange=2026-07-20).xlsx
+            #   Septa_(commoditycodes=2018).xlsx
+            #   Septa_(today's open quotes).xlsx
+            # A counter is appended only when a sheet with the same criteria
+            # already exists that day, so identical same-day searches never
+            # overwrite each other.
+            criteria = ", ".join(
+                part for part in (
+                    f"keyword={self.keyword}" if self.keyword else "",
+                    f"daterange={self.date_filter}" if self.date_filter else "",
+                    f"commoditycodes={self.commodity_code}" if self.commodity_code else "",
+                ) if part
+            ) or "today's open quotes"
+            name = sanitize_filename(f"Septa_({criteria})", max_length=150)
+            candidate = self.run_dir / f"{name}.xlsx"
+            counter = 2
+            while candidate.exists():
+                candidate = self.run_dir / f"{name} ({counter}).xlsx"
+                counter += 1
+            self.excel_path = candidate
             try:
                 if db_ok:
                     export.generate_excel(self.run_id, self.excel_path)
