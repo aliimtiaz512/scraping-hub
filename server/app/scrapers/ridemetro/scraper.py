@@ -209,7 +209,9 @@ class RideMetroScraper(BaseScraper):
 
             try:
                 label = (run_manager.get_run(self.run_id) or {}).get("label") or timestamp()
-                self.excel_path = self.run_dir / f"RideMetro_Bids ({label}).xlsx"
+                # The run folder is shared by every run on the same calendar day,
+                # so the run_id keeps each run's sheet distinct (N runs -> N sheets).
+                self.excel_path = self.run_dir / f"RideMetro_Bids ({label}) [{self.run_id}].xlsx"
                 self.set_step("generating_excel")
                 if db_ok:
                     export.generate_excel(self.run_id, self.excel_path)

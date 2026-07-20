@@ -511,7 +511,11 @@ class WisconsinScraper(BaseScraper):
                 run_manager.add_error(self.run_id, "db save failed (see logs)")
 
             self.set_step("generating_excel")
-            self.excel_path = self.run_dir / f"Wisconsin_{datetime.now():%Y-%m-%d_%H-%M-%S}.xlsx"
+            # The run folder is shared by every run on the same calendar day, so
+            # the run_id keeps each run's sheet distinct (N runs -> N sheets).
+            self.excel_path = (
+                self.run_dir / f"Wisconsin_{datetime.now():%Y-%m-%d_%H-%M-%S}_{self.run_id}.xlsx"
+            )
             try:
                 if db_ok:
                     export.generate_excel(self.run_id, self.excel_path)

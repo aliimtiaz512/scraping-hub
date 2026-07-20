@@ -34,7 +34,12 @@ def start_scrape(request: ScrapeRequest, background_tasks: BackgroundTasks) -> d
     ) or "all current solicitations"
 
     label = timestamp()  # e.g. 2026-07-08 14-30-05
-    folder = run_manager.make_run_folder(f"Document_Bids_Wisconsin ({label})")
+    # Date-bucketed storage (mirrors SEPTA/RideMetro/MyFlorida): every run on the
+    # same calendar day drops its Excel sheet into one shared Wisconsin-<date>
+    # folder; the next day gets a fresh folder. Wisconsin is list-only (no
+    # document downloads), so the folder holds only the generated sheets.
+    date_folder = f"Wisconsin-{timestamp('%Y-%m-%d')}"
+    folder = run_manager.make_run_folder(date_folder)
     run = run_manager.create_run(
         "wisconsin",
         folder,
