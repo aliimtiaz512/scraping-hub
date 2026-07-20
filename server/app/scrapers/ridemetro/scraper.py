@@ -64,6 +64,7 @@ class RideMetroScraper(BaseScraper):
     def __init__(self, run_id: str):
         super().__init__(run_id)
         self.excel_path: Path | None = None
+        self._records: list[dict[str, Any]] = []
 
     # -- flow steps ---------------------------------------------------------
 
@@ -140,7 +141,7 @@ class RideMetroScraper(BaseScraper):
         ]
         rows = self.driver.find_elements(*SEL["opportunity_rows"])
         processed = 0
-        for index, row in enumerate(rows):
+        for row in rows:
             details, url = self._extract_row(row, headers)
             # Skip the "There are no open projects at this time." placeholder row.
             if not details.get("ref_number"):
@@ -151,12 +152,11 @@ class RideMetroScraper(BaseScraper):
                 "documents": [],
                 "error": None,
             }
-            try:
-                export.save_bid(self.run_id, details, url, None)
-            except Exception:  # noqa: BLE001 — DB issues shouldn't abort the run
-                logger.exception("[run %s] save_bid failed for row %s", self.run_id, index)
-                run_manager.add_error(self.run_id, f"db save failed for opportunity {index + 1}")
-                result["error"] = "db save failed"
+            # Carry the provenance fields on the record so the batched save (at
+            # finalize) and the Excel fallback both see them.
+            details["opportunity_url"] = url
+            details["zip_filename"] = None
+            self._records.append(details)
             run_manager.add_bid_result(self.run_id, result)
             processed += 1
             run_manager.update_run(self.run_id, bids_found=processed)
@@ -194,13 +194,29 @@ class RideMetroScraper(BaseScraper):
             self.open_opportunities()
             self.scrape_opportunities()
 
+            # Persist every scraped opportunity in one transaction (mirrors
+            # MyFlorida). Best-effort: a DB failure must not fail the run — the
+            # Excel is then written straight from the in-memory records.
+            run = run_manager.get_run(self.run_id) or {"run_id": self.run_id}
+            db_ok = True
+            try:
+                stored = export.save_bids(run, self._records)
+                run_manager.update_run(self.run_id, bids_stored_in_db=stored)
+            except Exception:  # noqa: BLE001 — DB issues shouldn't abort the run
+                db_ok = False
+                logger.exception("[run %s] DB save failed", self.run_id)
+                run_manager.add_error(self.run_id, "db save failed (see logs)")
+
             try:
                 label = (run_manager.get_run(self.run_id) or {}).get("label") or timestamp()
                 self.excel_path = self.run_dir / f"RideMetro_Bids ({label}).xlsx"
                 self.set_step("generating_excel")
-                export.generate_excel(self.run_id, self.excel_path)
+                if db_ok:
+                    export.generate_excel(self.run_id, self.excel_path)
+                else:
+                    export.generate_excel_from_records(self._records, self.excel_path)
                 run_manager.update_run(self.run_id, excel_path=str(self.excel_path), excel_exported=True)
-            except Exception:  # noqa: BLE001 — Excel comes from the DB; a DB issue shouldn't fail the run
+            except Exception:  # noqa: BLE001 — never fail the run over the Excel
                 logger.exception("[run %s] Excel generation failed", self.run_id)
                 run_manager.add_error(self.run_id, "excel generation failed (see logs)")
 

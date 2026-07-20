@@ -374,6 +374,7 @@ class BidnetScraper(BaseScraper):
             logger.info("[run %s] %s unique solicitations across %s keyword(s)", self.run_id, len(link_keywords), len(self.keywords))
 
             # Process each unique solicitation once, recording all matching keywords.
+            records: list[dict] = []
             for index, (link, matched) in enumerate(link_keywords.items()):
                 record = {"reference_number": None, "title": None, "documents": [], "error": None}
                 try:
@@ -384,12 +385,20 @@ class BidnetScraper(BaseScraper):
                     self.screenshot(f"bid_{index}")
                 record["matched_keyword"] = ", ".join(matched)
                 run_manager.add_bid_result(self.run_id, record)
-                if record.get("reference_number"):
-                    try:
-                        export.save_bid(self.run_id, record)
-                    except Exception:  # noqa: BLE001 — DB issues shouldn't abort the run
-                        logger.exception("[run %s] save_bid failed", self.run_id)
-                        run_manager.add_error(self.run_id, "db save failed for a solicitation")
+                records.append(record)
+
+            # Persist every scraped solicitation in one transaction (mirrors
+            # MyFlorida). Best-effort: a DB failure must not fail the run — the
+            # Excel is then written straight from the in-memory records.
+            run = run_manager.get_run(self.run_id) or {"run_id": self.run_id}
+            db_ok = True
+            try:
+                stored = export.save_bids(run, records)
+                run_manager.update_run(self.run_id, bids_stored_in_db=stored)
+            except Exception:  # noqa: BLE001 — DB issues shouldn't abort the run
+                db_ok = False
+                logger.exception("[run %s] DB save failed", self.run_id)
+                run_manager.add_error(self.run_id, "db save failed (see logs)")
 
             self.set_step("generating_excel")
             label = (run_manager.get_run(self.run_id) or {}).get("label") or timestamp()
@@ -397,17 +406,14 @@ class BidnetScraper(BaseScraper):
             # per-keyword folder (e.g. Document_Bids_BidnetDirect_AI), not the root.
             self.excel_path = self.document_folder / f"Document_Bids_BidnetDirect ({label}).xlsx"
             try:
-                export.generate_excel(self.run_id, self.excel_path)
+                if db_ok:
+                    export.generate_excel(self.run_id, self.excel_path)
+                else:
+                    export.generate_excel_from_records(records, self.excel_path)
                 run_manager.update_run(self.run_id, excel_path=str(self.excel_path), excel_exported=True)
-            except Exception:  # noqa: BLE001 — DB unavailable: fall back to in-memory records
-                logger.exception("[run %s] DB Excel generation failed; writing from records", self.run_id)
-                try:
-                    bids = (run_manager.get_run(self.run_id) or {}).get("bids", [])
-                    export.generate_excel_from_records(bids, self.excel_path)
-                    run_manager.update_run(self.run_id, excel_path=str(self.excel_path), excel_exported=True)
-                except Exception:  # noqa: BLE001 — never fail the run over the Excel
-                    logger.exception("[run %s] Excel generation failed", self.run_id)
-                    run_manager.add_error(self.run_id, "excel generation failed (see logs)")
+            except Exception:  # noqa: BLE001 — never fail the run over the Excel
+                logger.exception("[run %s] Excel generation failed", self.run_id)
+                run_manager.add_error(self.run_id, "excel generation failed (see logs)")
 
             run_manager.update_run(self.run_id, status="completed", step="done")
         except Exception as exc:  # noqa: BLE001 — a failed run must be reported, not crash the worker

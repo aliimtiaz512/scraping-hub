@@ -241,7 +241,7 @@ class WisconsinScraper(BaseScraper):
         self.set_step("scraping_results")
         preview: list[dict[str, Any]] = []
         seen: set[str] = set()
-        saved = 0
+        scraped = 0
         pages = 0
         last_end = 0
         while True:
@@ -260,18 +260,13 @@ class WisconsinScraper(BaseScraper):
                 if key:
                     seen.add(key)
                 self._records.append(rec)
-                try:
-                    export.save_bid(self.run_id, rec)
-                    saved += 1
-                except Exception:  # noqa: BLE001 — DB issues shouldn't abort the run
-                    logger.exception("[run %s] save_bid failed", self.run_id)
-                    run_manager.add_error(self.run_id, "db save failed for a solicitation")
+                scraped += 1
                 if len(preview) < PREVIEW_LIMIT:
                     preview.append(self._display(rec))
             run_manager.update_run(
-                self.run_id, bids_found=saved, bids_processed=saved, bids=list(preview)
+                self.run_id, bids_found=scraped, bids_processed=scraped, bids=list(preview)
             )
-            logger.info("[run %s] page %s scraped (total saved %s)", self.run_id, pages, saved)
+            logger.info("[run %s] page %s scraped (total %s)", self.run_id, pages, scraped)
 
             end, total = self._page_indicator()
             logger.info("[run %s] page %s range indicator: end=%s total=%s last_end=%s",
@@ -502,19 +497,30 @@ class WisconsinScraper(BaseScraper):
             self.search()
             self.scrape_all_pages()
 
+            # Persist every scraped solicitation in one transaction (mirrors
+            # MyFlorida). Best-effort: a DB failure must not fail the run — the
+            # Excel is then written straight from the in-memory records.
+            run = run_manager.get_run(self.run_id) or {"run_id": self.run_id}
+            db_ok = True
+            try:
+                stored = export.save_bids(run, self._records)
+                run_manager.update_run(self.run_id, bids_stored_in_db=stored)
+            except Exception:  # noqa: BLE001 — DB issues shouldn't abort the run
+                db_ok = False
+                logger.exception("[run %s] DB save failed", self.run_id)
+                run_manager.add_error(self.run_id, "db save failed (see logs)")
+
             self.set_step("generating_excel")
             self.excel_path = self.run_dir / f"Wisconsin_{datetime.now():%Y-%m-%d_%H-%M-%S}.xlsx"
             try:
-                export.generate_excel(self.run_id, self.excel_path)
-                run_manager.update_run(self.run_id, excel_path=str(self.excel_path), excel_exported=True)
-            except Exception:  # noqa: BLE001 — DB unavailable: fall back to in-memory records
-                logger.exception("[run %s] DB Excel generation failed; writing from records", self.run_id)
-                try:
+                if db_ok:
+                    export.generate_excel(self.run_id, self.excel_path)
+                else:
                     export.generate_excel_from_records(self._records, self.excel_path)
-                    run_manager.update_run(self.run_id, excel_path=str(self.excel_path), excel_exported=True)
-                except Exception:  # noqa: BLE001 — never fail the run over the Excel
-                    logger.exception("[run %s] Excel generation failed", self.run_id)
-                    run_manager.add_error(self.run_id, "excel generation failed (see logs)")
+                run_manager.update_run(self.run_id, excel_path=str(self.excel_path), excel_exported=True)
+            except Exception:  # noqa: BLE001 — never fail the run over the Excel
+                logger.exception("[run %s] Excel generation failed", self.run_id)
+                run_manager.add_error(self.run_id, "excel generation failed (see logs)")
 
             run_manager.update_run(self.run_id, status="completed", step="done")
         except Exception as exc:  # noqa: BLE001 — a failed run must be reported, not crash the worker

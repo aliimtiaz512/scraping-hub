@@ -31,6 +31,19 @@ class Settings(BaseSettings):
     # Wisconsin eSupplier (PeopleSoft) — public bidder portal, no login.
     wisconsin_url: str = "https://esupplier.wi.gov/psp/esupplier/SUPPLIER/ERP/h/?tab=WI_BIDDER"
 
+    # North Dakota (ND Buys / Ivalua) — supplier login via ND OAuth (Azure AD B2C).
+    northdakota_username: str = ""
+    northdakota_password: str = ""
+    northdakota_login_url: str = (
+        "https://public.ndbuys.nd.gov/page.aspx/en/usr/login"
+        "?ReturnUrl=%2Fpage.aspx%2Fen%2Fbuy%2Fhomepage%2Fsup"
+    )
+    # Supplier homepage the B2C sign-in returns to; also used to resolve the
+    # post-login landing directly. `base_url` stays the bare origin so _abs_url
+    # can turn relative hrefs into absolute links.
+    northdakota_homepage_url: str = "https://public.ndbuys.nd.gov/page.aspx/en/buy/homepage/sup"
+    northdakota_base_url: str = "https://public.ndbuys.nd.gov"
+
     # Kept outside the server/ tree so downloads don't trip the uvicorn --reload
     # file watcher (which would restart the process mid-scrape). Resolved against
     # SERVER_ROOT when relative — see documents_root below.

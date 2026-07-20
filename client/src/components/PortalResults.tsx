@@ -1,6 +1,7 @@
 "use client";
 
 import BidnetResults from "@/components/BidnetResults";
+import NorthDakotaResults from "@/components/NorthDakotaResults";
 import ResultsTable from "@/components/ResultsTable";
 import RideMetroResults from "@/components/RideMetroResults";
 import WisconsinResults from "@/components/WisconsinResults";
@@ -20,5 +21,7 @@ export default function PortalResults({ portal, bids }: { portal: Portal; bids: 
       return <BidnetResults bids={bids} />;
     case "wisconsin":
       return <WisconsinResults bids={bids} />;
+    case "northdakota":
+      return <NorthDakotaResults bids={bids} />;
   }
 }

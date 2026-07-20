@@ -1,6 +1,6 @@
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
-export type Portal = "myflorida" | "ridemetro" | "bidnet" | "wisconsin";
+export type Portal = "myflorida" | "ridemetro" | "bidnet" | "wisconsin" | "northdakota";
 
 export interface CommodityCode {
   code: string;
@@ -61,6 +61,16 @@ export interface BidResult {
   agency?: string;
   event_status?: string;
   due_datetime?: string;
+  // North Dakota
+  rfp_id?: string;
+  pub_begin_date?: string;
+  pub_end_date?: string;
+  begin_date?: string;
+  close_date?: string;
+  commodity?: string;
+  remaining_time?: string;
+  status?: string;
+  detail_url?: string;
   // shared
   documents: string[];
   error: string | null;
@@ -208,6 +218,18 @@ export function startWisconsinScrape(
   return request("/wisconsin/scrape", {
     method: "POST",
     body: JSON.stringify({ keyword, agency, nigp_code: nigpCode }),
+  });
+}
+
+// -- North Dakota (ND Buys) --------------------------------------------------
+
+export function startNorthDakotaScrape(
+  keyword: string,
+  commodity: string,
+): Promise<{ run_id: string; search: string; folder: string }> {
+  return request("/northdakota/scrape", {
+    method: "POST",
+    body: JSON.stringify({ keyword, commodity }),
   });
 }
 

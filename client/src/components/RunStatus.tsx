@@ -24,6 +24,10 @@ const STEP_LABELS: Record<string, string> = {
   // BidNet
   filtering_member_agency: "Filtering to Member Agency Bids",
   opening_bid: "Opening solicitation",
+  // North Dakota
+  opening_solicitations: "Opening Solicitations menu",
+  opening_public_solicitation_request: "Opening Public Solicitation Requests",
+  scraping_results: "Scraping results grid",
   done: "Done",
   failed: "Failed",
 };
@@ -47,6 +51,7 @@ function runSubtitle(run: RunStatusData): string {
   if (run.scraper === "bidnet") return run.keyword ? `“${run.keyword}”` : "BidNet Direct";
   if (run.scraper === "ridemetro") return "RideMetro";
   if (run.scraper === "myflorida") return "MyFlorida";
+  if (run.scraper === "northdakota") return run.search && run.search !== "all public solicitations" ? run.search : "North Dakota";
   return "";
 }
 
