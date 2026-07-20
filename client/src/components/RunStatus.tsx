@@ -52,6 +52,7 @@ function runSubtitle(run: RunStatusData): string {
   if (run.scraper === "ridemetro") return "RideMetro";
   if (run.scraper === "myflorida") return "MyFlorida";
   if (run.scraper === "northdakota") return run.search && run.search !== "all public solicitations" ? run.search : "North Dakota";
+  if (run.scraper === "septa") return run.date_filter ? `Opens ${run.date_filter}` : "SEPTA";
   return "";
 }
 

@@ -24,6 +24,7 @@ def init_db() -> None:
     from app.scrapers.bidnet import models as _bidnet_models  # noqa: F401
     from app.scrapers.wisconsin import models as _wisconsin_models  # noqa: F401
     from app.scrapers.northdakota import models as _northdakota_models  # noqa: F401
+    from app.scrapers.septa import models as _septa_models  # noqa: F401
 
     Base.metadata.create_all(bind=engine)
 

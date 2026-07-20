@@ -19,7 +19,7 @@ export interface PortalMeta {
   description: string;
   /** What the run produces, listed as capability pills in the hero. */
   outputs: string[];
-  icon: "florida" | "transit" | "network" | "capitol" | "prairie";
+  icon: "florida" | "transit" | "network" | "capitol" | "prairie" | "rail";
   accent: {
     /** Icon tile: background + foreground. */
     tile: string;
@@ -116,6 +116,23 @@ export const PORTALS: PortalMeta[] = [
       dot: "bg-rose-500",
       rail: "bg-rose-500",
       wash: "from-rose-50",
+    },
+  },
+  {
+    key: "septa",
+    label: "SEPTA",
+    operator: "SE Pennsylvania Transportation Authority",
+    host: "epsadmin.septa.org",
+    tagline: "Open vendor quotes",
+    description:
+      "Sign in to the SEPTA vendor portal, open Open Quotes and apply an optional date filter, then capture every quote request — requisition number, summary and open/close dates — across the results grid to the database and an Excel sheet.",
+    outputs: ["Optional date filter", "Full quote grid", "Excel export"],
+    icon: "rail",
+    accent: {
+      tile: "bg-teal-50 text-teal-600 ring-teal-100",
+      dot: "bg-teal-500",
+      rail: "bg-teal-500",
+      wash: "from-teal-50",
     },
   },
 ];

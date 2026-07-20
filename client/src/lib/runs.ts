@@ -111,6 +111,9 @@ export function runTarget(run: RunStatus): string {
     return search;
   }
   if (run.scraper === "ridemetro") return "All open opportunities";
+  if (run.scraper === "septa") {
+    return run.date_filter ? `Opens ${run.date_filter}` : "Today's open quotes";
+  }
 
   if (run.keywords?.length) return run.keywords.join(", ");
   if (run.keyword) return run.keyword;

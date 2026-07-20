@@ -4,6 +4,7 @@ import BidnetResults from "@/components/BidnetResults";
 import NorthDakotaResults from "@/components/NorthDakotaResults";
 import ResultsTable from "@/components/ResultsTable";
 import RideMetroResults from "@/components/RideMetroResults";
+import SeptaResults from "@/components/SeptaResults";
 import WisconsinResults from "@/components/WisconsinResults";
 import type { BidResult, Portal } from "@/lib/api";
 
@@ -23,5 +24,7 @@ export default function PortalResults({ portal, bids }: { portal: Portal; bids: 
       return <WisconsinResults bids={bids} />;
     case "northdakota":
       return <NorthDakotaResults bids={bids} />;
+    case "septa":
+      return <SeptaResults bids={bids} />;
   }
 }

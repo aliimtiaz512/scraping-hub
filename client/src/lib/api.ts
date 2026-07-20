@@ -1,6 +1,6 @@
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
-export type Portal = "myflorida" | "ridemetro" | "bidnet" | "wisconsin" | "northdakota";
+export type Portal = "myflorida" | "ridemetro" | "bidnet" | "wisconsin" | "northdakota" | "septa";
 
 export interface CommodityCode {
   code: string;
@@ -71,6 +71,10 @@ export interface BidResult {
   remaining_time?: string;
   status?: string;
   detail_url?: string;
+  // SEPTA
+  requisition_number?: string;
+  summary?: string;
+  open_date?: string;
   // shared
   documents: string[];
   error: string | null;
@@ -102,6 +106,9 @@ export interface RunStatus {
   search?: string;
   agency?: string;
   nigp_code?: string;
+  // SEPTA-only: the optional filters a run was launched with.
+  date_filter?: string | null;
+  commodity_code?: string | null;
   // shared
   started_at: string;
   finished_at: string | null;
@@ -230,6 +237,30 @@ export function startNorthDakotaScrape(
   return request("/northdakota/scrape", {
     method: "POST",
     body: JSON.stringify({ keyword, commodity }),
+  });
+}
+
+// -- SEPTA (vendor procurement portal) ---------------------------------------
+
+export interface StartSeptaScrapeOptions {
+  // All optional and freely combinable; all blank = today's open quotes.
+  dateFilter?: string;
+  keyword?: string;
+  commodityCode?: string;
+}
+
+export function startSeptaScrape({
+  dateFilter = "",
+  keyword = "",
+  commodityCode = "",
+}: StartSeptaScrapeOptions): Promise<{ run_id: string; search: string; folder: string }> {
+  return request("/septa/scrape", {
+    method: "POST",
+    body: JSON.stringify({
+      date_filter: dateFilter || null,
+      keyword: keyword || null,
+      commodity_code: commodityCode || null,
+    }),
   });
 }
 

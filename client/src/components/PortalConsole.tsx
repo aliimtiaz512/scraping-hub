@@ -5,6 +5,7 @@ import MyFloridaPanel from "@/components/MyFloridaPanel";
 import NorthDakotaPanel from "@/components/NorthDakotaPanel";
 import PortalIcon from "@/components/PortalIcon";
 import RideMetroPanel from "@/components/RideMetroPanel";
+import SeptaPanel from "@/components/SeptaPanel";
 import WisconsinPanel from "@/components/WisconsinPanel";
 import type { Portal } from "@/lib/api";
 import { portalMeta, type PortalMeta } from "@/lib/portals";
@@ -19,6 +20,7 @@ export default function PortalConsole({ portal }: { portal: Portal }) {
       {portal === "bidnet" && <BidnetPanel />}
       {portal === "wisconsin" && <WisconsinPanel />}
       {portal === "northdakota" && <NorthDakotaPanel />}
+      {portal === "septa" && <SeptaPanel />}
     </div>
   );
 }

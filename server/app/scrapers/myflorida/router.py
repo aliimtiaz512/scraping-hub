@@ -95,10 +95,18 @@ def start_scrape(request: ScrapeRequest, background_tasks: BackgroundTasks) -> d
     else:
         keywords = _resolve_subset(request.keywords, get_keywords(request.category), "keyword")
 
-    # Nested, niche-separated and self-describing: MyFlorida/<niche>/<timestamp>/.
+    # Nested, date-bucketed, niche-separated and self-describing:
+    #   MyFlorida-<run date>/<niche>/<run timestamp> (<search mode>)/
+    # A new top-level folder is created per calendar day the scraper runs, so a
+    # run on the 20th and a run on the 21st land in separate day folders. The
+    # innermost run folder names the exact date/time and whether the run searched
+    # by keyword or by commodity code.
+    now = datetime.now()
+    date_folder = f"MyFlorida-{now:%Y-%m-%d}"
     niche = sanitize_filename(CATEGORIES[request.category]["label"], max_length=80)
-    timestamp = f"{datetime.now():%Y-%m-%d_%H-%M-%S}"
-    folder = run_manager.make_run_folder(str(Path("MyFlorida") / niche / timestamp))
+    mode_label = "keyword search" if request.mode == "keywords" else "commodity code search"
+    run_name = sanitize_filename(f"{now:%Y-%m-%d_%H-%M-%S} ({mode_label})", max_length=120)
+    folder = run_manager.make_run_folder(str(Path(date_folder) / niche / run_name))
     run = run_manager.create_run(
         "myflorida",
         folder,

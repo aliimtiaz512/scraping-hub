@@ -44,6 +44,12 @@ class Settings(BaseSettings):
     northdakota_homepage_url: str = "https://public.ndbuys.nd.gov/page.aspx/en/buy/homepage/sup"
     northdakota_base_url: str = "https://public.ndbuys.nd.gov"
 
+    # SEPTA (Southeastern Pennsylvania Transportation Authority) vendor portal —
+    # ASP.NET procurement site; login then scrape the Open Quotes grid.
+    septa_username: str = ""
+    septa_password: str = ""
+    septa_login_url: str = "https://epsadmin.septa.org/vendor/login/"
+
     # Kept outside the server/ tree so downloads don't trip the uvicorn --reload
     # file watcher (which would restart the process mid-scrape). Resolved against
     # SERVER_ROOT when relative — see documents_root below.

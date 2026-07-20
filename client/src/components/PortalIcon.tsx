@@ -68,5 +68,16 @@ export default function PortalIcon({ name, className = "h-5 w-5" }: { name: Port
           <path d="M4 20.5h16" />
         </svg>
       );
+    case "rail":
+      // Regional rail signal: SEPTA's commuter rail network.
+      return (
+        <svg {...common}>
+          <path d="M7 3.5h10a1 1 0 0 1 1 1V14a2.5 2.5 0 0 1-2.5 2.5h-5A2.5 2.5 0 0 1 8 14V4.5a1 1 0 0 1 1-1Z" />
+          <path d="M8 9.5h10" />
+          <circle cx="10.5" cy="12.75" r=".85" fill="currentColor" stroke="none" />
+          <circle cx="15.5" cy="12.75" r=".85" fill="currentColor" stroke="none" />
+          <path d="M9.5 16.5 7.5 20.5M16.5 16.5l2 4" />
+        </svg>
+      );
   }
 }
