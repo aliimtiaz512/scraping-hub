@@ -120,6 +120,11 @@ class NorthDakotaScraper(BaseScraper):
                 "in server/.env, or the B2C reCAPTCHA blocked the headless session."
             )
 
+        # Land on the supplier homepage explicitly in case the B2C ReturnUrl
+        # redirect dropped us elsewhere; the Solicitations menu lives here.
+        self.driver.get(settings.northdakota_homepage_url)
+        self._await_logged_in(timeout=30)
+
     def _submit_b2c(self) -> None:
         """Submit the B2C sign-in form. The default policy button is #next; fall
         back to any submit button inside the sign-in form."""
