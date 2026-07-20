@@ -26,6 +26,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from app.config import settings
 from app.core import run_manager
 from app.core.base_scraper import BaseScraper
+from app.core.filenames import sanitize_filename
 from app.scrapers.wisconsin import export
 
 logger = logging.getLogger(__name__)
@@ -46,6 +47,10 @@ NEXT_ID = "WI_SS_BIDALL_VW$hdown$0"
 
 PREVIEW_LIMIT = 100   # rows mirrored to the live run state for the UI table
 MAX_PAGES = 300       # pagination safety guard (25 rows/page => up to 7500 rows)
+# After the search postback settles (its "processing" overlay clears), any rows
+# that exist have already painted — so if none appear within this grace we treat
+# the search as genuinely empty instead of stalling on the full grid-render wait.
+EMPTY_RESULT_GRACE = 20
 
 
 def _xpath_literal(text: str) -> str:
@@ -68,6 +73,9 @@ class WisconsinScraper(BaseScraper):
         # Full in-memory copy of every scraped row, used only as a fallback source
         # for the Excel if the DB is unavailable.
         self._records: list[dict[str, Any]] = []
+        # Set when the search settled with zero result rows — lets the run report
+        # "no records found" instead of a silent empty completion.
+        self._no_rows_after_search = False
 
     # -- navigation ---------------------------------------------------------
 
@@ -185,8 +193,15 @@ class WisconsinScraper(BaseScraper):
         # return no rows (e.g. an agency the portal can't resolve), so don't
         # hard-fail if none appear.
         self._wait_search_settled()
-        if not self._focus_target((By.CSS_SELECTOR, ROW_CSS)):
-            logger.info("[run %s] no result rows appeared after search", self.run_id)
+        # The postback has settled, so any result rows are already painted. Give
+        # them a bounded grace to appear; if none do, the search is genuinely
+        # empty — flag it so the run stops fast and reports "no records found"
+        # rather than stalling on the full grid-render wait.
+        if self._focus_target((By.CSS_SELECTOR, ROW_CSS), timeout=EMPTY_RESULT_GRACE):
+            self._no_rows_after_search = False
+        else:
+            self._no_rows_after_search = True
+            logger.info("[run %s] no result rows appeared after search (empty result)", self.run_id)
 
     def _fill(self, elem_id: str, value: str) -> None:
         el = self.wait().until(EC.presence_of_element_located((By.ID, elem_id)))
@@ -238,6 +253,16 @@ class WisconsinScraper(BaseScraper):
         hold Selenium element handles across renders: each page is read in a single
         atomic execute_script, and the iframe is re-focused at the top of each page.
         """
+        # The search already settled with zero rows — don't run the full
+        # grid-render wait (it would just time out looking for rows that will
+        # never come). Report the empty result and return immediately.
+        if self._no_rows_after_search:
+            self.set_step("no_records_found")
+            run_manager.update_run(self.run_id, no_results=True)
+            run_manager.add_warning(self.run_id, "No records found for this search.")
+            logger.info("[run %s] search returned no records — stopping early", self.run_id)
+            return
+
         self.set_step("scraping_results")
         preview: list[dict[str, Any]] = []
         seen: set[str] = set()
@@ -497,6 +522,11 @@ class WisconsinScraper(BaseScraper):
             self.search()
             self.scrape_all_pages()
 
+            # Mark an empty run so the UI can say "search worked, portal has
+            # nothing" rather than showing a silent zero-result completion.
+            if not self._records:
+                run_manager.update_run(self.run_id, no_results=True)
+
             # Persist every scraped solicitation in one transaction (mirrors
             # MyFlorida). Best-effort: a DB failure must not fail the run — the
             # Excel is then written straight from the in-memory records.
@@ -511,11 +541,22 @@ class WisconsinScraper(BaseScraper):
                 run_manager.add_error(self.run_id, "db save failed (see logs)")
 
             self.set_step("generating_excel")
-            # The run folder is shared by every run on the same calendar day, so
-            # the run_id keeps each run's sheet distinct (N runs -> N sheets).
-            self.excel_path = (
-                self.run_dir / f"Wisconsin_{datetime.now():%Y-%m-%d_%H-%M-%S}_{self.run_id}.xlsx"
-            )
+            # The run folder is shared by every run on the same calendar day, and
+            # the sheet name is the run's search criteria (no date/time — the
+            # folder already carries the date), e.g.
+            #   Wisconsin_(keyword=janitorial, agency=DOT).xlsx
+            #   Wisconsin_(all current solicitations).xlsx
+            # A counter is appended only when a sheet with the same criteria
+            # already exists that day, so identical same-day searches never
+            # overwrite each other.
+            search = (run.get("search") or "all current solicitations").strip()
+            name = sanitize_filename(f"Wisconsin_({search})", max_length=150)
+            candidate = self.run_dir / f"{name}.xlsx"
+            counter = 2
+            while candidate.exists():
+                candidate = self.run_dir / f"{name} ({counter}).xlsx"
+                counter += 1
+            self.excel_path = candidate
             try:
                 if db_ok:
                     export.generate_excel(self.run_id, self.excel_path)
