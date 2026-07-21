@@ -50,6 +50,14 @@ class Settings(BaseSettings):
     septa_password: str = ""
     septa_login_url: str = "https://epsadmin.septa.org/vendor/login/"
 
+    # Cal eProcure (California eProcurement / BidSync "BS3") — supplier login on
+    # an ASP.NET page (#userid / #pwd), plain username+password (no SSO/MFA).
+    # Field names are lowercase to match the mixed-case Cal_ePROCURE_* keys in
+    # .env (pydantic-settings matches env vars case-insensitively).
+    cal_eprocure_link: str = "https://caleprocure.ca.gov/pages/BS3/login.aspx"
+    cal_eprocure_username: str = ""
+    cal_eprocure_password: str = ""
+
     # Kept outside the server/ tree so downloads don't trip the uvicorn --reload
     # file watcher (which would restart the process mid-scrape). Resolved against
     # SERVER_ROOT when relative — see documents_root below.
