@@ -25,6 +25,7 @@ const STEP_LABELS: Record<string, string> = {
   filtering_member_agency: "Filtering to Member Agency Bids",
   opening_bid: "Opening solicitation",
   // North Dakota
+  awaiting_manual_login: "Waiting for you to solve the CAPTCHA in the browser…",
   opening_solicitations: "Opening Solicitations menu",
   opening_public_solicitation_request: "Opening Public Solicitation Requests",
   scraping_results: "Scraping results grid",

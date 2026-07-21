@@ -43,6 +43,17 @@ class Settings(BaseSettings):
     # can turn relative hrefs into absolute links.
     northdakota_homepage_url: str = "https://public.ndbuys.nd.gov/page.aspx/en/buy/homepage/sup"
     northdakota_base_url: str = "https://public.ndbuys.nd.gov"
+    # The B2C sign-in carries an (often invisible) reCAPTCHA that can challenge an
+    # automated session. In manual-login mode the browser is forced visible and
+    # the login step waits (up to the timeout below) for a human to solve the
+    # challenge in the open Chrome window; the run continues the instant the
+    # supplier homepage loads. Set to false only for an unattended/solver setup.
+    northdakota_manual_login: bool = True
+    northdakota_manual_login_timeout: int = 300  # seconds to wait for the human
+    # A persistent Chrome user-data-dir so the ND session/cookies survive between
+    # runs — once the CAPTCHA is solved, later runs usually skip B2C entirely.
+    # Kept outside server/ so it doesn't trip the uvicorn --reload watcher.
+    northdakota_profile_dir: str = "../data/chrome_profiles/northdakota"
 
     # SEPTA (Southeastern Pennsylvania Transportation Authority) vendor portal —
     # ASP.NET procurement site; login then scrape the Open Quotes grid.
@@ -65,6 +76,15 @@ class Settings(BaseSettings):
         if not path.is_absolute():
             path = SERVER_ROOT / path
         path = path.resolve()  # normalize away '..' so downloads land cleanly outside server/
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    @property
+    def northdakota_profile_path(self) -> Path:
+        path = Path(self.northdakota_profile_dir)
+        if not path.is_absolute():
+            path = SERVER_ROOT / path
+        path = path.resolve()  # normalize away '..' so the profile lands outside server/
         path.mkdir(parents=True, exist_ok=True)
         return path
 

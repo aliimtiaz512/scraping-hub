@@ -48,10 +48,17 @@ class BaseScraper:
 
     # -- lifecycle ----------------------------------------------------------
 
-    def start_driver(self) -> None:
+    def start_driver(self, headless: bool | None = None, user_data_dir: str | None = None) -> None:
+        """Launch Chrome. `headless` overrides the global setting (a portal that
+        needs a human to solve a challenge forces it False); `user_data_dir`
+        points Chrome at a persistent profile so cookies/session survive between
+        runs. Both default to the previous behaviour when omitted."""
         options = Options()
-        if settings.headless:
+        use_headless = settings.headless if headless is None else headless
+        if use_headless:
             options.add_argument("--headless=new")
+        if user_data_dir:
+            options.add_argument(f"--user-data-dir={user_data_dir}")
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--window-size=1920,1080")

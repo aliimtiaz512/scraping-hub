@@ -20,13 +20,18 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from selenium.common.exceptions import TimeoutException, WebDriverException
+from selenium.common.exceptions import (
+    ElementNotInteractableException,
+    TimeoutException,
+    WebDriverException,
+)
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 
 from app.config import settings
 from app.core import run_manager
 from app.core.base_scraper import BaseScraper
+from app.core.filenames import sanitize_filename
 from app.scrapers.northdakota import export
 
 logger = logging.getLogger(__name__)
@@ -71,59 +76,183 @@ class NorthDakotaScraper(BaseScraper):
         return base + ("" if href.startswith("/") else "/") + href
 
     def _click_by_text(self, tags: list[str], text: str, timeout: int = 20) -> None:
-        """Click the first clickable element among `tags` whose text matches `text`.
+        """Click the first *visible* element among `tags` whose text matches `text`.
 
-        Ivalua menus render items as buttons/anchors/list items; matching on the
-        visible label keeps us off brittle generated ids.
+        Ivalua menus render items as buttons/anchors/list items, ship a duplicate
+        hidden responsive nav (so the same label exists off-screen), and wire up
+        their click handlers a beat after the element appears. So rather than wait
+        on `element_to_be_clickable` (which can latch onto the hidden duplicate and
+        time out), we poll for a *displayed* match over the whole window, scroll it
+        into view, and try a native click then a JS click (which still fires even
+        if an overlay would intercept the hit).
         """
-        conditions = " or ".join(
-            f"self::{tag}" for tag in tags
-        )
+        conditions = " or ".join(f"self::{tag}" for tag in tags)
         xpath = (
             f"//*[({conditions})]"
             f"[contains(normalize-space(.), {_xpath_literal(text)})]"
         )
-        el = self.wait(timeout).until(EC.element_to_be_clickable((By.XPATH, xpath)))
-        self.scroll_into_view(el)
-        el.click()
+        deadline = time.monotonic() + timeout
+        last_err: Exception | None = None
+        while time.monotonic() < deadline:
+            try:
+                elements = self.driver.find_elements(By.XPATH, xpath)
+            except WebDriverException:
+                elements = []
+            for el in elements:
+                try:
+                    if not (el.is_displayed() and el.is_enabled()):
+                        continue
+                    self.scroll_into_view(el)
+                    try:
+                        el.click()
+                    except WebDriverException:
+                        self.driver.execute_script("arguments[0].click();", el)
+                    return
+                except WebDriverException as exc:
+                    last_err = exc
+                    continue
+            time.sleep(0.5)
+
+        # Nothing clickable turned up — capture what's actually on screen so the
+        # post-login page markup can be inspected.
+        self.screenshot(f"click_failed_{text}")
+        self._dump_page(f"click_failed_{text}")
+        raise TimeoutException(
+            f"could not click a visible '{text}' element within {timeout}s"
+        ) from last_err
+
+    def _dump_page(self, name: str) -> None:
+        """Save the current page HTML into the run folder for debugging."""
+        try:
+            path = self.run_dir / f"page_{sanitize_filename(name)}.html"
+            path.write_text(self.driver.page_source, encoding="utf-8")
+            logger.info("[run %s] saved page HTML -> %s", self.run_id, path)
+        except Exception:  # noqa: BLE001 — diagnostics must never break the run
+            pass
 
     # -- flow steps ---------------------------------------------------------
 
     def login(self) -> None:
         self.set_step("logging_in")
+
+        # With a persistent profile a prior session may still be valid — try the
+        # supplier homepage first and skip the whole B2C login if we're already in.
+        self.driver.get(settings.northdakota_homepage_url)
+        if self._await_logged_in(timeout=8):
+            logger.info("[run %s] reusing an existing ND session — login skipped", self.run_id)
+            return
+
         self.driver.get(settings.northdakota_login_url)
         # "ND Supplier Login" -> redirects to the ND Azure AD B2C sign-in page.
         self.wait(30).until(EC.element_to_be_clickable((By.ID, OAUTH_BTN_ID))).click()
 
+        # Clicking OAuth with a live session can land us straight back in without
+        # ever showing the sign-in form — treat that as success.
+        if self._await_logged_in(timeout=8):
+            logger.info("[run %s] OAuth re-used an existing ND session", self.run_id)
+            self.driver.get(settings.northdakota_homepage_url)
+            self._await_logged_in(timeout=30)
+            return
+
         # B2C sign-in: User ID + Password. The page carries an invisible reCAPTCHA
-        # that a headless session can trip; if the fields never appear, say so.
+        # that an automated session can trip; if the fields never appear, say so.
         try:
             self.wait(40).until(EC.presence_of_element_located((By.ID, B2C_USER_ID)))
         except TimeoutException as exc:
             self.screenshot("b2c_login_missing")
             raise WebDriverException(
                 "ND Buys sign-in page did not load its User ID field — the OAuth "
-                "redirect or an invisible reCAPTCHA may have blocked the headless "
-                "browser."
+                "redirect or an invisible reCAPTCHA may have blocked the browser."
             ) from exc
 
-        self.driver.find_element(By.ID, B2C_USER_ID).send_keys(settings.northdakota_username)
-        self.driver.find_element(By.ID, B2C_PASSWORD_ID).send_keys(settings.northdakota_password)
+        # The B2C inputs mount before they become focusable (the sign-in page is
+        # still hydrating/animating), so a plain send_keys races and throws
+        # ElementNotInteractableException — type only once each field is really
+        # interactable, retrying and falling back to a JS set if needed.
+        self._type_when_ready((By.ID, B2C_USER_ID), settings.northdakota_username)
+        self._type_when_ready((By.ID, B2C_PASSWORD_ID), settings.northdakota_password)
         self._submit_b2c()
 
-        # Back on ND Buys once the top-nav "Solicitations" menu is present. If the
-        # password field is still on screen, the credentials/reCAPTCHA were rejected.
-        if not self._await_logged_in(timeout=60):
+        # Wait for the top-nav "Solicitations" menu, meaning we're back on ND Buys.
+        # In manual-login mode the browser is visible and we give a human a long
+        # window to solve the reCAPTCHA challenge in it; the run continues the
+        # instant the homepage loads. Otherwise a short window as before.
+        if settings.northdakota_manual_login:
+            timeout = settings.northdakota_manual_login_timeout
+            self.set_step("awaiting_manual_login")
+            logger.info(
+                "[run %s] 👉 If a CAPTCHA/challenge appears, solve it in the open "
+                "Chrome window — waiting up to %ss for sign-in to complete.",
+                self.run_id, timeout,
+            )
+        else:
+            timeout = 60
+
+        if not self._await_logged_in(timeout=timeout):
             self.screenshot("login_not_completed")
+            hint = (
+                "the CAPTCHA was not solved in time in the open Chrome window"
+                if settings.northdakota_manual_login
+                else "the B2C reCAPTCHA blocked the automated session"
+            )
             raise WebDriverException(
-                "ND Buys login did not complete — check the North Dakota credentials "
-                "in server/.env, or the B2C reCAPTCHA blocked the headless session."
+                f"ND Buys login did not complete — check the North Dakota credentials "
+                f"in server/.env, or {hint}."
             )
 
         # Land on the supplier homepage explicitly in case the B2C ReturnUrl
         # redirect dropped us elsewhere; the Solicitations menu lives here.
         self.driver.get(settings.northdakota_homepage_url)
         self._await_logged_in(timeout=30)
+
+    def _type_when_ready(self, locator: tuple, text: str, timeout: int = 30) -> None:
+        """Type `text` into a field that is present but may not be interactable yet.
+
+        Waits for the element to be visible, scrolls it into view, then retries
+        send_keys through the transient not-interactable window. As a last resort
+        it sets the value via JS and fires input/change so B2C still validates it.
+        """
+        try:
+            el = self.wait(timeout).until(EC.visibility_of_element_located(locator))
+        except TimeoutException:
+            # Present (the caller already gated on that) but never became visible.
+            el = self.driver.find_element(*locator)
+        self.scroll_into_view(el)
+
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            try:
+                el.click()
+            except WebDriverException:
+                pass
+            try:
+                el.clear()
+            except WebDriverException:
+                pass
+            try:
+                el.send_keys(text)
+                if (el.get_attribute("value") or "") != "":
+                    return
+            except ElementNotInteractableException:
+                pass
+            except WebDriverException:
+                pass
+            time.sleep(0.5)
+
+        # Last resort: set the value directly and dispatch events so the B2C
+        # policy scripts pick it up the same as real typing would.
+        try:
+            self.driver.execute_script(
+                "arguments[0].value = arguments[1];"
+                "arguments[0].dispatchEvent(new Event('input', {bubbles: true}));"
+                "arguments[0].dispatchEvent(new Event('change', {bubbles: true}));",
+                el, text,
+            )
+        except WebDriverException as exc:
+            self.screenshot("b2c_field_not_interactable")
+            raise WebDriverException(
+                "ND Buys sign-in field was present but never became interactable."
+            ) from exc
 
     def _submit_b2c(self) -> None:
         """Submit the B2C sign-in form. The default policy button is #next; fall
@@ -372,7 +501,13 @@ class NorthDakotaScraper(BaseScraper):
         run_manager.update_run(self.run_id, status="running")
         self._save_run_row()
         try:
-            self.start_driver()
+            # Manual-login mode: force a visible browser so a human can solve the
+            # B2C reCAPTCHA, and use a persistent profile so the session survives
+            # between runs (later runs usually skip the challenge entirely).
+            if settings.northdakota_manual_login:
+                self.start_driver(headless=False, user_data_dir=str(settings.northdakota_profile_path))
+            else:
+                self.start_driver()
             self.login()
             self.open_public_solicitations()
             self.search()

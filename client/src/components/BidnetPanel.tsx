@@ -6,12 +6,29 @@ import BidnetResults from "@/components/BidnetResults";
 import KeywordSelect from "@/components/KeywordSelect";
 import RunStatusPanel from "@/components/RunStatus";
 import { ErrorBanner, LaunchBar, StartButton } from "@/components/ui";
-import { getBidnetKeywords, getRunStatus, startBidnetScrape, type KeywordGroup, type RunStatus } from "@/lib/api";
+import { getBidnetKeywords, getRunStatus, startBidnetScrape, type BidnetNiche, type RunStatus } from "@/lib/api";
 
 const POLL_INTERVAL_MS = 3000;
 
+/** How many niche+tier groups (plus a Custom group) the selection spans — this
+ * is how many folders/Excels the run will produce. */
+function countGroups(niches: BidnetNiche[], selected: string[]): number {
+  const chosen = new Set(selected);
+  let groups = 0;
+  const catalogTerms = new Set<string>();
+  for (const niche of niches) {
+    for (const list of [niche.core, niche.extended]) {
+      const terms = list.map((k) => k.term);
+      terms.forEach((t) => catalogTerms.add(t));
+      if (terms.some((t) => chosen.has(t))) groups += 1;
+    }
+  }
+  if (selected.some((t) => !catalogTerms.has(t))) groups += 1; // Custom group
+  return groups;
+}
+
 export default function BidnetPanel() {
-  const [groups, setGroups] = useState<KeywordGroup[]>([]);
+  const [niches, setNiches] = useState<BidnetNiche[]>([]);
   const [selected, setSelected] = useState<string[]>([]);
   const [run, setRun] = useState<RunStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -20,7 +37,7 @@ export default function BidnetPanel() {
 
   useEffect(() => {
     getBidnetKeywords()
-      .then((data) => setGroups(data.groups))
+      .then((data) => setNiches(data.niches))
       .catch((e: Error) => setError(`Could not load keywords — is the API running? (${e.message})`));
   }, []);
 
@@ -62,18 +79,19 @@ export default function BidnetPanel() {
   };
 
   const isRunning = run !== null && (run.status === "pending" || run.status === "running");
+  const groupCount = countGroups(niches, selected);
 
   return (
     <div className="space-y-6">
       {error && <ErrorBanner message={error} />}
 
-      <KeywordSelect groups={groups} selected={selected} disabled={isRunning} onChange={setSelected} />
+      <KeywordSelect niches={niches} selected={selected} disabled={isRunning} onChange={setSelected} />
 
       <LaunchBar
         summary={
           selected.length === 0
             ? "Select at least one keyword to run a search."
-            : `${selected.length} ${selected.length === 1 ? "search" : "searches"} · one per keyword`
+            : `${selected.length} ${selected.length === 1 ? "search" : "searches"} across ${groupCount} ${groupCount === 1 ? "group" : "groups"} · one search per keyword, foldered by niche + tier`
         }
       >
         <StartButton

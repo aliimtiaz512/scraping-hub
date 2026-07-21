@@ -25,8 +25,8 @@ from selenium.webdriver.support import expected_conditions as EC
 from app.config import settings
 from app.core import run_manager
 from app.core.base_scraper import BaseScraper
-from app.core.filenames import timestamp
 from app.scrapers.bidnet import export
+from app.scrapers.bidnet.keywords import group_keywords
 
 logger = logging.getLogger(__name__)
 
@@ -55,15 +55,19 @@ class BidnetScraper(BaseScraper):
     def __init__(self, run_id: str, keywords: list[str]):
         super().__init__(run_id)
         self.keywords = keywords
-        # A combined run spans many keywords, so everything (documents + Excel)
-        # lives in the single per-run folder the router already created
-        # (e.g. <documents>/Document_Bids_BidnetDirect (<label>)), with a per-bid
-        # subfolder inside it.
+        # The run folder the router created is the date bucket
+        # (<documents>/Bidnetdirect_<date>); results are foldered per niche+tier
+        # inside it (Bidnetdirect_AI-ML_core, ...), each a self-contained
+        # deliverable of documents + one Excel.
         run = run_manager.get_run(run_id) or {}
-        folder = run.get("folder") or str(settings.documents_root / "Document_Bids_BidnetDirect")
+        folder = run.get("folder") or str(settings.documents_root / "Bidnetdirect")
         self.document_folder = Path(folder)
         self.document_folder.mkdir(parents=True, exist_ok=True)
-        self.excel_path: Path | None = None
+        # A solicitation can be surfaced by keywords in more than one niche+tier
+        # group. We scrape/download it only once, then copy its documents into
+        # each additional group's folder so every group folder stays complete.
+        self._bid_cache: dict[str, dict] = {}      # link -> scraped record (no docs)
+        self._bid_doc_dir: dict[str, Path] = {}    # link -> folder its docs first landed in
 
     # -- helpers ------------------------------------------------------------
 
@@ -110,18 +114,45 @@ class BidnetScraper(BaseScraper):
         self.set_step("logging_in")
         self.driver.get(settings.bidnet_direct_link or BASE_URL)
         self._guard_not_blocked()
-        self.wait().until(EC.element_to_be_clickable((By.ID, "header_btnLogin"))).click()
 
-        self.wait().until(EC.presence_of_element_located((By.ID, "j_username")))
+        # Each wait re-checks for a bot-block first, then screenshots and raises a
+        # clear message on timeout — otherwise BidNet's interstitial (which appears
+        # a beat after load) just makes the element wait die with an empty-message
+        # Selenium stacktrace that says nothing about why.
+        self._await_login_element((By.ID, "header_btnLogin"), "the Login button", clickable=True).click()
+
+        self._await_login_element((By.ID, "j_username"), "the username field")
         self.driver.find_element(By.ID, "j_username").send_keys(settings.bidnet_username)
         self.driver.find_element(By.ID, "j_password").send_keys(settings.bidnet_password)
         self.driver.find_element(By.ID, "loginButton").click()
 
+        self._await_login_element(
+            (By.ID, "btnSolicitations"),
+            "the post-login dashboard (Solicitations menu)",
+        )
+
+    def _await_login_element(self, locator: tuple, what: str, clickable: bool = False):
+        """Wait for a login-flow element, turning a timeout into a clear message.
+
+        On timeout we re-run the bot-block check (the interstitial often appears
+        just after the initial load) and always screenshot the login page, so a
+        failure says whether BidNet blocked us or the page was simply slow — never
+        the bare empty-message Selenium stacktrace.
+        """
+        condition = EC.element_to_be_clickable(locator) if clickable else EC.presence_of_element_located(locator)
         try:
-            self.wait().until(EC.presence_of_element_located((By.ID, "btnSolicitations")))
-        except TimeoutException:
-            self.screenshot("login_error")
-            raise
+            return self.wait().until(condition)
+        except TimeoutException as exc:
+            self.screenshot("login_page")
+            # Raises a clear "bot-block" message if the block markers are present.
+            self._guard_not_blocked()
+            raise WebDriverException(
+                f"BidNet Direct login timed out waiting for {what}. The login page "
+                "did not present the expected element within the wait — most often "
+                "this is BidNet's anti-bot protection throttling repeated automated "
+                "logins (try again later / from a different network, and confirm the "
+                "account still signs in through a normal browser)."
+            ) from exc
 
     def search(self, keyword: str) -> None:
         self.set_step(f"searching: {keyword}")
@@ -207,8 +238,16 @@ class BidnetScraper(BaseScraper):
                     continue
         return None
 
-    def process_bid(self, link: str) -> dict[str, Any]:
-        """Open one solicitation, scrape its fields, download its documents."""
+    def process_bid(self, link: str, group_folder: Path) -> dict[str, Any]:
+        """Open one solicitation, scrape its fields, download its documents into
+        `group_folder`. If this solicitation was already scraped for an earlier
+        niche+tier group, reuse the scraped fields and *copy* its documents into
+        this group's folder rather than re-opening and re-downloading."""
+        if link in self._bid_cache:
+            record = dict(self._bid_cache[link])
+            record["documents"] = self._copy_cached_docs(link, record, group_folder)
+            return record
+
         self.set_step("opening_bid")
         self.driver.get(link)
         try:
@@ -224,10 +263,38 @@ class BidnetScraper(BaseScraper):
         record["documents_count"] = documents_count
 
         downloaded: list[str] = []
+        bid_folder: Path | None = None
         if documents_count != "0":
-            downloaded = self._download_documents(reference_number, title)
+            downloaded, bid_folder = self._download_documents(reference_number, title, group_folder)
         record["documents"] = downloaded
+
+        # Cache the scraped fields (without the per-group documents list) and where
+        # the documents landed, so later groups can reuse them.
+        self._bid_cache[link] = {k: v for k, v in record.items() if k != "documents"}
+        if bid_folder is not None:
+            self._bid_doc_dir[link] = bid_folder
         return record
+
+    def _copy_cached_docs(self, link: str, record: dict[str, Any], group_folder: Path) -> list[str]:
+        """Copy a previously-downloaded solicitation's documents into this group's
+        folder so every niche+tier folder is a complete, self-contained deliverable."""
+        src = self._bid_doc_dir.get(link)
+        if not src or not src.exists():
+            return []
+        ref = record.get("reference_number") or ""
+        title = record.get("title") or ""
+        dest = group_folder / f"{ref} - {_safe_title(title)}"
+        dest.mkdir(parents=True, exist_ok=True)
+        copied: list[str] = []
+        for f in sorted(src.iterdir()):
+            if f.is_file():
+                target = self._unique_path(dest / f.name)
+                try:
+                    shutil.copy2(f, target)
+                    copied.append(target.name)
+                except OSError as exc:  # noqa: PERF203 — one failed copy must not abort the bid
+                    logger.info("[run %s] could not copy %s: %s", self.run_id, f.name, exc)
+        return copied
 
     def _document_count(self) -> str:
         try:
@@ -240,16 +307,21 @@ class BidnetScraper(BaseScraper):
             logger.info("[run %s] doc count unavailable: %s", self.run_id, exc.__class__.__name__)
             return "0"
 
-    def _download_documents(self, reference_number: str, title: str) -> list[str]:
+    def _download_documents(
+        self, reference_number: str, title: str, dest_folder: Path
+    ) -> tuple[list[str], Path | None]:
+        """Download every document into a per-bid subfolder of `dest_folder`.
+        Returns (saved filenames, the bid subfolder) — the folder is returned so a
+        later group can copy the same files instead of re-downloading."""
         saved: list[str] = []
         try:
             self.driver.find_element(By.CSS_SELECTOR, "#docs-itemsAbstractTab a").click()
             time.sleep(4)
         except WebDriverException as exc:
             logger.info("[run %s] could not open docs tab for %s: %s", self.run_id, reference_number, exc.__class__.__name__)
-            return saved
+            return saved, None
 
-        bid_folder = self.document_folder / f"{reference_number} - {_safe_title(title)}"
+        bid_folder = dest_folder / f"{reference_number} - {_safe_title(title)}"
         bid_folder.mkdir(parents=True, exist_ok=True)
 
         buttons = self._download_buttons()
@@ -258,7 +330,7 @@ class BidnetScraper(BaseScraper):
             name = self._download_one(button, bid_folder, index)
             if name:
                 saved.append(name)
-        return saved
+        return saved, bid_folder
 
     def _download_buttons(self) -> list:
         found: list = []
@@ -350,71 +422,86 @@ class BidnetScraper(BaseScraper):
             self.start_driver()
             self.login()
 
-            # Search each keyword separately (never concatenated — one keyword per
-            # query gives the best results) and collect its solicitation links,
-            # deduplicating by link across keywords. Each link remembers every
-            # keyword that surfaced it.
-            link_keywords: dict[str, list[str]] = {}
-            for keyword in self.keywords:
-                try:
-                    self.search(keyword)
-                    self.filter_member_agency()
-                    links = self.collect_links()
-                except (TimeoutException, WebDriverException) as exc:
-                    run_manager.add_error(self.run_id, f"search failed for '{keyword}': {exc.__class__.__name__}")
-                    self.screenshot(f"search_{keyword}")
-                    continue
-                for link in links:
-                    matched = link_keywords.setdefault(link, [])
-                    if keyword not in matched:
-                        matched.append(keyword)
-                logger.info("[run %s] '%s' -> %s links (unique total %s)", self.run_id, keyword, len(links), len(link_keywords))
+            # Split the selected keywords into niche+tier groups; each group is a
+            # self-contained folder of documents + one Excel. Keywords are still
+            # searched one at a time (never concatenated).
+            groups = group_keywords(self.keywords)
+            logger.info("[run %s] %s keyword(s) -> %s niche/tier group(s)",
+                        self.run_id, len(self.keywords), len(groups))
 
-            run_manager.update_run(self.run_id, bids_found=len(link_keywords))
-            logger.info("[run %s] %s unique solicitations across %s keyword(s)", self.run_id, len(link_keywords), len(self.keywords))
+            all_records: list[dict] = []      # every group's records (for the DB)
+            unique_links: set[str] = set()    # distinct solicitations across all groups
 
-            # Process each unique solicitation once, recording all matching keywords.
-            records: list[dict] = []
-            for index, (link, matched) in enumerate(link_keywords.items()):
-                record = {"reference_number": None, "title": None, "documents": [], "error": None}
-                try:
-                    record = self.process_bid(link)
-                except (TimeoutException, WebDriverException) as exc:
-                    record["error"] = str(exc)[:300]
-                    run_manager.add_error(self.run_id, f"bid failed: {exc.__class__.__name__}")
-                    self.screenshot(f"bid_{index}")
-                record["matched_keyword"] = ", ".join(matched)
-                run_manager.add_bid_result(self.run_id, record)
-                records.append(record)
+            for group in groups:
+                group_folder = self.document_folder / group["folder_name"]
+                group_folder.mkdir(parents=True, exist_ok=True)
+                self.set_step(f"group: {group['label']}")
+
+                # Search each keyword in this group and collect its solicitation
+                # links, deduplicated by link *within the group*. Each link
+                # remembers which of the group's keywords surfaced it.
+                link_keywords: dict[str, list[str]] = {}
+                for keyword in group["keywords"]:
+                    try:
+                        self.search(keyword)
+                        self.filter_member_agency()
+                        links = self.collect_links()
+                    except (TimeoutException, WebDriverException) as exc:
+                        run_manager.add_error(self.run_id, f"search failed for '{keyword}': {exc.__class__.__name__}")
+                        self.screenshot(f"search_{keyword}")
+                        continue
+                    for link in links:
+                        matched = link_keywords.setdefault(link, [])
+                        if keyword not in matched:
+                            matched.append(keyword)
+                    logger.info("[run %s] [%s] '%s' -> %s links (group total %s)",
+                                self.run_id, group["label"], keyword, len(links), len(link_keywords))
+
+                unique_links.update(link_keywords)
+                run_manager.update_run(self.run_id, bids_found=len(unique_links))
+
+                # Process every solicitation in this group, downloading (or copying)
+                # its documents into the group folder.
+                group_records: list[dict] = []
+                for index, (link, matched) in enumerate(link_keywords.items()):
+                    record = {"reference_number": None, "title": None, "documents": [], "error": None}
+                    try:
+                        record = self.process_bid(link, group_folder)
+                    except (TimeoutException, WebDriverException) as exc:
+                        record["error"] = str(exc)[:300]
+                        run_manager.add_error(self.run_id, f"bid failed: {exc.__class__.__name__}")
+                        self.screenshot(f"bid_{index}")
+                    record["matched_keyword"] = ", ".join(matched)
+                    record["niche"] = group["label"]
+                    record["tier"] = group["tier"]
+                    run_manager.add_bid_result(self.run_id, record)
+                    group_records.append(record)
+
+                # One full Excel per group, alongside its documents.
+                self._write_group_excel(group, group_folder, group_records)
+                all_records.extend(group_records)
+
+            logger.info("[run %s] %s unique solicitations across %s group(s)",
+                        self.run_id, len(unique_links), len(groups))
 
             # Persist every scraped solicitation in one transaction (mirrors
-            # MyFlorida). Best-effort: a DB failure must not fail the run — the
-            # Excel is then written straight from the in-memory records.
+            # MyFlorida). The DB stays globally de-duplicated per run (by reference
+            # number); the niche+tier split lives in the folders and their Excels.
+            # Best-effort: a DB failure must not fail the run.
             run = run_manager.get_run(self.run_id) or {"run_id": self.run_id}
-            db_ok = True
             try:
-                stored = export.save_bids(run, records)
+                stored = export.save_bids(run, all_records)
                 run_manager.update_run(self.run_id, bids_stored_in_db=stored)
             except Exception:  # noqa: BLE001 — DB issues shouldn't abort the run
-                db_ok = False
                 logger.exception("[run %s] DB save failed", self.run_id)
                 run_manager.add_error(self.run_id, "db save failed (see logs)")
 
-            self.set_step("generating_excel")
-            label = (run_manager.get_run(self.run_id) or {}).get("label") or timestamp()
-            # Keep the run's Excel alongside its downloaded documents, inside the
-            # per-keyword folder (e.g. Document_Bids_BidnetDirect_AI), not the root.
-            self.excel_path = self.document_folder / f"Document_Bids_BidnetDirect ({label}).xlsx"
-            try:
-                if db_ok:
-                    export.generate_excel(self.run_id, self.excel_path)
-                else:
-                    export.generate_excel_from_records(records, self.excel_path)
-                run_manager.update_run(self.run_id, excel_path=str(self.excel_path), excel_exported=True)
-            except Exception:  # noqa: BLE001 — never fail the run over the Excel
-                logger.exception("[run %s] Excel generation failed", self.run_id)
-                run_manager.add_error(self.run_id, "excel generation failed (see logs)")
-
+            # There is no single run-level Excel any more — each group has its own.
+            # Point the run at the date folder so the exports view links to the
+            # place that holds all of this run's group folders and sheets.
+            run_manager.update_run(
+                self.run_id, excel_path=str(self.document_folder), excel_exported=True
+            )
             run_manager.update_run(self.run_id, status="completed", step="done")
         except Exception as exc:  # noqa: BLE001 — a failed run must be reported, not crash the worker
             logger.exception("[run %s] failed", self.run_id)
@@ -425,6 +512,17 @@ class BidnetScraper(BaseScraper):
             self.cleanup()
             run_manager.update_run(self.run_id, finished_at=datetime.now().isoformat())
             self._save_run_row()
+
+    def _write_group_excel(self, group: dict, group_folder: Path, records: list[dict]) -> None:
+        """Write one full Excel of this group's bids into its folder. Named after
+        the folder, with a counter if the day's folder already holds one."""
+        out_path = self._unique_path(group_folder / f"{group['folder_name']}.xlsx")
+        try:
+            export.generate_excel_from_records(records, out_path)
+            logger.info("[run %s] wrote %s bids to %s", self.run_id, len(records), out_path.name)
+        except Exception:  # noqa: BLE001 — never fail the run over one group's Excel
+            logger.exception("[run %s] Excel generation failed for %s", self.run_id, group["label"])
+            run_manager.add_error(self.run_id, f"excel generation failed for {group['label']}")
 
     def _save_run_row(self) -> None:
         run = run_manager.get_run(self.run_id)

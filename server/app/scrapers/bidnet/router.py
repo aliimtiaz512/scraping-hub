@@ -10,7 +10,7 @@ from app.core import run_manager
 from app.core.filenames import timestamp
 from app.db import get_session
 from app.scrapers.bidnet import export
-from app.scrapers.bidnet.keywords import get_keyword_catalog
+from app.scrapers.bidnet.keywords import get_niche_catalog
 from app.scrapers.bidnet.models import EXCEL_COLUMNS, BidnetBid
 from app.scrapers.bidnet.scraper import execute_run
 
@@ -24,8 +24,8 @@ class ScrapeRequest(BaseModel):
 
 @router.get("/keywords")
 def keywords() -> dict:
-    """Return the curated keyword catalog, grouped by sourcing track."""
-    return {"groups": get_keyword_catalog()}
+    """Return the curated keyword catalog, organized by niche and tier."""
+    return {"niches": get_niche_catalog()}
 
 
 @router.post("/scrape")
@@ -35,7 +35,11 @@ def start_scrape(request: ScrapeRequest, background_tasks: BackgroundTasks) -> d
     if not keywords:
         raise HTTPException(status_code=400, detail="at least one keyword is required")
     label = timestamp()  # e.g. 2026-07-08 14-30-05
-    folder = run_manager.make_run_folder(f"Document_Bids_BidnetDirect ({label})")
+    # Date-bucketed parent (mirrors the other portals): every run on the same day
+    # shares one Bidnetdirect-<date> folder, inside which results are foldered per
+    # niche+tier (Bidnetdirect_AI-ML_core, ...). The scraper builds those.
+    date_folder = f"Bidnetdirect_{timestamp('%Y-%m-%d')}"
+    folder = run_manager.make_run_folder(date_folder)
     run = run_manager.create_run(
         "bidnet",
         folder,

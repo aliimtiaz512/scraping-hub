@@ -22,22 +22,26 @@ export interface CategoriesResponse {
   search_modes: SearchMode[];
 }
 
-export type KeywordTier = "tier1" | "tier2";
+export type KeywordTier = "core" | "extended";
 
-export interface KeywordItem {
+export interface BidnetKeyword {
   term: string;
-  tier: KeywordTier;
   notes: string;
 }
 
-export interface KeywordGroup {
+// A niche (AI/ML, Web Scraping, UI/UX) with its two tiers. Results are foldered
+// per niche+tier, so the selection UI mirrors this shape.
+export interface BidnetNiche {
   key: string;
   label: string;
-  keywords: KeywordItem[];
+  /** Used in the produced folder names, e.g. "AI-ML" -> Bidnetdirect_AI-ML_core. */
+  slug: string;
+  core: BidnetKeyword[];
+  extended: BidnetKeyword[];
 }
 
-export interface KeywordCatalog {
-  groups: KeywordGroup[];
+export interface BidnetCatalog {
+  niches: BidnetNiche[];
 }
 
 export interface BidResult {
@@ -202,7 +206,7 @@ export function startRideMetroScrape(): Promise<{ run_id: string; folder: string
 
 // -- BidNet Direct -----------------------------------------------------------
 
-export function getBidnetKeywords(): Promise<KeywordCatalog> {
+export function getBidnetKeywords(): Promise<BidnetCatalog> {
   return request("/bidnet/keywords");
 }
 
