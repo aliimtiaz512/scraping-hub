@@ -26,5 +26,8 @@ export default function PortalResults({ portal, bids }: { portal: Portal; bids: 
       return <NorthDakotaResults bids={bids} />;
     case "septa":
       return <SeptaResults bids={bids} />;
+    case "caleprocure":
+      // Login-only so far — no scraped rows to render yet.
+      return null;
   }
 }

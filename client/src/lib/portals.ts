@@ -19,7 +19,7 @@ export interface PortalMeta {
   description: string;
   /** What the run produces, listed as capability pills in the hero. */
   outputs: string[];
-  icon: "florida" | "transit" | "network" | "capitol" | "prairie" | "rail";
+  icon: "florida" | "transit" | "network" | "capitol" | "prairie" | "rail" | "bear";
   accent: {
     /** Icon tile: background + foreground. */
     tile: string;
@@ -133,6 +133,23 @@ export const PORTALS: PortalMeta[] = [
       dot: "bg-teal-500",
       rail: "bg-teal-500",
       wash: "from-teal-50",
+    },
+  },
+  {
+    key: "caleprocure",
+    label: "Cal eProcure",
+    operator: "State of California",
+    host: "caleprocure.ca.gov",
+    tagline: "California eProcurement portal",
+    description:
+      "Sign in to Cal eProcure, California's statewide eProcurement portal. Login verification is live now; solicitation search and Excel export are being built next.",
+    outputs: ["Supplier login", "Session verification"],
+    icon: "bear",
+    accent: {
+      tile: "bg-orange-50 text-orange-600 ring-orange-100",
+      dot: "bg-orange-500",
+      rail: "bg-orange-500",
+      wash: "from-orange-50",
     },
   },
 ];

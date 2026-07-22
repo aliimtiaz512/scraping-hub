@@ -1,6 +1,6 @@
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
-export type Portal = "myflorida" | "ridemetro" | "bidnet" | "wisconsin" | "northdakota" | "septa";
+export type Portal = "myflorida" | "ridemetro" | "bidnet" | "wisconsin" | "northdakota" | "septa" | "caleprocure";
 
 export interface CommodityCode {
   code: string;
@@ -113,6 +113,12 @@ export interface RunStatus {
   // SEPTA-only: the optional filters a run was launched with.
   date_filter?: string | null;
   commodity_code?: string | null;
+  // Cal eProcure-only: login-milestone diagnostics. `login_ok` is true once the
+  // run has signed in and confirmed the session; `landing_*` describe where it
+  // landed after login.
+  login_ok?: boolean;
+  landing_url?: string;
+  landing_title?: string;
   // shared
   started_at: string;
   finished_at: string | null;
@@ -266,6 +272,17 @@ export function startSeptaScrape({
       commodity_code: commodityCode || null,
     }),
   });
+}
+
+// -- Cal eProcure (California eProcurement) -----------------------------------
+
+/**
+ * Cal eProcure currently supports login verification only — the run signs in and
+ * confirms the session. It takes no search criteria yet; solicitation search and
+ * export are added next.
+ */
+export function startCalEProcureScrape(): Promise<{ run_id: string; folder: string }> {
+  return request("/caleprocure/scrape", { method: "POST" });
 }
 
 // -- shared ------------------------------------------------------------------

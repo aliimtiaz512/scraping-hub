@@ -1,6 +1,7 @@
 "use client";
 
 import BidnetPanel from "@/components/BidnetPanel";
+import CalEProcurePanel from "@/components/CalEProcurePanel";
 import MyFloridaPanel from "@/components/MyFloridaPanel";
 import NorthDakotaPanel from "@/components/NorthDakotaPanel";
 import PortalIcon from "@/components/PortalIcon";
@@ -21,6 +22,7 @@ export default function PortalConsole({ portal }: { portal: Portal }) {
       {portal === "wisconsin" && <WisconsinPanel />}
       {portal === "northdakota" && <NorthDakotaPanel />}
       {portal === "septa" && <SeptaPanel />}
+      {portal === "caleprocure" && <CalEProcurePanel />}
     </div>
   );
 }

@@ -79,5 +79,18 @@ export default function PortalIcon({ name, className = "h-5 w-5" }: { name: Port
           <path d="M9.5 16.5 7.5 20.5M16.5 16.5l2 4" />
         </svg>
       );
+    case "bear":
+      // Bear face: the California grizzly from the state flag.
+      return (
+        <svg {...common}>
+          <circle cx="6.5" cy="6.5" r="1.9" />
+          <circle cx="17.5" cy="6.5" r="1.9" />
+          <circle cx="12" cy="12" r="6.5" />
+          <circle cx="9.6" cy="11" r=".9" fill="currentColor" stroke="none" />
+          <circle cx="14.4" cy="11" r=".9" fill="currentColor" stroke="none" />
+          <circle cx="12" cy="14" r="1.5" />
+          <path d="M12 15.5v1.1" />
+        </svg>
+      );
   }
 }

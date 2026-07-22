@@ -1,7 +1,16 @@
 {
   "permissions": {
     "allow": [
-      "Bash(.venv/bin/python -c ' *)"
+      "Bash(.venv/bin/python -c ' *)",
+      "Bash(cd \"/home/akif-aziz/Public/Head office scrappers/scraping-hub/client\" && rm -rf .next && echo \"removed .next\")",
+      "Bash(nohup npm run dev)",
+      "Bash(echo \"started dev, pid $!\")",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\\\\n\" http://localhost:3000/)",
+      "Bash(curl -s http://localhost:3000/console/caleprocure -o /tmp/claude-1000/-home-akif-aziz-Public-Head-office-scrappers-scraping-hub/264dd071-decf-48a6-b929-66645d61da86/scratchpad/cal.html -w \"HTTP %{http_code}\\\\n\")",
+      "Bash(ps -p 25681 -o pid,ppid,etime,cmd)"
+    ],
+    "additionalDirectories": [
+      "/home/akif-aziz/Public/Head office scrappers/scraping-hub/client/.next"
     ]
   }
 }
