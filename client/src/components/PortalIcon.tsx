@@ -79,5 +79,32 @@ export default function PortalIcon({ name, className = "h-5 w-5" }: { name: Port
           <path d="M9.5 16.5 7.5 20.5M16.5 16.5l2 4" />
         </svg>
       );
+    case "federal":
+      // Federal shield: SAM.gov's US government contract opportunities.
+      return (
+        <svg {...common}>
+          <path d="M12 2.5l7 2.5v5c0 4.4-2.9 8.3-7 9.5-4.1-1.2-7-5.1-7-9.5v-5l7-2.5Z" />
+          <path d="M9.2 11.5l2 2 3.6-4" />
+        </svg>
+      );
+    case "marketplace":
+      // Storefront/awning: the Unison buyer marketplace.
+      return (
+        <svg {...common}>
+          <path d="M4 9.5 5.5 4h13L20 9.5" />
+          <path d="M4 9.5c0 1.4 1.1 2.5 2.5 2.5S9 10.9 9 9.5c0 1.4 1.1 2.5 2.5 2.5S14 10.9 14 9.5c0 1.4 1.1 2.5 2.5 2.5S19 10.9 19 9.5" />
+          <path d="M5.5 12v8.5h13V12" />
+          <path d="M10 20.5v-5h4v5" />
+        </svg>
+      );
+    case "catalog":
+      // Indexed list: the searchable NAICS code reference.
+      return (
+        <svg {...common}>
+          <rect x="4.5" y="3.5" width="15" height="17" rx="2" />
+          <path d="M8 8h8M8 12h8M8 16h5" />
+          <path d="M4.5 8h1.5M4.5 12h1.5M4.5 16h1.5" />
+        </svg>
+      );
   }
 }

@@ -4,8 +4,11 @@ import BidnetPanel from "@/components/BidnetPanel";
 import MyFloridaPanel from "@/components/MyFloridaPanel";
 import NorthDakotaPanel from "@/components/NorthDakotaPanel";
 import PortalIcon from "@/components/PortalIcon";
+import NaicsPanel from "@/components/NaicsPanel";
 import RideMetroPanel from "@/components/RideMetroPanel";
+import SamPanel from "@/components/SamPanel";
 import SeptaPanel from "@/components/SeptaPanel";
+import UnisonPanel from "@/components/UnisonPanel";
 import WisconsinPanel from "@/components/WisconsinPanel";
 import type { Portal } from "@/lib/api";
 import { portalMeta, type PortalMeta } from "@/lib/portals";
@@ -21,6 +24,9 @@ export default function PortalConsole({ portal }: { portal: Portal }) {
       {portal === "wisconsin" && <WisconsinPanel />}
       {portal === "northdakota" && <NorthDakotaPanel />}
       {portal === "septa" && <SeptaPanel />}
+      {portal === "sam" && <SamPanel />}
+      {portal === "unison" && <UnisonPanel />}
+      {portal === "naics" && <NaicsPanel />}
     </div>
   );
 }

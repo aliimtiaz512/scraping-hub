@@ -19,7 +19,7 @@ export interface PortalMeta {
   description: string;
   /** What the run produces, listed as capability pills in the hero. */
   outputs: string[];
-  icon: "florida" | "transit" | "network" | "capitol" | "prairie" | "rail";
+  icon: "florida" | "transit" | "network" | "capitol" | "prairie" | "rail" | "federal" | "marketplace" | "catalog";
   accent: {
     /** Icon tile: background + foreground. */
     tile: string;
@@ -133,6 +133,57 @@ export const PORTALS: PortalMeta[] = [
       dot: "bg-teal-500",
       rail: "bg-teal-500",
       wash: "from-teal-50",
+    },
+  },
+  {
+    key: "sam",
+    label: "SAM.gov",
+    operator: "U.S. federal contract opportunities",
+    host: "sam.gov",
+    tagline: "Federal solicitations, auto-evaluated",
+    description:
+      "Search active SAM.gov solicitations by updated-date range and NAICS code, extract each notice with its attachments, and run every bid through the NAICS-first evaluation funnel — PURSUE, REJECT, or MANUAL REVIEW — with editable kill-word and service rules.",
+    outputs: ["Date & NAICS filters", "Auto bid evaluation", "Excel export"],
+    icon: "federal",
+    accent: {
+      tile: "bg-indigo-50 text-indigo-600 ring-indigo-100",
+      dot: "bg-indigo-500",
+      rail: "bg-indigo-500",
+      wash: "from-indigo-50",
+    },
+  },
+  {
+    key: "unison",
+    label: "Unison Marketplace",
+    operator: "Unison Global (formerly FedBid)",
+    host: "marketplace.unisonglobal.com",
+    tagline: "Buyer requests",
+    description:
+      "Sign in to the Unison Marketplace seller dashboard and capture every open buyer request — buyer, description and closing date — to the database and an Excel sheet.",
+    outputs: ["Full request list", "Buyer details", "Excel export"],
+    icon: "marketplace",
+    accent: {
+      tile: "bg-orange-50 text-orange-600 ring-orange-100",
+      dot: "bg-orange-500",
+      rail: "bg-orange-500",
+      wash: "from-orange-50",
+    },
+  },
+  {
+    key: "naics",
+    label: "NAICS Codes",
+    operator: "Reference tool",
+    host: "naics.com",
+    tagline: "Searchable code reference",
+    description:
+      "Search the full catalogue of 6-digit NAICS industry codes and titles — a quick reference when choosing filters for the bid portals. Refresh the catalogue any time from the source index.",
+    outputs: ["Code & title search", "One-click refresh"],
+    icon: "catalog",
+    accent: {
+      tile: "bg-slate-100 text-slate-600 ring-slate-200",
+      dot: "bg-slate-500",
+      rail: "bg-slate-500",
+      wash: "from-slate-50",
     },
   },
 ];

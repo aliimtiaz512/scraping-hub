@@ -1,6 +1,15 @@
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
-export type Portal = "myflorida" | "ridemetro" | "bidnet" | "wisconsin" | "northdakota" | "septa";
+export type Portal =
+  | "myflorida"
+  | "ridemetro"
+  | "bidnet"
+  | "wisconsin"
+  | "northdakota"
+  | "septa"
+  | "sam"
+  | "unison"
+  | "naics";
 
 export interface CommodityCode {
   code: string;
@@ -79,6 +88,25 @@ export interface BidResult {
   requisition_number?: string;
   summary?: string;
   open_date?: string;
+  // SAM.gov
+  notice_id?: string;
+  department?: string;
+  subtier?: string;
+  office?: string;
+  description?: string;
+  updated_date?: string;
+  bid_repeat_count?: number;
+  naics_code?: string;
+  naics_title?: string;
+  date_offers_due?: string;
+  published_date?: string;
+  decision?: string;   // PURSUE | REJECT | MANUAL_REVIEW | PENDING | ERROR
+  reason?: string;
+  // Unison
+  buyer_number?: string;
+  buyer_description?: string;
+  buyer?: string;
+  end_date?: string;
   // shared
   documents: string[];
   error: string | null;
@@ -113,6 +141,13 @@ export interface RunStatus {
   // SEPTA-only: the optional filters a run was launched with.
   date_filter?: string | null;
   commodity_code?: string | null;
+  // SAM-only filters.
+  date_from?: string | null;
+  date_to?: string | null;
+  naics_codes?: string[];
+  award_notice?: boolean;
+  // Unison-only.
+  filter_by?: string | null;
   // shared
   started_at: string;
   finished_at: string | null;
@@ -266,6 +301,75 @@ export function startSeptaScrape({
       commodity_code: commodityCode || null,
     }),
   });
+}
+
+// -- SAM.gov -----------------------------------------------------------------
+
+export interface StartSamScrapeOptions {
+  dateFrom?: string;
+  dateTo?: string;
+  naicsCodes?: string[];
+  awardNotice?: boolean;
+  headless?: boolean;
+}
+
+export function startSamScrape({
+  dateFrom = "",
+  dateTo = "",
+  naicsCodes = [],
+  awardNotice = false,
+  headless = true,
+}: StartSamScrapeOptions): Promise<{ run_id: string; search: string; folder: string }> {
+  return request("/sam/scrape", {
+    method: "POST",
+    body: JSON.stringify({
+      date_filter: dateFrom || null,
+      date_to: dateTo || null,
+      naics_codes: naicsCodes,
+      award_notice: awardNotice,
+      headless,
+    }),
+  });
+}
+
+export function stopSamScrape(runId: string): Promise<{ success: boolean; message: string }> {
+  return request(`/sam/scrape/stop/${runId}`, { method: "POST" });
+}
+
+export function getSamScreenshot(runId: string): Promise<{ screenshot: string }> {
+  return request(`/sam/screenshot/${runId}`);
+}
+
+// -- Unison Marketplace ------------------------------------------------------
+
+export function startUnisonScrape(filterBy: string): Promise<{ run_id: string; search: string; folder: string }> {
+  return request("/unison/scrape", {
+    method: "POST",
+    body: JSON.stringify({ filter_by: filterBy || null }),
+  });
+}
+
+// -- NAICS reference tool ----------------------------------------------------
+
+export interface NaicsResult {
+  code: string;
+  title: string;
+}
+
+export interface NaicsListResponse {
+  total: number;
+  page: number;
+  limit: number;
+  results: NaicsResult[];
+}
+
+export function getNaicsCodes(q: string, page: number, limit = 50): Promise<NaicsListResponse> {
+  const params = new URLSearchParams({ q, page: String(page), limit: String(limit) });
+  return request(`/naics?${params.toString()}`);
+}
+
+export function startNaicsScrape(): Promise<{ run_id: string }> {
+  return request("/naics/scrape", { method: "POST" });
 }
 
 // -- shared ------------------------------------------------------------------

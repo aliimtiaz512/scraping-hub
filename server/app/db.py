@@ -25,6 +25,10 @@ def init_db() -> None:
     from app.scrapers.wisconsin import models as _wisconsin_models  # noqa: F401
     from app.scrapers.northdakota import models as _northdakota_models  # noqa: F401
     from app.scrapers.septa import models as _septa_models  # noqa: F401
+    from app.scrapers.evalconfig import models as _evalconfig_models  # noqa: F401
+    from app.scrapers.sam import models as _sam_models  # noqa: F401
+    from app.scrapers.unison import models as _unison_models  # noqa: F401
+    from app.scrapers.naics import models as _naics_models  # noqa: F401
 
     Base.metadata.create_all(bind=engine)
 

@@ -114,6 +114,12 @@ export function runTarget(run: RunStatus): string {
   if (run.scraper === "septa") {
     return run.date_filter ? `Opens ${run.date_filter}` : "Today's open quotes";
   }
+  if (run.scraper === "sam") {
+    const search = run.search?.trim();
+    return !search || search === "all active solicitations" ? "All active solicitations" : search;
+  }
+  if (run.scraper === "unison") return run.filter_by?.trim() || "All buyer requests";
+  if (run.scraper === "naics") return "NAICS reference refresh";
 
   if (run.keywords?.length) return run.keywords.join(", ");
   if (run.keyword) return run.keyword;
