@@ -17,8 +17,7 @@ from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.support.ui import WebDriverWait
 from webdriver_manager.chrome import ChromeDriverManager
 
-from app.config import settings
-from app.core import run_manager
+from app.core import live, run_manager
 from app.core.filenames import sanitize_filename
 
 logger = logging.getLogger(__name__)
@@ -49,12 +48,18 @@ class BaseScraper:
     # -- lifecycle ----------------------------------------------------------
 
     def start_driver(self, headless: bool | None = None, user_data_dir: str | None = None) -> None:
-        """Launch Chrome. `headless` overrides the global setting (a portal that
-        needs a human to solve a challenge forces it False); `user_data_dir`
-        points Chrome at a persistent profile so cookies/session survive between
-        runs. Both default to the previous behaviour when omitted."""
+        """Launch Chrome. When `headless` is omitted, the run's own `live_preview`
+        flag decides visibility: a run started from the "Live preview" button
+        shows the browser, every other run is headless. An explicit `headless`
+        argument overrides that (a portal that needs a human to solve a challenge
+        forces it False). `user_data_dir` points Chrome at a persistent profile so
+        cookies/session survive between runs."""
         options = Options()
-        use_headless = settings.headless if headless is None else headless
+        if headless is None:
+            # Default: hidden, unless this run was launched as a live preview.
+            run = run_manager.get_run(self.run_id) or {}
+            headless = not run.get("live_preview", False)
+        use_headless = headless
         if use_headless:
             options.add_argument("--headless=new")
         if user_data_dir:
@@ -90,6 +95,9 @@ class BaseScraper:
         service = Service(ChromeDriverManager().install())
         self.driver = webdriver.Chrome(service=service, options=options)
         self.driver.set_page_load_timeout(60)
+        # Expose this run's browser to the shared live-screenshot endpoint so the
+        # Live Preview modal can stream frames while it is open.
+        live.register(self.run_id, self)
         # Belt-and-suspenders: ensure navigator.webdriver is undefined on every
         # document before the page's own scripts run, so bot checks don't see it.
         try:
@@ -109,8 +117,19 @@ class BaseScraper:
             self.driver = None
 
     def cleanup(self) -> None:
+        live.unregister(self.run_id)
         shutil.rmtree(self.download_dir, ignore_errors=True)
         self.stop_driver()
+
+    def get_screenshot_base64(self) -> str | None:
+        """A base64 PNG of the current browser view, or None. Used by the shared
+        live-screenshot endpoint; defensive so a frame grab never breaks a run."""
+        if not self.driver:
+            return None
+        try:
+            return self.driver.get_screenshot_as_base64()
+        except WebDriverException:
+            return None
 
     # -- helpers ------------------------------------------------------------
 

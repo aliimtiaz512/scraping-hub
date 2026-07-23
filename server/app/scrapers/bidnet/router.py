@@ -33,7 +33,7 @@ def keywords() -> dict:
 
 
 @router.post("/scrape")
-def start_scrape(request: ScrapeRequest, background_tasks: BackgroundTasks) -> dict:
+def start_scrape(request: ScrapeRequest, background_tasks: BackgroundTasks, live_preview: bool = False) -> dict:
     # Strip, drop blanks, de-duplicate while preserving order.
     keywords = list(dict.fromkeys(kw.strip() for kw in request.keywords if kw.strip()))
     if not keywords:
@@ -52,6 +52,7 @@ def start_scrape(request: ScrapeRequest, background_tasks: BackgroundTasks) -> d
             "keyword": ", ".join(keywords),
             "keywords": keywords,
             "excel_exported": False,
+            "live_preview": live_preview,
         },
     )
     background_tasks.add_task(execute_run, run["run_id"], keywords)

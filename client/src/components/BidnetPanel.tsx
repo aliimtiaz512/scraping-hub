@@ -6,6 +6,7 @@ import BidnetResults from "@/components/BidnetResults";
 import KeywordSelect from "@/components/KeywordSelect";
 import RunStatusPanel from "@/components/RunStatus";
 import { ErrorBanner, LaunchBar, StartButton } from "@/components/ui";
+import LiveMonitor from "@/components/LiveMonitor";
 import { getBidnetKeywords, getRunStatus, startBidnetScrape, type BidnetNiche, type RunStatus } from "@/lib/api";
 
 const POLL_INTERVAL_MS = 3000;
@@ -50,7 +51,7 @@ export default function BidnetPanel() {
 
   useEffect(() => stopPolling, [stopPolling]);
 
-  const handleStart = async () => {
+  const handleStart = async (livePreview = false) => {
     if (selected.length === 0) {
       setError("Select at least one keyword to search.");
       return;
@@ -58,7 +59,7 @@ export default function BidnetPanel() {
     setError(null);
     setStarting(true);
     try {
-      const { run_id } = await startBidnetScrape(selected);
+      const { run_id } = await startBidnetScrape(selected, livePreview);
       const status = await getRunStatus("bidnet", run_id);
       setRun(status);
       stopPolling();
@@ -94,14 +95,17 @@ export default function BidnetPanel() {
             : `${selected.length} ${selected.length === 1 ? "search" : "searches"} across ${groupCount} ${groupCount === 1 ? "group" : "groups"} · one search per keyword, foldered by niche + tier`
         }
       >
-        <StartButton
-          onClick={handleStart}
-          disabled={selected.length === 0 || starting || isRunning}
-          running={isRunning}
-          starting={starting}
-        >
-          Start scrape
-        </StartButton>
+        <div className="flex items-center gap-2">
+          <LiveMonitor run={run} portal="bidnet" />
+          <StartButton
+            onClick={() => handleStart()}
+            disabled={selected.length === 0 || starting || isRunning}
+            running={isRunning}
+            starting={starting}
+          >
+            Start scrape
+          </StartButton>
+        </div>
       </LaunchBar>
 
       {run && <RunStatusPanel run={run} />}

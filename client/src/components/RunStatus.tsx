@@ -39,7 +39,7 @@ const STEP_LABELS: Record<string, string> = {
   failed: "Failed",
 };
 
-function stepLabel(step: string): string {
+export function stepLabel(step: string): string {
   if (step.startsWith("downloading_documents:")) return `Downloading documents for bid ${step.split(":")[1]}`;
   if (step.startsWith("opening_opportunity:")) return `Opening opportunity ${step.split(":")[1]}`;
   if (step.startsWith("downloading_zip:")) return `Downloading documents (${step.split(":")[1]})`;

@@ -6,6 +6,7 @@ import CategorySelect from "@/components/CategorySelect";
 import ResultsTable from "@/components/ResultsTable";
 import RunStatusPanel from "@/components/RunStatus";
 import { ErrorBanner, LaunchBar, StartButton } from "@/components/ui";
+import LiveMonitor from "@/components/LiveMonitor";
 import {
   getCategories,
   getRunStatus,
@@ -59,7 +60,7 @@ export default function MyFloridaPanel() {
 
   useEffect(() => stopPolling, [stopPolling]);
 
-  const handleStart = async () => {
+  const handleStart = async (livePreview = false) => {
     setError(null);
     setStarting(true);
     try {
@@ -70,6 +71,7 @@ export default function MyFloridaPanel() {
         keywords: selectedKeywords,
         adStatuses,
         adTypes,
+        livePreview,
       });
       const status = await getRunStatus("myflorida", run_id);
       setRun(status);
@@ -124,14 +126,17 @@ export default function MyFloridaPanel() {
               : `${selectedCodes.length} ${selectedCodes.length === 1 ? "code" : "codes"} in a single search`
         }
       >
-        <StartButton
-          onClick={handleStart}
-          disabled={!selected || nothingSelected || starting || isRunning}
-          running={isRunning}
-          starting={starting}
-        >
-          Start scrape
-        </StartButton>
+        <div className="flex items-center gap-2">
+          <LiveMonitor run={run} portal="myflorida" />
+          <StartButton
+            onClick={() => handleStart()}
+            disabled={!selected || nothingSelected || starting || isRunning}
+            running={isRunning}
+            starting={starting}
+          >
+            Start scrape
+          </StartButton>
+        </div>
       </LaunchBar>
 
       {run && <RunStatusPanel run={run} />}

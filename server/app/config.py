@@ -117,7 +117,9 @@ class Settings(BaseSettings):
     # the address recipients can actually reach (e.g. a tunnel or LAN address).
     public_base_url: str = "http://localhost:8000"
 
-    headless: bool = True
+    # Browser visibility is decided per-run, not globally: every run is headless
+    # unless it was started from the "Live preview" button (which sets the run's
+    # live_preview flag). See BaseScraper.start_driver.
 
     # SQLAlchemy URL for the Postgres database that holds scraped bids.
     database_url: str = "postgresql+psycopg2://postgres:postgres@localhost:5432/scraping-hub"

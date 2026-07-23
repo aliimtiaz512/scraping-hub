@@ -20,7 +20,6 @@ class ScrapeRequest(BaseModel):
     date_to: str | None = None              # YYYY-MM-DD (end of range)
     naics_codes: list[str] | None = None    # 6-digit NAICS codes to filter
     award_notice: bool = False              # include Award Notice type
-    headless: bool = True
 
 
 class EvaluateRequest(BaseModel):
@@ -31,7 +30,7 @@ class EvaluateRequest(BaseModel):
 
 
 @router.post("/scrape")
-def start_scrape(request: ScrapeRequest, background_tasks: BackgroundTasks) -> dict:
+def start_scrape(request: ScrapeRequest, background_tasks: BackgroundTasks, live_preview: bool = False) -> dict:
     date_from = (request.date_filter or "").strip() or None
     date_to = (request.date_to or "").strip() or None
     naics_codes = [c.strip() for c in (request.naics_codes or []) if c.strip()]
@@ -59,6 +58,7 @@ def start_scrape(request: ScrapeRequest, background_tasks: BackgroundTasks) -> d
             "naics_codes": naics_codes,
             "award_notice": request.award_notice,
             "excel_exported": False,
+            "live_preview": live_preview,
         },
     )
     background_tasks.add_task(
@@ -68,7 +68,7 @@ def start_scrape(request: ScrapeRequest, background_tasks: BackgroundTasks) -> d
         date_to,
         naics_codes,
         request.award_notice,
-        request.headless,
+        not live_preview,  # headless unless this is a live-preview run
     )
     return {"run_id": run["run_id"], "search": search, "folder": run["folder"]}
 

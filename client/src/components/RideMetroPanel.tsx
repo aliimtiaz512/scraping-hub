@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import RideMetroResults from "@/components/RideMetroResults";
 import RunStatusPanel from "@/components/RunStatus";
 import { ErrorBanner, LaunchBar, StartButton } from "@/components/ui";
+import LiveMonitor from "@/components/LiveMonitor";
 import { getRunStatus, startRideMetroScrape, type RunStatus } from "@/lib/api";
 
 const POLL_INTERVAL_MS = 3000;
@@ -24,11 +25,11 @@ export default function RideMetroPanel() {
 
   useEffect(() => stopPolling, [stopPolling]);
 
-  const handleStart = async () => {
+  const handleStart = async (livePreview = false) => {
     setError(null);
     setStarting(true);
     try {
-      const { run_id } = await startRideMetroScrape();
+      const { run_id } = await startRideMetroScrape(livePreview);
       const status = await getRunStatus("ridemetro", run_id);
       setRun(status);
       stopPolling();
@@ -55,9 +56,12 @@ export default function RideMetroPanel() {
       {error && <ErrorBanner message={error} />}
 
       <LaunchBar summary="No configuration needed — this run captures every open public opportunity.">
-        <StartButton onClick={handleStart} disabled={starting || isRunning} running={isRunning} starting={starting}>
-          Start scrape
-        </StartButton>
+        <div className="flex items-center gap-2">
+          <LiveMonitor run={run} portal="ridemetro" />
+          <StartButton onClick={() => handleStart()} disabled={starting || isRunning} running={isRunning} starting={starting}>
+            Start scrape
+          </StartButton>
+        </div>
       </LaunchBar>
 
       {run && <RunStatusPanel run={run} />}

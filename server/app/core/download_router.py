@@ -1,9 +1,11 @@
-"""`GET /runs/{run_id}/download` — the per-run Download button.
+"""Shared per-run endpoints:
 
-Serves the run's archive ZIP (cumulative Excel + all bid documents, built by
-exports.archive_run when the run completed). For runs from before the archive
-existed — or a run whose packaging failed — it falls back to packaging the
-run's on-disk folder on demand, or to a bare DB-regenerated Excel.
+* ``GET /runs/{run_id}/download`` — the run's archive ZIP (cumulative Excel +
+  all bid documents, built by exports.archive_run when the run completed). For
+  runs from before the archive existed — or a run whose packaging failed — it
+  falls back to packaging the run's on-disk folder on demand, or a bare Excel.
+* ``GET /runs/{run_id}/screenshot`` — a live frame of the run's browser (any
+  portal), for the Live Preview modal. Returns null until a frame is available.
 """
 
 import tempfile
@@ -13,9 +15,17 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse, Response
 from starlette.background import BackgroundTask
 
-from app.core import exports, run_manager
+from app.core import exports, live, run_manager
 
 router = APIRouter(tags=["downloads"])
+
+
+@router.get("/runs/{run_id}/screenshot")
+def run_screenshot(run_id: str) -> dict:
+    """A base64 PNG frame of the run's live browser, or null if none is
+    available yet (driver not up, run finished, or capture failed). Always 200
+    so the modal's poller stays quiet while it waits for the first frame."""
+    return {"screenshot": live.capture(run_id)}
 
 
 @router.get("/runs/{run_id}/download")

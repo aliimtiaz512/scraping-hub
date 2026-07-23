@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import RunStatusPanel from "@/components/RunStatus";
 import UnisonResults from "@/components/UnisonResults";
 import { Card, ErrorBanner, Field, LaunchBar, StartButton } from "@/components/ui";
+import LiveMonitor from "@/components/LiveMonitor";
 import { getRunStatus, startUnisonScrape, type RunStatus } from "@/lib/api";
 
 const POLL_INTERVAL_MS = 3000;
@@ -25,11 +26,11 @@ export default function UnisonPanel() {
 
   useEffect(() => stopPolling, [stopPolling]);
 
-  const handleStart = async () => {
+  const handleStart = async (livePreview = false) => {
     setError(null);
     setStarting(true);
     try {
-      const { run_id } = await startUnisonScrape(filterBy.trim());
+      const { run_id } = await startUnisonScrape(filterBy.trim(), livePreview);
       const status = await getRunStatus("unison", run_id);
       setRun(status);
       stopPolling();
@@ -77,9 +78,12 @@ export default function UnisonPanel() {
             : "No filter set — every open buyer request will be captured."
         }
       >
-        <StartButton onClick={handleStart} disabled={starting || isRunning} running={isRunning} starting={starting}>
-          Start scrape
-        </StartButton>
+        <div className="flex items-center gap-2">
+          <LiveMonitor run={run} portal="unison" />
+          <StartButton onClick={() => handleStart()} disabled={starting || isRunning} running={isRunning} starting={starting}>
+            Start scrape
+          </StartButton>
+        </div>
       </LaunchBar>
 
       {run && <RunStatusPanel run={run} />}

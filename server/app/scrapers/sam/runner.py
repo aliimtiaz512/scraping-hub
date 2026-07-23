@@ -13,7 +13,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from app.core import run_manager
+from app.core import live, run_manager
 from app.core.filenames import sanitize_filename
 from app.scrapers.sam import export
 from app.core.exports import archive_run
@@ -108,6 +108,7 @@ def execute_run(
         scraper.skip_csv = True            # DB-only; no CSV files
         scraper._on_bid_extracted = _on_bid
         _live[run_id] = scraper
+        live.register(run_id, scraper)  # shared live-screenshot endpoint
 
         run_manager.update_run(run_id, step="scraping")
         scraper.run(max_records=1000)
@@ -167,6 +168,7 @@ def execute_run(
             except Exception:  # noqa: BLE001 — best-effort teardown
                 pass
         _live.pop(run_id, None)
+        live.unregister(run_id)
         _stops.pop(run_id, None)
         run_manager.update_run(run_id, finished_at=datetime.now().isoformat())
         _save_run_row(run_id)

@@ -5,10 +5,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import RunStatusPanel from "@/components/RunStatus";
 import SamResults from "@/components/SamResults";
 import { Button, Card, ErrorBanner, LaunchBar, StartButton } from "@/components/ui";
-import { getRunStatus, getSamScreenshot, startSamScrape, stopSamScrape, type RunStatus } from "@/lib/api";
+import LiveMonitor from "@/components/LiveMonitor";
+import { getRunStatus, startSamScrape, stopSamScrape, type RunStatus } from "@/lib/api";
 
 const POLL_INTERVAL_MS = 3000;
-const SHOT_INTERVAL_MS = 3000;
 const inputClass =
   "w-full rounded-lg border border-ink-200 bg-white px-3 py-2 text-sm text-ink-900 shadow-sm transition placeholder:text-ink-400 focus:border-gold-400 focus:outline-none focus:ring-2 focus:ring-gold-400/25 disabled:cursor-not-allowed disabled:bg-ink-50 disabled:text-ink-400";
 
@@ -17,21 +17,16 @@ export default function SamPanel() {
   const [dateTo, setDateTo] = useState("");
   const [naics, setNaics] = useState("");
   const [awardNotice, setAwardNotice] = useState(false);
-  const [headless, setHeadless] = useState(true);
 
   const [run, setRun] = useState<RunStatus | null>(null);
-  const [shot, setShot] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const shotRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const runIdRef = useRef<string | null>(null);
 
   const stopTimers = useCallback(() => {
     if (pollRef.current) clearInterval(pollRef.current);
-    if (shotRef.current) clearInterval(shotRef.current);
     pollRef.current = null;
-    shotRef.current = null;
   }, []);
 
   useEffect(() => stopTimers, [stopTimers]);
@@ -39,7 +34,6 @@ export default function SamPanel() {
   const handleStart = async () => {
     setError(null);
     setStarting(true);
-    setShot(null);
     try {
       const naicsCodes = naics.split(/[\s,]+/).map((c) => c.trim()).filter(Boolean);
       const { run_id } = await startSamScrape({
@@ -47,7 +41,6 @@ export default function SamPanel() {
         dateTo: dateTo.trim(),
         naicsCodes,
         awardNotice,
-        headless,
       });
       runIdRef.current = run_id;
       setRun(await getRunStatus("sam", run_id));
@@ -61,17 +54,6 @@ export default function SamPanel() {
           // transient — keep trying
         }
       }, POLL_INTERVAL_MS);
-      // Live browser screenshot while the run is active (best-effort).
-      if (!headless) {
-        shotRef.current = setInterval(async () => {
-          try {
-            const { screenshot } = await getSamScreenshot(run_id);
-            setShot(screenshot);
-          } catch {
-            // no frame yet — ignore
-          }
-        }, SHOT_INTERVAL_MS);
-      }
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -124,10 +106,6 @@ export default function SamPanel() {
             <input type="checkbox" checked={awardNotice} disabled={isRunning} onChange={(e) => setAwardNotice(e.target.checked)} className="h-4 w-4 rounded border-ink-300 text-indigo-600 focus:ring-indigo-400" />
             Include Award Notices
           </label>
-          <label className="flex items-center gap-2 text-sm text-ink-700">
-            <input type="checkbox" checked={headless} disabled={isRunning} onChange={(e) => setHeadless(e.target.checked)} className="h-4 w-4 rounded border-ink-300 text-indigo-600 focus:ring-indigo-400" />
-            Run headless (uncheck to watch the browser)
-          </label>
         </div>
       </Card>
 
@@ -138,20 +116,14 @@ export default function SamPanel() {
               Stop
             </Button>
           )}
-          <StartButton onClick={handleStart} disabled={starting || isRunning} running={isRunning} starting={starting}>
+          <LiveMonitor run={run} portal="sam" />
+          <StartButton onClick={() => handleStart()} disabled={starting || isRunning} running={isRunning} starting={starting}>
             Start scrape
           </StartButton>
         </div>
       </LaunchBar>
 
       {run && <RunStatusPanel run={run} />}
-
-      {isRunning && !headless && shot && (
-        <Card title="Live browser">
-          {/* eslint-disable-next-line @next/next/no-img-element -- transient base64 frame, not a static asset */}
-          <img src={`data:image/png;base64,${shot}`} alt="Live SAM.gov browser view" className="w-full rounded-lg border border-ink-200" />
-        </Card>
-      )}
 
       {run && <SamResults bids={run.bids} />}
     </div>

@@ -28,6 +28,8 @@ logging.basicConfig(
 class UnisonMarketplaceScraper:
     def __init__(self):
         self.driver = None
+        # Browser visibility: headless by default (set False for a live preview).
+        self.headless = True
         # Create new CSV file with timestamp for each run
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         self.csv_file = f'unison_requests_{timestamp}.csv'
@@ -43,14 +45,30 @@ class UnisonMarketplaceScraper:
         options = webdriver.ChromeOptions()
         options.add_argument('--no-sandbox')
         options.add_argument('--disable-dev-shm-usage')
-        
+        # Hidden by default; a live-preview run sets self.headless = False. A fixed
+        # window size keeps the headless layout identical to the headed one so the
+        # existing selectors/flow are unaffected.
+        if self.headless:
+            options.add_argument('--headless=new')
+            options.add_argument('--window-size=1920,1080')
+
         # Remove automation flags to avoid detection
         options.add_experimental_option("excludeSwitches", ["enable-automation"])
         options.add_experimental_option('useAutomationExtension', False)
-        
+
         self.driver = webdriver.Chrome(options=options)
         self.driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
         logging.info("WebDriver initialized successfully")
+
+    def get_screenshot_base64(self):
+        """A base64 PNG of the current browser view, or None. Used by the shared
+        live-screenshot endpoint; defensive so a frame grab never breaks a run."""
+        if not self.driver:
+            return None
+        try:
+            return self.driver.get_screenshot_as_base64()
+        except Exception:  # noqa: BLE001 — a failed frame must never affect the scrape
+            return None
         
     def load_existing_data(self):
         """Load existing Buyer# from CSV to prevent duplicates"""

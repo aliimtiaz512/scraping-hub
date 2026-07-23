@@ -16,12 +16,12 @@ router = APIRouter(prefix="/caleprocure", tags=["caleprocure"])
 
 
 @router.post("/scrape")
-def start_scrape(background_tasks: BackgroundTasks) -> dict:
+def start_scrape(background_tasks: BackgroundTasks, live_preview: bool = False) -> dict:
     """Start a run. For now this signs in and verifies the session; the
     post-login scraping flow is added next."""
     label = timestamp()  # e.g. 2026-07-21 14-30-05
     folder = run_manager.make_run_folder(f"CalEProcure ({label})")
-    run = run_manager.create_run("caleprocure", folder, {"label": label})
+    run = run_manager.create_run("caleprocure", folder, {"label": label, "live_preview": live_preview})
     background_tasks.add_task(execute_run, run["run_id"])
     return {"run_id": run["run_id"], "folder": run["folder"]}
 

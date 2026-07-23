@@ -13,7 +13,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from app.core import run_manager
+from app.core import live, run_manager
 from app.core.filenames import sanitize_filename
 from app.scrapers.unison import export
 from app.scrapers.unison.engine.unison_scraper import UnisonMarketplaceScraper
@@ -52,7 +52,10 @@ def execute_run(run_id: str, filter_by: str | None = None) -> None:
     csv_dir = Path(tempfile.mkdtemp(prefix="unison_"))
     try:
         scraper = UnisonMarketplaceScraper()
+        # Hidden by default; show the browser only for a live-preview run.
+        scraper.headless = not (run_manager.get_run(run_id) or {}).get("live_preview", False)
         scraper.csv_file = str(csv_dir / "unison_requests.csv")
+        live.register(run_id, scraper)  # shared live-screenshot endpoint
         scraper.run_scraper(filter_by=filter_by)
 
         records = _read_records(Path(scraper.csv_file))
@@ -103,6 +106,7 @@ def execute_run(run_id: str, filter_by: str | None = None) -> None:
         run_manager.add_error(run_id, str(exc)[:500])
         run_manager.update_run(run_id, status="failed", step="failed")
     finally:
+        live.unregister(run_id)
         shutil.rmtree(csv_dir, ignore_errors=True)
         run_manager.update_run(run_id, finished_at=datetime.now().isoformat())
         _save_run_row(run_id)
