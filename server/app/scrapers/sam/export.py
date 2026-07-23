@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import Any
 
 from openpyxl import Workbook
+from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
+from openpyxl.styles import Alignment, Font, PatternFill
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
@@ -20,6 +22,54 @@ from app.db import SessionLocal
 from app.scrapers.sam.models import EXCEL_COLUMNS, SamBid, SamRun
 
 logger = logging.getLogger(__name__)
+
+# Styling ported verbatim from the sam-septa portal (server/utils/excel.py) so
+# the hub's SAM workbook is visually identical to the real portal's export:
+# a navy header row, REJECT rows tinted red, auto-fit column widths, and illegal
+# control characters stripped from every cell.
+_HEADER_FILL = PatternFill("solid", fgColor="1E3A5F")
+_HEADER_FONT = Font(bold=True, color="FFFFFF", size=11)
+_HEADER_ALIGN = Alignment(horizontal="center", vertical="center", wrap_text=True)
+_REJECT_FILL = PatternFill("solid", fgColor="FFCCCC")
+
+
+def _sanitize_cell(value: Any) -> Any:
+    if isinstance(value, str):
+        return ILLEGAL_CHARACTERS_RE.sub("", value)
+    return value
+
+
+def _write_styled_sheet(rows: list[list[Any]], out_path: str | Path) -> None:
+    """Write the SAM workbook with the sam-septa portal's exact styling.
+
+    Header order/labels come from EXCEL_COLUMNS (already identical to the portal);
+    this adds the navy header, red REJECT rows, and auto-fit widths on top.
+    """
+    headers = [header for _, header in EXCEL_COLUMNS]
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "SAM Bids"
+
+    sheet.append([_sanitize_cell(h) for h in headers])
+    for cell in sheet[1]:
+        cell.fill = _HEADER_FILL
+        cell.font = _HEADER_FONT
+        cell.alignment = _HEADER_ALIGN
+    sheet.row_dimensions[1].height = 30
+
+    dec_idx = headers.index("Decision") if "Decision" in headers else -1
+    for row_idx, row in enumerate(rows, start=2):
+        sanitized = [_sanitize_cell(v) for v in row]
+        sheet.append(sanitized)
+        if dec_idx != -1 and sanitized[dec_idx] == "REJECT":
+            for cell in sheet[row_idx]:
+                cell.fill = _REJECT_FILL
+
+    for col in sheet.columns:
+        max_len = max((len(str(c.value or "")) for c in col), default=10)
+        sheet.column_dimensions[col[0].column_letter].width = min(max_len + 4, 60)
+
+    workbook.save(str(out_path))
 
 _BID_FIELDS = {
     "notice_id", "title", "department", "subtier", "office", "description",
@@ -143,30 +193,20 @@ def _rows_for_run(run_id: str) -> list[SamBid]:
 
 
 def generate_excel(run_id: str, out_path: str | Path) -> int:
-    """Build this run's Excel sheet from sam_bids. Returns the row count."""
+    """Build this run's Excel sheet from sam_bids (sam-septa styling). Returns row count."""
     rows = _rows_for_run(run_id)
-    workbook = Workbook()
-    sheet = workbook.active
-    sheet.title = "SAM Bids"
-    sheet.append([header for _, header in EXCEL_COLUMNS])
-    for bid in rows:
-        sheet.append([getattr(bid, attr, None) for attr, _ in EXCEL_COLUMNS])
-    workbook.save(str(out_path))
+    data = [[getattr(bid, attr, None) for attr, _ in EXCEL_COLUMNS] for bid in rows]
+    _write_styled_sheet(data, out_path)
     logger.info("[run %s] wrote %d SAM rows to %s", run_id, len(rows), out_path)
     return len(rows)
 
 
 def generate_excel_from_records(records: list[dict[str, Any]], out_path: str | Path) -> int:
-    """Build the Excel straight from in-memory records (DB-unavailable fallback)."""
-    workbook = Workbook()
-    sheet = workbook.active
-    sheet.title = "SAM Bids"
-    sheet.append([header for _, header in EXCEL_COLUMNS])
-    count = 0
-    for record in records:
-        if not record.get("notice_id"):
-            continue
-        sheet.append([record.get(attr) for attr, _ in EXCEL_COLUMNS])
-        count += 1
-    workbook.save(str(out_path))
-    return count
+    """Build the Excel straight from in-memory records (DB-unavailable fallback), same styling."""
+    data = [
+        [record.get(attr) for attr, _ in EXCEL_COLUMNS]
+        for record in records
+        if record.get("notice_id")
+    ]
+    _write_styled_sheet(data, out_path)
+    return len(data)

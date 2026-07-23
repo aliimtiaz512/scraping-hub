@@ -7,6 +7,12 @@ SERVER_ROOT = Path(__file__).resolve().parent.parent
 
 
 class Settings(BaseSettings):
+    # Static portal URLs (login pages, portal endpoints) live here as defaults —
+    # they are identical across deployments, so this file is their single source
+    # of truth and they are intentionally NOT listed in .env / .env.example.
+    # Only secrets and per-deployment values (credentials, DATABASE_URL, AWS_*,
+    # PUBLIC_BASE_URL) belong in .env. A field can still be overridden by an env
+    # var of the same name if a specific deployment ever needs to.
     model_config = SettingsConfigDict(
         env_file=SERVER_ROOT / ".env",
         env_file_encoding="utf-8",
@@ -25,7 +31,7 @@ class Settings(BaseSettings):
     ridemetro_opportunities_url: str = "https://ridemetro.bonfirehub.com/portal/?tab=openOpportunities"
 
     # BidNet Direct
-    bidnet_direct_link: str = "https://www.bidnetdirect.com"
+    bidnet_direct_link: str = "https://www.bidnetdirect.com/"
     bidnet_username: str = ""
     bidnet_password: str = ""
 
