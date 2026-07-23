@@ -100,7 +100,7 @@ export interface BidResult {
   naics_title?: string;
   date_offers_due?: string;
   published_date?: string;
-  decision?: string;   // PURSUE | REJECT | MANUAL_REVIEW | PENDING | ERROR
+  decision?: string;   // PURSUE | REJECT (PENDING | ERROR only on eval failure)
   reason?: string;
   // Unison
   buyer_number?: string;
@@ -389,6 +389,14 @@ export function listRuns(portal: Portal): Promise<{ runs: RunStatus[] }> {
  */
 export function bidnetExportUrl(): string {
   return `${API_URL}/bidnet/export`;
+}
+
+/**
+ * A completed run's archive ZIP as a browser download: the cumulative Excel
+ * report plus every downloaded bid document in its niche-wise folder.
+ */
+export function runDownloadUrl(runId: string): string {
+  return `${API_URL}/runs/${runId}/download`;
 }
 
 /** FastAPI's generated interactive reference, served by the backend at /docs. */

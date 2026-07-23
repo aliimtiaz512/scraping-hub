@@ -16,6 +16,7 @@ from typing import Any
 from app.core import run_manager
 from app.core.filenames import sanitize_filename
 from app.scrapers.sam import export
+from app.core.exports import archive_run
 from app.services.notifier import notify_scrape_completion
 from app.scrapers.sam.evaluation import evaluate, seed_defaults
 from app.scrapers.sam.engine.sam_scraper import SAMGovScraper
@@ -126,18 +127,27 @@ def execute_run(
             run_manager.add_error(run_id, "db save failed (see logs)")
 
         run_manager.update_run(run_id, step="generating_excel")
-        search = (run.get("search") or "sam bids").strip()
-        name = sanitize_filename(f"SAM_({search})", max_length=150)
-        excel_path = _unique_path(run_dir / f"{name}.xlsx")
-        try:
-            if db_ok:
-                export.generate_excel(run_id, excel_path)
-            else:
+        if db_ok:
+            # No Excel is written to disk any more — the sheet is rebuilt from
+            # the DB on demand (Download button / completion email).
+            run_manager.update_run(run_id, excel_exported=True)
+        else:
+            # DB outage: the records exist only in memory, so a disk Excel is
+            # the only copy the download/email can serve.
+            search = (run.get("search") or "sam bids").strip()
+            name = sanitize_filename(f"SAM_({search})", max_length=150)
+            excel_path = _unique_path(run_dir / f"{name}.xlsx")
+            try:
                 export.generate_excel_from_records(records, excel_path)
-            run_manager.update_run(run_id, excel_path=str(excel_path), excel_exported=True)
-        except Exception:  # noqa: BLE001
-            logger.exception("[run %s] SAM Excel generation failed", run_id)
-            run_manager.add_error(run_id, "excel generation failed (see logs)")
+                run_manager.update_run(run_id, excel_path=str(excel_path), excel_exported=True)
+            except Exception:  # noqa: BLE001
+                logger.exception("[run %s] SAM Excel generation failed", run_id)
+                run_manager.add_error(run_id, "excel generation failed (see logs)")
+
+        # Package the run into one archive ZIP (cumulative Excel + any files)
+        # and delete the workspace — nothing stays on local disk.
+        run_manager.update_run(run_id, step="packaging_results")
+        archive_run(run_id)
 
         stopped = stop_event.is_set()
         run_manager.update_run(
@@ -160,6 +170,7 @@ def execute_run(
         _stops.pop(run_id, None)
         run_manager.update_run(run_id, finished_at=datetime.now().isoformat())
         _save_run_row(run_id)
+        run_manager.remove_empty_folder(run_id)
 
 
 def _save_run_row(run_id: str) -> None:

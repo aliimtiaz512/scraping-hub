@@ -4,9 +4,9 @@ import { useEffect, useState } from "react";
 
 import PortalResults from "@/components/PortalResults";
 import RunStatusPanel from "@/components/RunStatus";
-import { Button, DataTable, EmptyState, ErrorBanner, IconButton, RunBadge, Spinner } from "@/components/ui";
-import type { RunStatus } from "@/lib/api";
-import { fetchRunsState, formatDuration, formatTimestamp, runTarget, RUNS_LOADING, type RunsState } from "@/lib/runs";
+import { Button, DataTable, EmptyState, ErrorBanner, IconButton, LinkButton, RunBadge, Spinner } from "@/components/ui";
+import { runDownloadUrl, type RunStatus } from "@/lib/api";
+import { fetchRunsState, formatDuration, formatTimestamp, runDownloadable, runTarget, RUNS_LOADING, type RunsState } from "@/lib/runs";
 import type { PortalMeta } from "@/lib/portals";
 
 /**
@@ -129,14 +129,31 @@ export default function RunHistory({ meta }: { meta: PortalMeta }) {
               <td className="tabular px-4 py-3 text-right text-sm text-ink-700">{run.bids_found}</td>
               <td className="tabular px-4 py-3 text-right text-sm text-ink-700">{run.documents_downloaded}</td>
               <td className="px-4 py-3 text-right">
-                {run.errors.length > 0 && (
-                  <span
-                    className="whitespace-nowrap rounded-full border border-red-200 bg-red-50 px-2 py-0.5 text-xs font-medium text-red-700"
-                    title={run.errors.join("\n")}
-                  >
-                    {run.errors.length} {run.errors.length === 1 ? "error" : "errors"}
-                  </span>
-                )}
+                <span className="inline-flex items-center gap-2">
+                  {run.errors.length > 0 && (
+                    <span
+                      className="whitespace-nowrap rounded-full border border-red-200 bg-red-50 px-2 py-0.5 text-xs font-medium text-red-700"
+                      title={run.errors.join("\n")}
+                    >
+                      {run.errors.length} {run.errors.length === 1 ? "error" : "errors"}
+                    </span>
+                  )}
+                  {runDownloadable(run) && (
+                    <LinkButton
+                      href={runDownloadUrl(run.run_id)}
+                      size="sm"
+                      onClick={(e) => e.stopPropagation()}
+                      title="Download ZIP (cumulative Excel + bid documents)"
+                      icon={
+                        <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden>
+                          <path d="M8 2v8m0 0L5 7m3 3l3-3M2.5 12.5h11" strokeLinecap="round" strokeLinejoin="round" />
+                        </svg>
+                      }
+                    >
+                      Download
+                    </LinkButton>
+                  )}
+                </span>
               </td>
             </tr>
           ))}

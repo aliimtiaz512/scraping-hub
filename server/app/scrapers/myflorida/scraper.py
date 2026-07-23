@@ -32,6 +32,8 @@ from app.core.base_scraper import BaseScraper
 from app.core.filenames import sanitize_filename
 from app.scrapers.myflorida.ingest import ingest_excel
 from app.scrapers.myflorida.workbook import merge_exports
+from app.core.exports import archive_run
+from app.services.notifier import notify_scrape_completion
 
 logger = logging.getLogger(__name__)
 
@@ -743,7 +745,16 @@ class MFMPScraper(BaseScraper):
                 self._run_keywords()
             else:
                 self._run_codes()
+            # Package the run into one archive ZIP — the merged workbook plus
+            # every bid's document folder — then delete the workspace.
+            self.set_step("packaging_results")
+            archive_run(self.run_id)
+
             run_manager.update_run(self.run_id, status="completed", step="done")
+            # Email/S3 notification on successful completion (attaches the run
+            # ZIP, or the merged workbook if the ZIP is too big to email).
+            final = run_manager.get_run(self.run_id) or {}
+            notify_scrape_completion(self.run_id, "myflorida", final.get("bids_found", 0))
         except Exception as exc:  # noqa: BLE001 — a failed run must be reported, not crash the worker
             logger.exception("[run %s] failed", self.run_id)
             self.screenshot("fatal")
@@ -752,6 +763,7 @@ class MFMPScraper(BaseScraper):
         finally:
             self.cleanup()
             run_manager.update_run(self.run_id, finished_at=datetime.now().isoformat())
+            run_manager.remove_empty_folder(self.run_id)
 
 
 def execute_run(

@@ -142,7 +142,7 @@ export const PORTALS: PortalMeta[] = [
     host: "sam.gov",
     tagline: "Federal solicitations, auto-evaluated",
     description:
-      "Search active SAM.gov solicitations by updated-date range and NAICS code, extract each notice with its attachments, and run every bid through the NAICS-first evaluation funnel — PURSUE, REJECT, or MANUAL REVIEW — with editable kill-word and service rules.",
+      "Search active SAM.gov solicitations by updated-date range and NAICS code, extract each notice with its attachments, and run every bid through the requirement-type-first evaluation funnel — PURSUE or REJECT — with editable kill-word and service rules.",
     outputs: ["Date & NAICS filters", "Auto bid evaluation", "Excel export"],
     icon: "federal",
     accent: {

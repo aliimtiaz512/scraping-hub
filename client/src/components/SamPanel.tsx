@@ -131,7 +131,7 @@ export default function SamPanel() {
         </div>
       </Card>
 
-      <LaunchBar summary="Each bid is scored PURSUE / REJECT / MANUAL REVIEW by the evaluator as it is scraped.">
+      <LaunchBar summary="Each bid is scored PURSUE / REJECT by the evaluator as it is scraped.">
         <div className="flex items-center gap-2">
           {isRunning && (
             <Button variant="secondary" onClick={handleStop}>

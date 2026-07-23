@@ -1,3 +1,4 @@
+import tempfile
 from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -90,10 +91,26 @@ class Settings(BaseSettings):
     aws_ses_username: str = ""
     aws_ses_password: str = ""
 
-    # Kept outside the server/ tree so downloads don't trip the uvicorn --reload
-    # file watcher (which would restart the process mid-scrape). Resolved against
-    # SERVER_ROOT when relative — see documents_root below.
+    # Legacy output root (data/documents). New runs no longer write here — they
+    # work inside work_root and archive into archive_root — but the path is kept
+    # so downloads of runs made before the switch still resolve.
     download_dir: str = "../data/documents"
+
+    # Scratch workspace for in-flight runs: bid documents (and the browser's
+    # download staging) land here while a run is going, get zipped into the
+    # run's archive on completion, and the whole folder is deleted. Defaults to
+    # the system temp dir so nothing accumulates in the repo's data/ tree.
+    work_dir: str = ""
+
+    # Where each finished run's final ZIP (cumulative Excel + documents) is
+    # stored, so the Download button and email link keep working long after the
+    # workspace has been cleaned up.
+    archive_dir: str = "../data/archives"
+
+    # Base URL the notification email uses for the run's download link. Set to
+    # the address recipients can actually reach (e.g. a tunnel or LAN address).
+    public_base_url: str = "http://localhost:8000"
+
     headless: bool = True
 
     # SQLAlchemy URL for the Postgres database that holds scraped bids.
@@ -105,6 +122,27 @@ class Settings(BaseSettings):
         if not path.is_absolute():
             path = SERVER_ROOT / path
         path = path.resolve()  # normalize away '..' so downloads land cleanly outside server/
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    @property
+    def work_root(self) -> Path:
+        if self.work_dir:
+            path = Path(self.work_dir)
+            if not path.is_absolute():
+                path = SERVER_ROOT / path
+        else:
+            path = Path(tempfile.gettempdir()) / "scraping-hub-runs"
+        path = path.resolve()
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    @property
+    def archive_root(self) -> Path:
+        path = Path(self.archive_dir)
+        if not path.is_absolute():
+            path = SERVER_ROOT / path
+        path = path.resolve()  # normalize away '..' so archives land outside server/
         path.mkdir(parents=True, exist_ok=True)
         return path
 

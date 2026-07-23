@@ -45,8 +45,10 @@ def start_scrape(request: ScrapeRequest, background_tasks: BackgroundTasks) -> d
         ) if part
     ) or "all active solicitations"
 
-    date_folder = f"Sam_{timestamp('%Y-%m-%d')}"
-    folder = run_manager.make_run_folder(date_folder)
+    # Per-run workspace folder (its name becomes the run's ZIP name). Timestamped
+    # so concurrent runs never share a workspace — each is zipped and deleted
+    # independently on completion.
+    folder = run_manager.make_run_folder(f"SAM ({timestamp()})")
     run = run_manager.create_run(
         "sam",
         folder,

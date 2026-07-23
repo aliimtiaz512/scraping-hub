@@ -16,11 +16,10 @@ router = APIRouter(prefix="/ridemetro", tags=["ridemetro"])
 def start_scrape(background_tasks: BackgroundTasks) -> dict:
     label = timestamp()  # e.g. 2026-07-08 14-30-05
     # Date-bucketed storage (mirrors SEPTA/MyFlorida): every run on the same
-    # calendar day drops its Excel sheet into one shared RideMetro-<date> folder;
-    # the next day gets a fresh folder. RideMetro is list-only (no document
-    # downloads), so the folder holds only the generated sheets — one per run.
-    date_folder = f"RideMetro-{timestamp('%Y-%m-%d')}"
-    folder = run_manager.make_run_folder(date_folder)
+    # Per-run workspace folder (its name becomes the run's ZIP name). Timestamped
+    # so concurrent runs never share a workspace — each is zipped and deleted
+    # independently on completion.
+    folder = run_manager.make_run_folder(f"RideMetro ({label})")
     run = run_manager.create_run("ridemetro", folder, {"label": label})
     background_tasks.add_task(execute_run, run["run_id"])
     return {"run_id": run["run_id"], "folder": run["folder"]}

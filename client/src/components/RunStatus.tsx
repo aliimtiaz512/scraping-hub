@@ -1,7 +1,8 @@
 "use client";
 
-import type { RunStatus as RunStatusData } from "@/lib/api";
-import { RunBadge } from "@/components/ui";
+import { runDownloadUrl, type RunStatus as RunStatusData } from "@/lib/api";
+import { LinkButton, RunBadge } from "@/components/ui";
+import { runDownloadable } from "@/lib/runs";
 
 const STEP_LABELS: Record<string, string> = {
   queued: "Queued",
@@ -33,6 +34,7 @@ const STEP_LABELS: Record<string, string> = {
   saving: "Saving to database",
   fetching_naics: "Fetching NAICS codes",
   scraping_results: "Scraping results grid",
+  packaging_results: "Packaging results into ZIP",
   done: "Done",
   failed: "Failed",
 };
@@ -67,6 +69,7 @@ function runSubtitle(run: RunStatusData): string {
 export default function RunStatus({ run }: { run: RunStatusData }) {
   const inFlight = run.status === "running" || run.status === "pending";
   const subtitle = runSubtitle(run);
+  const download = runDownloadable(run);
 
   return (
     <section className="overflow-hidden rounded-xl border border-ink-200 bg-white shadow-sm">
@@ -99,7 +102,7 @@ export default function RunStatus({ run }: { run: RunStatusData }) {
         <Stat label="Bids found" value={run.bids_found} />
         <Stat label="Processed" value={run.bids_processed} />
         <Stat label="Documents" value={run.documents_downloaded} />
-        <Stat label="Excel export" value={run.excel_exported ? "Saved" : "—"} muted={!run.excel_exported} />
+        <Stat label="Results" value={run.excel_exported ? "Ready" : "—"} muted={!run.excel_exported} />
       </div>
 
       {(run.errors.length > 0 || run.no_results || (run.warnings?.length ?? 0) > 0 || run.status === "completed") && (
@@ -134,17 +137,26 @@ export default function RunStatus({ run }: { run: RunStatusData }) {
             </Notice>
           )}
 
-          {run.status === "completed" && (
-            <div className="flex items-center gap-2 rounded-lg border border-ink-200 bg-ink-50 px-3 py-2.5">
-              <svg viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4 shrink-0 text-ink-400" aria-hidden>
-                <path d="M3.5 5.5A2 2 0 0 1 5.5 3.5h2.4c.5 0 1 .2 1.4.6l.8.8h4.4a2 2 0 0 1 2 2v7.6a2 2 0 0 1-2 2h-9a2 2 0 0 1-2-2v-9Z" />
-              </svg>
+          {run.status === "completed" && download && (
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-ink-200 bg-ink-50 px-3 py-2.5">
               <div className="min-w-0">
-                <p className="text-xs font-medium text-ink-600">Output saved to</p>
-                <p className="truncate font-mono text-xs text-ink-500" title={run.folder}>
-                  {run.folder}
+                <p className="text-xs font-medium text-ink-600">Results ready</p>
+                <p className="truncate text-xs text-ink-500">
+                  Cumulative Excel report plus every downloaded bid document, bundled as one ZIP.
                 </p>
               </div>
+              <LinkButton
+                href={runDownloadUrl(run.run_id)}
+                variant="primary"
+                size="sm"
+                icon={
+                  <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden>
+                    <path d="M8 2v8m0 0L5 7m3 3l3-3M2.5 12.5h11" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                }
+              >
+                Download ZIP
+              </LinkButton>
             </div>
           )}
         </div>

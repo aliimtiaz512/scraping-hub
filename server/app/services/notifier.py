@@ -3,9 +3,10 @@ via AWS SES SMTP.
 
 This is the same mechanism as the sam-septa project's services/notifier.py,
 adapted to the hub: config comes from the hub `settings` (pydantic-settings)
-rather than os.getenv, and the Excel attachment is the run's already-generated
-spreadsheet (run["excel_path"]) rather than a re-query. Wired into SAM and SEPTA
-completions for now; other scrapers can opt in later.
+rather than os.getenv. The attachment is the run's archive ZIP (cumulative
+Excel + all bid documents, built by exports.archive_run) when it fits in an
+email, else just the cumulative Excel — with the ZIP's download link in the
+body either way. Wired into every scraping portal's completion.
 
 Everything here is best-effort — a notification failure never affects a scrape.
 """
@@ -13,15 +14,16 @@ Everything here is best-effort — a notification failure never affects a scrape
 import logging
 import smtplib
 import threading
+import zipfile
 from datetime import datetime
+from pathlib import Path
 from email import encoders
 from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from pathlib import Path
 
 from app.config import settings
-from app.core import run_manager
+from app.core import exports, run_manager
 
 logger = logging.getLogger(__name__)
 
@@ -32,8 +34,8 @@ def _recipients() -> list[str]:
     return [e.strip() for e in (settings.recipient_emails or "").split(",") if e.strip()]
 
 
-def _upload_to_s3(data: bytes, filename: str) -> str | None:
-    """Upload Excel bytes to S3 under exports/<filename>; return the URL or None."""
+def _upload_to_s3(data: bytes, filename: str, content_type: str = _XLSX_MIME) -> str | None:
+    """Upload bytes to S3 under exports/<filename>; return the URL or None."""
     bucket = settings.aws_s3_bucket_name
     if not bucket:
         logger.info("AWS_S3_BUCKET_NAME not set — skipping S3 upload")
@@ -48,7 +50,7 @@ def _upload_to_s3(data: bytes, filename: str) -> str | None:
             region_name=settings.aws_region or "us-east-1",
         )
         key = f"exports/{filename}"
-        s3.put_object(Bucket=bucket, Key=key, Body=data, ContentType=_XLSX_MIME)
+        s3.put_object(Bucket=bucket, Key=key, Body=data, ContentType=content_type)
         url = f"https://{bucket}.s3.amazonaws.com/{key}"
         logger.info("S3 upload OK: %s", url)
         return url
@@ -96,21 +98,42 @@ def _send_email(recipients: list[str], subject: str, body_html: str, attachment:
         return False
 
 
-def _excel_bytes(run: dict) -> tuple[bytes, str] | None:
-    """Read the run's generated Excel from disk. Returns (bytes, filename) or None."""
-    path = run.get("excel_path")
-    if not path:
-        logger.warning("run %s has no excel_path — skipping notification", run.get("run_id"))
-        return None
-    p = Path(path)
-    if not p.is_file():
-        logger.warning("run %s excel not found at %s — skipping notification", run.get("run_id"), path)
-        return None
+# SES caps a whole message around 10 MB — leave headroom for encoding overhead.
+_MAX_ATTACHMENT_BYTES = 7 * 1024 * 1024
+
+
+def _excel_from_zip(path: Path) -> tuple[bytes, str] | None:
+    """Pull the cumulative Excel report (a root-level .xlsx) out of the run ZIP."""
     try:
-        return p.read_bytes(), p.name
-    except OSError as exc:
-        logger.error("could not read excel %s: %s", path, exc)
-        return None
+        with zipfile.ZipFile(path) as zf:
+            for name in zf.namelist():
+                if "/" not in name and name.lower().endswith(".xlsx"):
+                    return zf.read(name), Path(name).name
+    except (OSError, zipfile.BadZipFile) as exc:
+        logger.error("could not read excel out of %s: %s", path, exc)
+    return None
+
+
+def _attachment_for(run: dict) -> tuple[bytes, str, str] | None:
+    """(bytes, filename, content_type) to attach: the full ZIP when it fits in
+    an email, else just the cumulative Excel (the ZIP stays downloadable via
+    the link). Falls back to a DB-regenerated Excel for runs with no archive."""
+    zip_path = run.get("zip_path")
+    if zip_path and Path(zip_path).is_file():
+        p = Path(zip_path)
+        try:
+            if p.stat().st_size <= _MAX_ATTACHMENT_BYTES:
+                return p.read_bytes(), p.name, "application/zip"
+        except OSError as exc:
+            logger.error("could not read archive %s: %s", zip_path, exc)
+        payload = _excel_from_zip(p)
+        if payload:
+            return (*payload, _XLSX_MIME)
+    payload = exports.excel_bytes(run)
+    if payload:
+        return (*payload, _XLSX_MIME)
+    logger.warning("run %s has nothing to attach — skipping notification", run.get("run_id"))
+    return None
 
 
 def _notify(run_id: str, scraper: str, record_count: int) -> None:
@@ -123,17 +146,28 @@ def _notify(run_id: str, scraper: str, record_count: int) -> None:
     if not run:
         return
 
-    payload = _excel_bytes(run)
+    payload = _attachment_for(run)
     if not payload:
         return
-    excel, filename = payload
+    data, filename, content_type = payload
+    attached_zip = content_type == "application/zip"
 
     now = datetime.now()
     hr = now.strftime("%I").lstrip("0") or "12"
     ts = now.strftime(f"%Y-%m-%d, {hr}:%M %p")
 
-    s3_url = _upload_to_s3(excel, filename)
-    s3_link = f'<a href="{s3_url}">Download from S3</a>' if s3_url else "<em>S3 upload unavailable</em>"
+    s3_url = _upload_to_s3(data, filename, content_type)
+    s3_link = f' You can also <a href="{s3_url}">download it from S3</a>.' if s3_url else ""
+
+    download_url = f"{settings.public_base_url.rstrip('/')}/runs/{run_id}/download"
+    attach_note = (
+        "The complete ZIP (cumulative Excel report + all bid documents) is attached."
+        if attached_zip
+        else (
+            "The cumulative Excel report is attached; the complete ZIP with all bid "
+            "documents was too large to email — use the download link below."
+        )
+    )
 
     subject = f"{scraper.upper()} Scrape Complete — {record_count} records ({ts})"
     body_html = f"""\
@@ -144,10 +178,11 @@ def _notify(run_id: str, scraper: str, record_count: int) -> None:
   <li><strong>Records scraped:</strong> {record_count}</li>
   <li><strong>Completed at:</strong> {ts}</li>
 </ul>
-<p>The Excel report is attached to this email. {s3_link}</p>
+<p>{attach_note}{s3_link}</p>
+<p><a href="{download_url}">Download the full ZIP from the Scraping Hub</a></p>
 </body></html>"""
 
-    _send_email(recipients, subject, body_html, excel, filename)
+    _send_email(recipients, subject, body_html, data, filename)
 
 
 def notify_scrape_completion(run_id: str, scraper: str, record_count: int) -> None:
