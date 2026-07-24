@@ -28,17 +28,15 @@ export default function PortalResults({ portal, bids }: { portal: Portal; bids: 
       return <NorthDakotaResults bids={bids} />;
     case "septa":
       return <SeptaResults bids={bids} />;
-<<<<<<< HEAD
-    case "caleprocure":
-      // Login-only so far — no scraped rows to render yet.
-      return null;
-=======
     case "sam":
       return <SamResults bids={bids} />;
     case "unison":
       return <UnisonResults bids={bids} />;
     case "naics":
       return null; // NAICS is a reference tool, not a bid list
->>>>>>> 6fe90adc95cb7094bccf1e642df404d4cc42fc42
+    case "caleprocure":
+    case "emma":
+      // Login-only so far — no scraped rows to render yet.
+      return null;
   }
 }

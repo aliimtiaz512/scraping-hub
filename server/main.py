@@ -8,6 +8,7 @@ from app.core.download_router import router as download_router
 from app.db import init_db
 from app.scrapers.bidnet.router import router as bidnet_router
 from app.scrapers.caleprocure.router import router as caleprocure_router
+from app.scrapers.emma.router import router as emma_router
 from app.scrapers.evalconfig.router import router as evalconfig_router
 from app.scrapers.myflorida.router import router as myflorida_router
 from app.scrapers.naics.router import router as naics_router
@@ -52,6 +53,7 @@ app.include_router(wisconsin_router)
 app.include_router(northdakota_router)
 app.include_router(septa_router)
 app.include_router(caleprocure_router)
+app.include_router(emma_router)
 app.include_router(evalconfig_router)
 app.include_router(sam_router)
 app.include_router(unison_router)
@@ -66,6 +68,6 @@ def health() -> dict:
         "service": "scraping-hub",
         "scrapers": [
             "myflorida", "ridemetro", "bidnet", "wisconsin", "northdakota",
-            "septa", "caleprocure", "sam", "unison", "naics",
+            "septa", "caleprocure", "emma", "sam", "unison", "naics",
         ],
     }

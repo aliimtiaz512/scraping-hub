@@ -76,6 +76,14 @@ class Settings(BaseSettings):
     cal_eprocure_username: str = ""
     cal_eprocure_password: str = ""
 
+    # EMMA (eMaryland Marketplace Advantage) — Maryland's procurement portal on
+    # the Ivalua platform (same product as North Dakota's ND Buys). Unlike ND,
+    # login is a plain form on the page itself (#body_x_txtLogin /
+    # #body_x_txtPass / #body_x_btnLogin) — no OAuth/B2C redirect.
+    emma_link: str = "https://emma.maryland.gov/page.aspx/en/usr/login"
+    emma_username: str = ""
+    emma_password: str = ""
+
     # Unison Marketplace — the vendored engine (server/scrappers/unison/) reads
     # these straight from the environment via its own load_dotenv(); declared here
     # too so the .env keys are documented in one place. SAM.gov needs no creds;

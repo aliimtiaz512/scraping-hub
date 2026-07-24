@@ -19,11 +19,18 @@ export interface PortalMeta {
   description: string;
   /** What the run produces, listed as capability pills in the hero. */
   outputs: string[];
-<<<<<<< HEAD
-  icon: "florida" | "transit" | "network" | "capitol" | "prairie" | "rail" | "bear";
-=======
-  icon: "florida" | "transit" | "network" | "capitol" | "prairie" | "rail" | "federal" | "marketplace" | "catalog";
->>>>>>> 6fe90adc95cb7094bccf1e642df404d4cc42fc42
+  icon:
+    | "florida"
+    | "transit"
+    | "network"
+    | "capitol"
+    | "prairie"
+    | "rail"
+    | "federal"
+    | "marketplace"
+    | "catalog"
+    | "bear"
+    | "crab";
   accent: {
     /** Icon tile: background + foreground. */
     tile: string;
@@ -140,17 +147,6 @@ export const PORTALS: PortalMeta[] = [
     },
   },
   {
-<<<<<<< HEAD
-    key: "caleprocure",
-    label: "Cal eProcure",
-    operator: "State of California",
-    host: "caleprocure.ca.gov",
-    tagline: "California eProcurement portal",
-    description:
-      "Sign in to Cal eProcure, California's statewide eProcurement portal. Login verification is live now; solicitation search and Excel export are being built next.",
-    outputs: ["Supplier login", "Session verification"],
-    icon: "bear",
-=======
     key: "sam",
     label: "SAM.gov",
     operator: "U.S. federal contract opportunities",
@@ -177,7 +173,6 @@ export const PORTALS: PortalMeta[] = [
       "Sign in to the Unison Marketplace seller dashboard and capture every open buyer request — buyer, description and closing date — to the database and an Excel sheet.",
     outputs: ["Full request list", "Buyer details", "Excel export"],
     icon: "marketplace",
->>>>>>> 6fe90adc95cb7094bccf1e642df404d4cc42fc42
     accent: {
       tile: "bg-orange-50 text-orange-600 ring-orange-100",
       dot: "bg-orange-500",
@@ -185,8 +180,6 @@ export const PORTALS: PortalMeta[] = [
       wash: "from-orange-50",
     },
   },
-<<<<<<< HEAD
-=======
   {
     key: "naics",
     label: "NAICS Codes",
@@ -204,7 +197,40 @@ export const PORTALS: PortalMeta[] = [
       wash: "from-slate-50",
     },
   },
->>>>>>> 6fe90adc95cb7094bccf1e642df404d4cc42fc42
+  {
+    key: "caleprocure",
+    label: "Cal eProcure",
+    operator: "State of California",
+    host: "caleprocure.ca.gov",
+    tagline: "California eProcurement portal",
+    description:
+      "Sign in to Cal eProcure, California's statewide eProcurement portal. Login verification is live now; solicitation search and Excel export are being built next.",
+    outputs: ["Supplier login", "Session verification"],
+    icon: "bear",
+    accent: {
+      tile: "bg-orange-50 text-orange-600 ring-orange-100",
+      dot: "bg-orange-500",
+      rail: "bg-orange-500",
+      wash: "from-orange-50",
+    },
+  },
+  {
+    key: "emma",
+    label: "EMMA",
+    operator: "State of Maryland",
+    host: "emma.maryland.gov",
+    tagline: "Maryland procurement portal",
+    description:
+      "Sign in to eMaryland Marketplace Advantage (EMMA), Maryland's statewide procurement portal, and open the Public Solicitations list. Login and navigation are live now; list scraping and Excel export are being built next.",
+    outputs: ["Supplier login", "Public Solicitations"],
+    icon: "crab",
+    accent: {
+      tile: "bg-cyan-50 text-cyan-600 ring-cyan-100",
+      dot: "bg-cyan-500",
+      rail: "bg-cyan-500",
+      wash: "from-cyan-50",
+    },
+  },
 ];
 
 export function portalMeta(key: Portal): PortalMeta {

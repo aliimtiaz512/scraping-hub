@@ -2,6 +2,7 @@
 
 import BidnetPanel from "@/components/BidnetPanel";
 import CalEProcurePanel from "@/components/CalEProcurePanel";
+import EmmaPanel from "@/components/EmmaPanel";
 import MyFloridaPanel from "@/components/MyFloridaPanel";
 import NorthDakotaPanel from "@/components/NorthDakotaPanel";
 import PortalIcon from "@/components/PortalIcon";
@@ -25,13 +26,11 @@ export default function PortalConsole({ portal }: { portal: Portal }) {
       {portal === "wisconsin" && <WisconsinPanel />}
       {portal === "northdakota" && <NorthDakotaPanel />}
       {portal === "septa" && <SeptaPanel />}
-<<<<<<< HEAD
-      {portal === "caleprocure" && <CalEProcurePanel />}
-=======
       {portal === "sam" && <SamPanel />}
       {portal === "unison" && <UnisonPanel />}
       {portal === "naics" && <NaicsPanel />}
->>>>>>> 6fe90adc95cb7094bccf1e642df404d4cc42fc42
+      {portal === "caleprocure" && <CalEProcurePanel />}
+      {portal === "emma" && <EmmaPanel />}
     </div>
   );
 }

@@ -1,9 +1,10 @@
-"""EMMA API — login milestone.
+"""EMMA API — login + navigation milestone.
 
-Only the run lifecycle is wired here so sign-in can be verified end-to-end
-(POST /emma/scrape → poll /emma/scrape/status/{run_id}). The search request
-body, the `/bids` listing, and the Excel export are added with the scraping
-flow, following the North Dakota router.
+Only the run lifecycle is wired here so sign-in and the hop to Public
+Solicitations can be verified end-to-end (POST /emma/scrape → poll
+/emma/scrape/status/{run_id}). The search request body, the `/bids` listing,
+and the Excel export are added with the scraping flow, following the North
+Dakota router.
 """
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
@@ -16,12 +17,12 @@ router = APIRouter(prefix="/emma", tags=["emma"])
 
 
 @router.post("/scrape")
-def start_scrape(background_tasks: BackgroundTasks) -> dict:
-    """Start a run. For now this signs in and verifies the session; the
-    post-login scraping flow is added next."""
+def start_scrape(background_tasks: BackgroundTasks, live_preview: bool = False) -> dict:
+    """Start a run. For now this signs in and opens the Public Solicitations
+    list; the list scraping is added next."""
     label = timestamp()  # e.g. 2026-07-21 14-30-05
     folder = run_manager.make_run_folder(f"EMMA ({label})")
-    run = run_manager.create_run("emma", folder, {"label": label})
+    run = run_manager.create_run("emma", folder, {"label": label, "live_preview": live_preview})
     background_tasks.add_task(execute_run, run["run_id"])
     return {"run_id": run["run_id"], "folder": run["folder"]}
 

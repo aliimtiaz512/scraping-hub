@@ -79,19 +79,6 @@ export default function PortalIcon({ name, className = "h-5 w-5" }: { name: Port
           <path d="M9.5 16.5 7.5 20.5M16.5 16.5l2 4" />
         </svg>
       );
-<<<<<<< HEAD
-    case "bear":
-      // Bear face: the California grizzly from the state flag.
-      return (
-        <svg {...common}>
-          <circle cx="6.5" cy="6.5" r="1.9" />
-          <circle cx="17.5" cy="6.5" r="1.9" />
-          <circle cx="12" cy="12" r="6.5" />
-          <circle cx="9.6" cy="11" r=".9" fill="currentColor" stroke="none" />
-          <circle cx="14.4" cy="11" r=".9" fill="currentColor" stroke="none" />
-          <circle cx="12" cy="14" r="1.5" />
-          <path d="M12 15.5v1.1" />
-=======
     case "federal":
       // Federal shield: SAM.gov's US government contract opportunities.
       return (
@@ -117,7 +104,31 @@ export default function PortalIcon({ name, className = "h-5 w-5" }: { name: Port
           <rect x="4.5" y="3.5" width="15" height="17" rx="2" />
           <path d="M8 8h8M8 12h8M8 16h5" />
           <path d="M4.5 8h1.5M4.5 12h1.5M4.5 16h1.5" />
->>>>>>> 6fe90adc95cb7094bccf1e642df404d4cc42fc42
+        </svg>
+      );
+    case "bear":
+      // Bear face: the California grizzly from the state flag.
+      return (
+        <svg {...common}>
+          <circle cx="6.5" cy="6.5" r="1.9" />
+          <circle cx="17.5" cy="6.5" r="1.9" />
+          <circle cx="12" cy="12" r="6.5" />
+          <circle cx="9.6" cy="11" r=".9" fill="currentColor" stroke="none" />
+          <circle cx="14.4" cy="11" r=".9" fill="currentColor" stroke="none" />
+          <circle cx="12" cy="14" r="1.5" />
+          <path d="M12 15.5v1.1" />
+        </svg>
+      );
+    case "crab":
+      // Blue crab: Maryland's Chesapeake emblem.
+      return (
+        <svg {...common}>
+          <ellipse cx="12" cy="13.5" rx="5.25" ry="3.75" />
+          <circle cx="10" cy="12.75" r=".85" fill="currentColor" stroke="none" />
+          <circle cx="14" cy="12.75" r=".85" fill="currentColor" stroke="none" />
+          <path d="M8.5 10.5C8 8.5 6.5 7.5 4.5 7.5c.4 1.6 1.4 2.7 3 3.2" />
+          <path d="M15.5 10.5c.5-2 2-3 4-3-.4 1.6-1.4 2.7-3 3.2" />
+          <path d="M7 15.5l-2.5 1M7.8 17l-2 1.7M17 15.5l2.5 1M16.2 17l2 1.7" />
         </svg>
       );
   }

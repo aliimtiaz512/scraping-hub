@@ -1,8 +1,5 @@
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
-<<<<<<< HEAD
-export type Portal = "myflorida" | "ridemetro" | "bidnet" | "wisconsin" | "northdakota" | "septa" | "caleprocure";
-=======
 export type Portal =
   | "myflorida"
   | "ridemetro"
@@ -12,8 +9,9 @@ export type Portal =
   | "septa"
   | "sam"
   | "unison"
-  | "naics";
->>>>>>> 6fe90adc95cb7094bccf1e642df404d4cc42fc42
+  | "naics"
+  | "caleprocure"
+  | "emma";
 
 export interface CommodityCode {
   code: string;
@@ -145,14 +143,6 @@ export interface RunStatus {
   // SEPTA-only: the optional filters a run was launched with.
   date_filter?: string | null;
   commodity_code?: string | null;
-<<<<<<< HEAD
-  // Cal eProcure-only: login-milestone diagnostics. `login_ok` is true once the
-  // run has signed in and confirmed the session; `landing_*` describe where it
-  // landed after login.
-  login_ok?: boolean;
-  landing_url?: string;
-  landing_title?: string;
-=======
   // SAM-only filters.
   date_from?: string | null;
   date_to?: string | null;
@@ -160,7 +150,12 @@ export interface RunStatus {
   award_notice?: boolean;
   // Unison-only.
   filter_by?: string | null;
->>>>>>> 6fe90adc95cb7094bccf1e642df404d4cc42fc42
+  // Cal eProcure / EMMA: login-milestone diagnostics. `login_ok` is true once
+  // the run has signed in and confirmed the session; `landing_*` describe the
+  // page it ended on (the supplier homepage, or EMMA's Public Solicitations).
+  login_ok?: boolean;
+  landing_url?: string;
+  landing_title?: string;
   // shared
   started_at: string;
   finished_at: string | null;
@@ -328,17 +323,6 @@ export function startSeptaScrape({
   });
 }
 
-<<<<<<< HEAD
-// -- Cal eProcure (California eProcurement) -----------------------------------
-
-/**
- * Cal eProcure currently supports login verification only — the run signs in and
- * confirms the session. It takes no search criteria yet; solicitation search and
- * export are added next.
- */
-export function startCalEProcureScrape(): Promise<{ run_id: string; folder: string }> {
-  return request("/caleprocure/scrape", { method: "POST" });
-=======
 // -- SAM.gov -----------------------------------------------------------------
 
 export interface StartSamScrapeOptions {
@@ -416,7 +400,27 @@ export function getNaicsCodes(q: string, page: number, limit = 50): Promise<Naic
 
 export function startNaicsScrape(): Promise<{ run_id: string }> {
   return request("/naics/scrape", { method: "POST" });
->>>>>>> 6fe90adc95cb7094bccf1e642df404d4cc42fc42
+}
+
+// -- Cal eProcure (California eProcurement) -----------------------------------
+
+/**
+ * Cal eProcure currently supports login verification only — the run signs in and
+ * confirms the session. It takes no search criteria yet; solicitation search and
+ * export are added next.
+ */
+export function startCalEProcureScrape(): Promise<{ run_id: string; folder: string }> {
+  return request("/caleprocure/scrape", { method: "POST" });
+}
+
+// -- EMMA (eMaryland Marketplace Advantage) -----------------------------------
+
+/**
+ * EMMA currently signs in and opens the Public Solicitations list, capturing the
+ * page. It takes no search criteria yet; list scraping and export come next.
+ */
+export function startEmmaScrape(): Promise<{ run_id: string; folder: string }> {
+  return request("/emma/scrape", { method: "POST" });
 }
 
 // -- shared ------------------------------------------------------------------
