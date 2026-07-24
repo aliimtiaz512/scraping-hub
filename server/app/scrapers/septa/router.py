@@ -25,7 +25,7 @@ class ScrapeRequest(BaseModel):
 
 
 @router.post("/scrape")
-def start_scrape(request: ScrapeRequest, background_tasks: BackgroundTasks) -> dict:
+def start_scrape(request: ScrapeRequest, background_tasks: BackgroundTasks, live_preview: bool = False) -> dict:
     date_filter = (request.date_filter or "").strip() or None
     keyword = (request.keyword or "").strip() or None
     commodity_code = (request.commodity_code or "").strip() or None
@@ -40,11 +40,10 @@ def start_scrape(request: ScrapeRequest, background_tasks: BackgroundTasks) -> d
 
     label = timestamp()  # e.g. 2026-07-20 14-30-05
     # Date-bucketed storage (mirrors MyFlorida): every run on the same calendar
-    # day drops its Excel sheet into one shared Septa-<date> folder; the next day
-    # gets a fresh folder. SEPTA has no document downloads, so the folder holds
-    # only the generated sheets — one per run.
-    date_folder = f"Septa-{timestamp('%Y-%m-%d')}"
-    folder = run_manager.make_run_folder(date_folder)
+    # Per-run workspace folder (its name becomes the run's ZIP name). Timestamped
+    # so concurrent runs never share a workspace — each is zipped and deleted
+    # independently on completion.
+    folder = run_manager.make_run_folder(f"Septa ({label})")
     run = run_manager.create_run(
         "septa",
         folder,
@@ -55,6 +54,7 @@ def start_scrape(request: ScrapeRequest, background_tasks: BackgroundTasks) -> d
             "keyword": keyword,
             "commodity_code": commodity_code,
             "excel_exported": False,
+            "live_preview": live_preview,
         },
     )
     background_tasks.add_task(execute_run, run["run_id"], date_filter, keyword, commodity_code)

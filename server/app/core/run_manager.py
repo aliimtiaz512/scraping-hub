@@ -96,8 +96,13 @@ def load_persisted_runs() -> None:
 
 
 def make_run_folder(name: str) -> Path:
-    """Create and return a per-run output folder under the documents root."""
-    folder = settings.documents_root / name
+    """Create and return a per-run scratch folder under the temp workspace.
+
+    Everything a run produces (bid documents, browser download staging,
+    DB-outage fallback sheets) lands here; on completion the folder is zipped
+    into settings.archive_root and deleted — nothing is left on local disk.
+    """
+    folder = settings.work_root / name
     folder.mkdir(parents=True, exist_ok=True)
     return folder
 
@@ -206,3 +211,28 @@ def run_folder(run_id: str) -> Path:
     if not run:
         raise KeyError(f"Unknown run: {run_id}")
     return Path(run["folder"])
+
+
+def remove_empty_folder(run_id: str) -> None:
+    """Delete the run's workspace folder if nothing was written into it, plus
+    any now-empty parents up to the workspace root.
+
+    Successful runs are cleaned up by exports.archive_run; this catches runs
+    that failed before producing anything. Only folders inside the temp
+    workspace are ever touched — legacy runs pointing into data/documents are
+    left alone.
+    """
+    try:
+        folder = run_folder(run_id).resolve()
+    except KeyError:
+        return
+    root = settings.work_root
+    try:
+        current = folder
+        while current != root and root in current.parents:
+            if not current.is_dir() or any(current.iterdir()):
+                break
+            current.rmdir()
+            current = current.parent
+    except OSError:  # noqa: BLE001 — tidying is best-effort, never fatal
+        logger.debug("could not tidy empty run folder for %s", run_id, exc_info=True)

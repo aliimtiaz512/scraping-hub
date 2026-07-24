@@ -4,6 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core import run_manager
+from app.core.download_router import router as download_router
 from app.db import init_db
 from app.scrapers.bidnet.router import router as bidnet_router
 from app.scrapers.caleprocure.router import router as caleprocure_router
@@ -55,6 +56,7 @@ app.include_router(evalconfig_router)
 app.include_router(sam_router)
 app.include_router(unison_router)
 app.include_router(naics_router)
+app.include_router(download_router)
 
 
 @app.get("/")

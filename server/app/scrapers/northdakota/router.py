@@ -20,7 +20,7 @@ class ScrapeRequest(BaseModel):
 
 
 @router.post("/scrape")
-def start_scrape(request: ScrapeRequest, background_tasks: BackgroundTasks) -> dict:
+def start_scrape(request: ScrapeRequest, background_tasks: BackgroundTasks, live_preview: bool = False) -> dict:
     keyword = request.keyword.strip()
     commodity = request.commodity.strip()
     search = ", ".join(
@@ -41,6 +41,7 @@ def start_scrape(request: ScrapeRequest, background_tasks: BackgroundTasks) -> d
             "keyword": keyword,
             "commodity": commodity,
             "excel_exported": False,
+            "live_preview": live_preview,
         },
     )
     background_tasks.add_task(execute_run, run["run_id"], keyword, commodity)

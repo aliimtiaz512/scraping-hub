@@ -151,6 +151,7 @@ export function StartButton({
   );
 }
 
+
 /** Neutral secondary action — the small All / None style controls. */
 export function MiniButton({ children, ...props }: ButtonHTMLAttributes<HTMLButtonElement>) {
   return (
@@ -351,3 +352,4 @@ function PlayIcon() {
     </svg>
   );
 }
+

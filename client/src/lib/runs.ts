@@ -126,15 +126,19 @@ export function runTarget(run: RunStatus): string {
   return "—";
 }
 
-/** The spreadsheet a run produced, if it produced one. */
-export function runExcelPath(run: RunStatus): string | null {
-  if (run.excel_path) return run.excel_path;
-  if (run.excel_exported && run.folder) return run.folder;
-  return null;
+/** Portals with nothing to download (reference data / login-only). */
+const NO_DOWNLOAD = new Set(["naics", "caleprocure", "evalconfig"]);
+
+/** True when this portal's runs produce a downloadable archive ZIP. */
+export function portalDownloadable(portal: string): boolean {
+  return !NO_DOWNLOAD.has(portal);
 }
 
-/** Trailing path segment — full paths are too long to show in a cell. */
-export function basename(path: string): string {
-  const parts = path.split("/").filter(Boolean);
-  return parts[parts.length - 1] ?? path;
+/**
+ * True when `GET /runs/{id}/download` will serve this run's archive ZIP —
+ * the cumulative Excel report plus all downloaded bid documents. Null-ish
+ * (false) while the run hasn't completed or for portals with no results.
+ */
+export function runDownloadable(run: RunStatus): boolean {
+  return run.status === "completed" && portalDownloadable(run.scraper ?? "");
 }

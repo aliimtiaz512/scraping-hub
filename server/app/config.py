@@ -1,3 +1,4 @@
+import tempfile
 from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -6,6 +7,12 @@ SERVER_ROOT = Path(__file__).resolve().parent.parent
 
 
 class Settings(BaseSettings):
+    # Static portal URLs (login pages, portal endpoints) live here as defaults —
+    # they are identical across deployments, so this file is their single source
+    # of truth and they are intentionally NOT listed in .env / .env.example.
+    # Only secrets and per-deployment values (credentials, DATABASE_URL, AWS_*,
+    # PUBLIC_BASE_URL) belong in .env. A field can still be overridden by an env
+    # var of the same name if a specific deployment ever needs to.
     model_config = SettingsConfigDict(
         env_file=SERVER_ROOT / ".env",
         env_file_encoding="utf-8",
@@ -24,7 +31,7 @@ class Settings(BaseSettings):
     ridemetro_opportunities_url: str = "https://ridemetro.bonfirehub.com/portal/?tab=openOpportunities"
 
     # BidNet Direct
-    bidnet_direct_link: str = "https://www.bidnetdirect.com"
+    bidnet_direct_link: str = "https://www.bidnetdirect.com/"
     bidnet_username: str = ""
     bidnet_password: str = ""
 
@@ -90,11 +97,29 @@ class Settings(BaseSettings):
     aws_ses_username: str = ""
     aws_ses_password: str = ""
 
-    # Kept outside the server/ tree so downloads don't trip the uvicorn --reload
-    # file watcher (which would restart the process mid-scrape). Resolved against
-    # SERVER_ROOT when relative — see documents_root below.
+    # Legacy output root (data/documents). New runs no longer write here — they
+    # work inside work_root and archive into archive_root — but the path is kept
+    # so downloads of runs made before the switch still resolve.
     download_dir: str = "../data/documents"
-    headless: bool = True
+
+    # Scratch workspace for in-flight runs: bid documents (and the browser's
+    # download staging) land here while a run is going, get zipped into the
+    # run's archive on completion, and the whole folder is deleted. Defaults to
+    # the system temp dir so nothing accumulates in the repo's data/ tree.
+    work_dir: str = ""
+
+    # Where each finished run's final ZIP (cumulative Excel + documents) is
+    # stored, so the Download button and email link keep working long after the
+    # workspace has been cleaned up.
+    archive_dir: str = "../data/archives"
+
+    # Base URL the notification email uses for the run's download link. Set to
+    # the address recipients can actually reach (e.g. a tunnel or LAN address).
+    public_base_url: str = "http://localhost:8000"
+
+    # Browser visibility is decided per-run, not globally: every run is headless
+    # unless it was started from the "Live preview" button (which sets the run's
+    # live_preview flag). See BaseScraper.start_driver.
 
     # SQLAlchemy URL for the Postgres database that holds scraped bids.
     database_url: str = "postgresql+psycopg2://postgres:postgres@localhost:5432/scraping-hub"
@@ -105,6 +130,27 @@ class Settings(BaseSettings):
         if not path.is_absolute():
             path = SERVER_ROOT / path
         path = path.resolve()  # normalize away '..' so downloads land cleanly outside server/
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    @property
+    def work_root(self) -> Path:
+        if self.work_dir:
+            path = Path(self.work_dir)
+            if not path.is_absolute():
+                path = SERVER_ROOT / path
+        else:
+            path = Path(tempfile.gettempdir()) / "scraping-hub-runs"
+        path = path.resolve()
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    @property
+    def archive_root(self) -> Path:
+        path = Path(self.archive_dir)
+        if not path.is_absolute():
+            path = SERVER_ROOT / path
+        path = path.resolve()  # normalize away '..' so archives land outside server/
         path.mkdir(parents=True, exist_ok=True)
         return path
 

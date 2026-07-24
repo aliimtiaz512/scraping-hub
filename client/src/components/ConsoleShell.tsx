@@ -12,7 +12,7 @@ import { PORTALS } from "@/lib/portals";
 const SECTIONS = [
   { key: "", label: "Console" },
   { key: "history", label: "History" },
-  { key: "exports", label: "Exports" },
+  { key: "exports", label: "Downloads" },
 ] as const;
 
 /**

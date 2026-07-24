@@ -71,7 +71,7 @@ def _resolve_subset(requested: list[str], available: list[str], name: str) -> li
 
 
 @router.post("/scrape")
-def start_scrape(request: ScrapeRequest, background_tasks: BackgroundTasks) -> dict:
+def start_scrape(request: ScrapeRequest, background_tasks: BackgroundTasks, live_preview: bool = False) -> dict:
     if request.category not in CATEGORIES:
         raise HTTPException(status_code=400, detail=f"Unknown category: {request.category}")
     if request.mode not in SEARCH_MODES:
@@ -119,6 +119,7 @@ def start_scrape(request: ScrapeRequest, background_tasks: BackgroundTasks) -> d
             "codes": codes,
             "keywords": keywords,
             "excel_exported": False,
+            "live_preview": live_preview,
         },
     )
     background_tasks.add_task(execute_run, run["run_id"], codes, ad_statuses, ad_types, keywords)

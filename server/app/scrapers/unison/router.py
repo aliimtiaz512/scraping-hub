@@ -19,16 +19,18 @@ class ScrapeRequest(BaseModel):
 
 
 @router.post("/scrape")
-def start_scrape(request: ScrapeRequest, background_tasks: BackgroundTasks) -> dict:
+def start_scrape(request: ScrapeRequest, background_tasks: BackgroundTasks, live_preview: bool = False) -> dict:
     filter_by = (request.filter_by or "").strip() or None
     search = f"filter={filter_by}" if filter_by else "all requests"
 
-    date_folder = f"Unison_{timestamp('%Y-%m-%d')}"
-    folder = run_manager.make_run_folder(date_folder)
+    # Per-run workspace folder (its name becomes the run's ZIP name). Timestamped
+    # so concurrent runs never share a workspace — each is zipped and deleted
+    # independently on completion.
+    folder = run_manager.make_run_folder(f"Unison ({timestamp()})")
     run = run_manager.create_run(
         "unison",
         folder,
-        {"search": search, "filter_by": filter_by, "excel_exported": False},
+        {"search": search, "filter_by": filter_by, "excel_exported": False, "live_preview": live_preview},
     )
     background_tasks.add_task(runner.execute_run, run["run_id"], filter_by)
     return {"run_id": run["run_id"], "search": search, "folder": run["folder"]}

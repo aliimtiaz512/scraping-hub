@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import RunStatusPanel from "@/components/RunStatus";
 import SeptaResults from "@/components/SeptaResults";
 import { Card, ErrorBanner, Field, LaunchBar, StartButton } from "@/components/ui";
+import LiveMonitor from "@/components/LiveMonitor";
 import { getRunStatus, startSeptaScrape, type RunStatus } from "@/lib/api";
 
 const POLL_INTERVAL_MS = 3000;
@@ -27,7 +28,7 @@ export default function SeptaPanel() {
 
   useEffect(() => stopPolling, [stopPolling]);
 
-  const handleStart = async () => {
+  const handleStart = async (livePreview = false) => {
     setError(null);
     setStarting(true);
     try {
@@ -35,6 +36,7 @@ export default function SeptaPanel() {
         dateFilter: dateFilter.trim(),
         keyword: keyword.trim(),
         commodityCode: commodityCode.trim(),
+        livePreview,
       });
       const status = await getRunStatus("septa", run_id);
       setRun(status);
@@ -104,9 +106,12 @@ export default function SeptaPanel() {
             : "No filters set — today's open quotes will be captured."
         }
       >
-        <StartButton onClick={handleStart} disabled={starting || isRunning} running={isRunning} starting={starting}>
-          Search &amp; scrape
-        </StartButton>
+        <div className="flex items-center gap-2">
+          <LiveMonitor run={run} portal="septa" />
+          <StartButton onClick={() => handleStart()} disabled={starting || isRunning} running={isRunning} starting={starting}>
+            Search &amp; scrape
+          </StartButton>
+        </div>
       </LaunchBar>
 
       {run && <RunStatusPanel run={run} />}

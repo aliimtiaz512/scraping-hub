@@ -27,6 +27,8 @@ from app.core import run_manager
 from app.core.base_scraper import BaseScraper
 from app.scrapers.bidnet import export
 from app.scrapers.bidnet.keywords import group_keywords
+from app.core.exports import archive_run
+from app.services.notifier import notify_scrape_completion
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +62,7 @@ class BidnetScraper(BaseScraper):
         # inside it (Bidnetdirect_AI-ML_core, ...), each a self-contained
         # deliverable of documents + one Excel.
         run = run_manager.get_run(run_id) or {}
-        folder = run.get("folder") or str(settings.documents_root / "Bidnetdirect")
+        folder = run.get("folder") or str(settings.work_root / "Bidnetdirect")
         self.document_folder = Path(folder)
         self.document_folder.mkdir(parents=True, exist_ok=True)
         # A solicitation can be surfaced by keywords in more than one niche+tier
@@ -432,9 +434,15 @@ class BidnetScraper(BaseScraper):
             all_records: list[dict] = []      # every group's records (for the DB)
             unique_links: set[str] = set()    # distinct solicitations across all groups
 
+            group_folders: list[str] = []     # this run's slice of the shared date bucket
             for group in groups:
                 group_folder = self.document_folder / group["folder_name"]
                 group_folder.mkdir(parents=True, exist_ok=True)
+                if str(group_folder) not in group_folders:
+                    group_folders.append(str(group_folder))
+                # The download ZIP packs exactly this run's group folders — the
+                # date bucket itself is shared with other same-day runs.
+                run_manager.update_run(self.run_id, group_folders=group_folders)
                 self.set_step(f"group: {group['label']}")
 
                 # Search each keyword in this group and collect its solicitation
@@ -496,13 +504,17 @@ class BidnetScraper(BaseScraper):
                 logger.exception("[run %s] DB save failed", self.run_id)
                 run_manager.add_error(self.run_id, "db save failed (see logs)")
 
-            # There is no single run-level Excel any more — each group has its own.
-            # Point the run at the date folder so the exports view links to the
-            # place that holds all of this run's group folders and sheets.
-            run_manager.update_run(
-                self.run_id, excel_path=str(self.document_folder), excel_exported=True
-            )
+            run_manager.update_run(self.run_id, excel_exported=True)
+
+            # Package the run into one archive ZIP — the cumulative run-level
+            # Excel (from the DB) at the root plus every niche+tier group folder
+            # with its own Excel and documents — then delete the workspace.
+            self.set_step("packaging_results")
+            archive_run(self.run_id)
+
             run_manager.update_run(self.run_id, status="completed", step="done")
+            # Email/S3 notification on successful completion.
+            notify_scrape_completion(self.run_id, "bidnet", len(all_records))
         except Exception as exc:  # noqa: BLE001 — a failed run must be reported, not crash the worker
             logger.exception("[run %s] failed", self.run_id)
             self.screenshot("fatal")
@@ -512,6 +524,7 @@ class BidnetScraper(BaseScraper):
             self.cleanup()
             run_manager.update_run(self.run_id, finished_at=datetime.now().isoformat())
             self._save_run_row()
+            run_manager.remove_empty_folder(self.run_id)
 
     def _write_group_excel(self, group: dict, group_folder: Path, records: list[dict]) -> None:
         """Write one full Excel of this group's bids into its folder. Named after

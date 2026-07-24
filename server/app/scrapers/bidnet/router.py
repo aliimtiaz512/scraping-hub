@@ -1,6 +1,10 @@
+import tempfile
+from pathlib import Path
+
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
+from starlette.background import BackgroundTask
 from sqlalchemy import or_, select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
@@ -29,17 +33,17 @@ def keywords() -> dict:
 
 
 @router.post("/scrape")
-def start_scrape(request: ScrapeRequest, background_tasks: BackgroundTasks) -> dict:
+def start_scrape(request: ScrapeRequest, background_tasks: BackgroundTasks, live_preview: bool = False) -> dict:
     # Strip, drop blanks, de-duplicate while preserving order.
     keywords = list(dict.fromkeys(kw.strip() for kw in request.keywords if kw.strip()))
     if not keywords:
         raise HTTPException(status_code=400, detail="at least one keyword is required")
     label = timestamp()  # e.g. 2026-07-08 14-30-05
-    # Date-bucketed parent (mirrors the other portals): every run on the same day
-    # shares one Bidnetdirect-<date> folder, inside which results are foldered per
-    # niche+tier (Bidnetdirect_AI-ML_core, ...). The scraper builds those.
-    date_folder = f"Bidnetdirect_{timestamp('%Y-%m-%d')}"
-    folder = run_manager.make_run_folder(date_folder)
+    # Per-run workspace parent (its name becomes the run's ZIP name), inside
+    # which results are foldered per niche+tier (Bidnetdirect_AI-ML_core, ...) —
+    # the scraper builds those, keeping niches separated. Timestamped so
+    # concurrent runs never share a workspace.
+    folder = run_manager.make_run_folder(f"Bidnetdirect ({label})")
     run = run_manager.create_run(
         "bidnet",
         folder,
@@ -48,6 +52,7 @@ def start_scrape(request: ScrapeRequest, background_tasks: BackgroundTasks) -> d
             "keyword": ", ".join(keywords),
             "keywords": keywords,
             "excel_exported": False,
+            "live_preview": live_preview,
         },
     )
     background_tasks.add_task(execute_run, run["run_id"], keywords)
@@ -106,17 +111,27 @@ def list_bids(
 
 @router.get("/export")
 def export_excel() -> FileResponse:
-    """On-demand Excel of every stored solicitation (the export button)."""
-    out_path = settings.documents_root / "bidnet_export.xlsx"
+    """On-demand Excel of every stored solicitation (the export button).
+
+    Built into a temp file and deleted after the response streams — nothing is
+    written to local storage."""
+    tmp = tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False)
+    tmp.close()
+    out_path = Path(tmp.name)
     try:
         export.export_all_excel(out_path)
     except OperationalError as exc:
+        out_path.unlink(missing_ok=True)
         raise HTTPException(
             status_code=503,
             detail="Database unavailable — check DATABASE_URL in server/.env",
         ) from exc
+    except Exception:
+        out_path.unlink(missing_ok=True)
+        raise
     return FileResponse(
         path=str(out_path),
         filename="bids_export.xlsx",
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        background=BackgroundTask(out_path.unlink, missing_ok=True),
     )

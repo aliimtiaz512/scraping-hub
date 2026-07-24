@@ -58,7 +58,8 @@ class SamBid(Base):
     naics_title: Mapped[str | None] = mapped_column(Text)
     date_offers_due: Mapped[str | None] = mapped_column(String(64))
     published_date: Mapped[str | None] = mapped_column(String(64))
-    # Evaluator output (vendored funnel): PURSUE | REJECT | MANUAL_REVIEW | PENDING | ERROR.
+    # Evaluator output (two-mode): PURSUE | REJECT (PENDING | ERROR only on an
+    # evaluation exception — not a business decision mode).
     decision: Mapped[str | None] = mapped_column(String(20))
     reason: Mapped[str | None] = mapped_column(Text)
 

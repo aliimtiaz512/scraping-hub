@@ -10,15 +10,13 @@ function decisionTone(decision: string): string {
       return "border-emerald-200 bg-emerald-50 text-emerald-700";
     case "REJECT":
       return "border-rose-200 bg-rose-50 text-rose-700";
-    case "MANUAL_REVIEW":
-      return "border-amber-200 bg-amber-50 text-amber-700";
     default:
       return "border-ink-200 bg-ink-50 text-ink-600"; // PENDING / ERROR / unknown
   }
 }
 
 function decisionLabel(decision: string): string {
-  return decision.toUpperCase() === "MANUAL_REVIEW" ? "REVIEW" : decision.toUpperCase();
+  return decision.toUpperCase();
 }
 
 export default function SamResults({ bids }: { bids: BidResult[] }) {

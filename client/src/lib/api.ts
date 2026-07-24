@@ -104,7 +104,7 @@ export interface BidResult {
   naics_title?: string;
   date_offers_due?: string;
   published_date?: string;
-  decision?: string;   // PURSUE | REJECT | MANUAL_REVIEW | PENDING | ERROR
+  decision?: string;   // PURSUE | REJECT (PENDING | ERROR only on eval failure)
   reason?: string;
   // Unison
   buyer_number?: string;
@@ -217,6 +217,12 @@ export interface StartMyFloridaScrapeOptions {
   keywords?: string[];
   adStatuses?: AdStatus[];
   adTypes?: AdType[];
+  livePreview?: boolean;
+}
+
+/** `?live_preview=true` when the user wants to watch the browser work. */
+function livePreviewQuery(livePreview?: boolean): string {
+  return livePreview ? "?live_preview=true" : "";
 }
 
 export function startMyFloridaScrape({
@@ -226,6 +232,7 @@ export function startMyFloridaScrape({
   keywords = [],
   adStatuses = [],
   adTypes = [],
+  livePreview = false,
 }: StartMyFloridaScrapeOptions): Promise<{
   run_id: string;
   mode: SearchMode;
@@ -233,7 +240,7 @@ export function startMyFloridaScrape({
   keywords: string[];
   folder: string;
 }> {
-  return request("/myflorida/scrape", {
+  return request(`/myflorida/scrape${livePreviewQuery(livePreview)}`, {
     method: "POST",
     body: JSON.stringify({
       category,
@@ -248,8 +255,8 @@ export function startMyFloridaScrape({
 
 // -- RideMetro ---------------------------------------------------------------
 
-export function startRideMetroScrape(): Promise<{ run_id: string; folder: string }> {
-  return request("/ridemetro/scrape", { method: "POST" });
+export function startRideMetroScrape(livePreview = false): Promise<{ run_id: string; folder: string }> {
+  return request(`/ridemetro/scrape${livePreviewQuery(livePreview)}`, { method: "POST" });
 }
 
 // -- BidNet Direct -----------------------------------------------------------
@@ -260,8 +267,9 @@ export function getBidnetKeywords(): Promise<BidnetCatalog> {
 
 export function startBidnetScrape(
   keywords: string[],
+  livePreview = false,
 ): Promise<{ run_id: string; keywords: string[]; folder: string }> {
-  return request("/bidnet/scrape", {
+  return request(`/bidnet/scrape${livePreviewQuery(livePreview)}`, {
     method: "POST",
     body: JSON.stringify({ keywords }),
   });
@@ -273,8 +281,9 @@ export function startWisconsinScrape(
   keyword: string,
   agency: string,
   nigpCode: string,
+  livePreview = false,
 ): Promise<{ run_id: string; search: string; folder: string }> {
-  return request("/wisconsin/scrape", {
+  return request(`/wisconsin/scrape${livePreviewQuery(livePreview)}`, {
     method: "POST",
     body: JSON.stringify({ keyword, agency, nigp_code: nigpCode }),
   });
@@ -285,8 +294,9 @@ export function startWisconsinScrape(
 export function startNorthDakotaScrape(
   keyword: string,
   commodity: string,
+  livePreview = false,
 ): Promise<{ run_id: string; search: string; folder: string }> {
-  return request("/northdakota/scrape", {
+  return request(`/northdakota/scrape${livePreviewQuery(livePreview)}`, {
     method: "POST",
     body: JSON.stringify({ keyword, commodity }),
   });
@@ -299,14 +309,16 @@ export interface StartSeptaScrapeOptions {
   dateFilter?: string;
   keyword?: string;
   commodityCode?: string;
+  livePreview?: boolean;
 }
 
 export function startSeptaScrape({
   dateFilter = "",
   keyword = "",
   commodityCode = "",
+  livePreview = false,
 }: StartSeptaScrapeOptions): Promise<{ run_id: string; search: string; folder: string }> {
-  return request("/septa/scrape", {
+  return request(`/septa/scrape${livePreviewQuery(livePreview)}`, {
     method: "POST",
     body: JSON.stringify({
       date_filter: dateFilter || null,
@@ -334,7 +346,7 @@ export interface StartSamScrapeOptions {
   dateTo?: string;
   naicsCodes?: string[];
   awardNotice?: boolean;
-  headless?: boolean;
+  livePreview?: boolean;
 }
 
 export function startSamScrape({
@@ -342,16 +354,15 @@ export function startSamScrape({
   dateTo = "",
   naicsCodes = [],
   awardNotice = false,
-  headless = true,
+  livePreview = false,
 }: StartSamScrapeOptions): Promise<{ run_id: string; search: string; folder: string }> {
-  return request("/sam/scrape", {
+  return request(`/sam/scrape${livePreviewQuery(livePreview)}`, {
     method: "POST",
     body: JSON.stringify({
       date_filter: dateFrom || null,
       date_to: dateTo || null,
       naics_codes: naicsCodes,
       award_notice: awardNotice,
-      headless,
     }),
   });
 }
@@ -364,10 +375,21 @@ export function getSamScreenshot(runId: string): Promise<{ screenshot: string }>
   return request(`/sam/screenshot/${runId}`);
 }
 
+/**
+ * A live browser frame for any portal's in-flight run (base64 PNG), or null
+ * until one is available. Backs the Live Preview modal across all scrapers.
+ */
+export function getRunScreenshot(runId: string): Promise<{ screenshot: string | null }> {
+  return request(`/runs/${runId}/screenshot`);
+}
+
 // -- Unison Marketplace ------------------------------------------------------
 
-export function startUnisonScrape(filterBy: string): Promise<{ run_id: string; search: string; folder: string }> {
-  return request("/unison/scrape", {
+export function startUnisonScrape(
+  filterBy: string,
+  livePreview = false,
+): Promise<{ run_id: string; search: string; folder: string }> {
+  return request(`/unison/scrape${livePreviewQuery(livePreview)}`, {
     method: "POST",
     body: JSON.stringify({ filter_by: filterBy || null }),
   });
@@ -414,6 +436,14 @@ export function listRuns(portal: Portal): Promise<{ runs: RunStatus[] }> {
  */
 export function bidnetExportUrl(): string {
   return `${API_URL}/bidnet/export`;
+}
+
+/**
+ * A completed run's archive ZIP as a browser download: the cumulative Excel
+ * report plus every downloaded bid document in its niche-wise folder.
+ */
+export function runDownloadUrl(runId: string): string {
+  return `${API_URL}/runs/${runId}/download`;
 }
 
 /** FastAPI's generated interactive reference, served by the backend at /docs. */

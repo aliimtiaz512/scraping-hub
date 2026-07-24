@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import NorthDakotaResults from "@/components/NorthDakotaResults";
 import RunStatusPanel from "@/components/RunStatus";
 import { Card, ErrorBanner, Field, LaunchBar, StartButton } from "@/components/ui";
+import LiveMonitor from "@/components/LiveMonitor";
 import { getRunStatus, startNorthDakotaScrape, type RunStatus } from "@/lib/api";
 
 const POLL_INTERVAL_MS = 3000;
@@ -26,11 +27,11 @@ export default function NorthDakotaPanel() {
 
   useEffect(() => stopPolling, [stopPolling]);
 
-  const handleStart = async () => {
+  const handleStart = async (livePreview = false) => {
     setError(null);
     setStarting(true);
     try {
-      const { run_id } = await startNorthDakotaScrape(keyword.trim(), commodity.trim());
+      const { run_id } = await startNorthDakotaScrape(keyword.trim(), commodity.trim(), livePreview);
       const status = await getRunStatus("northdakota", run_id);
       setRun(status);
       stopPolling();
@@ -86,9 +87,12 @@ export default function NorthDakotaPanel() {
             : "No criteria set — every public solicitation request will be captured."
         }
       >
-        <StartButton onClick={handleStart} disabled={starting || isRunning} running={isRunning} starting={starting}>
-          Search &amp; scrape
-        </StartButton>
+        <div className="flex items-center gap-2">
+          <LiveMonitor run={run} portal="northdakota" />
+          <StartButton onClick={() => handleStart()} disabled={starting || isRunning} running={isRunning} starting={starting}>
+            Search &amp; scrape
+          </StartButton>
+        </div>
       </LaunchBar>
 
       {run && <RunStatusPanel run={run} />}

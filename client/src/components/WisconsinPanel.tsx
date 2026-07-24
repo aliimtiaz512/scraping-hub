@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import RunStatusPanel from "@/components/RunStatus";
 import WisconsinResults from "@/components/WisconsinResults";
 import { Card, ErrorBanner, Field, LaunchBar, StartButton } from "@/components/ui";
+import LiveMonitor from "@/components/LiveMonitor";
 import { getRunStatus, startWisconsinScrape, type RunStatus } from "@/lib/api";
 
 const POLL_INTERVAL_MS = 3000;
@@ -27,11 +28,11 @@ export default function WisconsinPanel() {
 
   useEffect(() => stopPolling, [stopPolling]);
 
-  const handleStart = async () => {
+  const handleStart = async (livePreview = false) => {
     setError(null);
     setStarting(true);
     try {
-      const { run_id } = await startWisconsinScrape(keyword.trim(), agency.trim(), nigp.trim());
+      const { run_id } = await startWisconsinScrape(keyword.trim(), agency.trim(), nigp.trim(), livePreview);
       const status = await getRunStatus("wisconsin", run_id);
       setRun(status);
       stopPolling();
@@ -82,9 +83,12 @@ export default function WisconsinPanel() {
       </Card>
 
       <LaunchBar summary={hasCriteria ? "Searching with your criteria." : "No criteria set — every current solicitation will be captured."}>
-        <StartButton onClick={handleStart} disabled={starting || isRunning} running={isRunning} starting={starting}>
-          Search &amp; scrape
-        </StartButton>
+        <div className="flex items-center gap-2">
+          <LiveMonitor run={run} portal="wisconsin" />
+          <StartButton onClick={() => handleStart()} disabled={starting || isRunning} running={isRunning} starting={starting}>
+            Search &amp; scrape
+          </StartButton>
+        </div>
       </LaunchBar>
 
       {run && <RunStatusPanel run={run} />}

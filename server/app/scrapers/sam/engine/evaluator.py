@@ -1,11 +1,30 @@
 """
-SAM.gov Bid Evaluator — NAICS-first deterministic engine.
+SAM.gov Bid Evaluator — requirement-type-first deterministic engine.
 
-Source of truth: SAM_Bid_Evaluation_Spec_v1.docx (audit of 529 live bids).
+Source of truth: evaluation_criteria_sam_bids.docx — the company's accepted
+"Official PURSUE / REJECT Decision Guide (Company Scope of Work)". This engine
+implements that guide's Combined Decision Matrix (§3) exactly:
 
-Decision algorithm (strict order — see spec §3):
+  Requirement type            | US Mainland   | Outside US Mainland
+  ----------------------------|---------------|--------------------
+  Hardware / material supply  | PURSUE        | PURSUE
+  Allowed service (Rule C)    | PURSUE        | REJECT
+  Excluded service (Rule B)   | REJECT        | REJECT
+  Service on neither list     | REJECT        | REJECT
+
+Two decision modes only — PURSUE or REJECT. The guide's matrix marks the
+"unlisted service in the US Mainland" cell as manual review, but this system
+runs strictly two-mode (company policy): an unlisted service is not a validated
+in-scope requirement, so it is REJECTED (guide config note #5 — never auto-pass
+a requirement that has not been validated against Rules A/B/C). No path ever
+returns MANUAL_REVIEW.
+
+Decision algorithm (strict order — the guide's Decision Flow §4):
 
   STEP 0  Kill-Word Sieve         → instant REJECT on dealbreaker keyword
+                                     (operational pre-filter: idiq / rfi /
+                                      sources sought / market research — these
+                                      are not biddable solicitations)
   STEP 1  Requirement Type        → HARDWARE / MATERIAL vs SERVICE
                                      (NAICS code is the primary signal,
                                       title keywords confirm/override)
@@ -13,10 +32,11 @@ Decision algorithm (strict order — see spec §3):
   STEP 3  If SERVICE: Rule B?     → REJECT (excluded service, any location)
   STEP 4  If not Rule B: Rule C?  → proceed to location check
   STEP 5  Rule C service location → US Mainland = PURSUE, else REJECT
-          Service on neither list → US Mainland = MANUAL_REVIEW, else REJECT
+          Service on neither list → REJECT (any location — not in scope)
 
-The cardinal rule (spec §1.2): hardware is classified BEFORE any Rule B/C or
-location logic, and hardware is ALWAYS pursued regardless of delivery location.
+The cardinal rule (guide §1): the requirement type is classified BEFORE any
+Rule B/C or location logic — decisions are driven primarily by WHAT is
+procured, not WHERE — and hardware is ALWAYS pursued regardless of location.
 """
 
 import logging
@@ -44,8 +64,8 @@ def reason_rule_c_outside() -> str:
 def reason_not_listed_outside() -> str:
     return "Service not in allowed/excluded list + performed outside US Mainland"
 
-def reason_not_listed_manual() -> str:
-    return "Service not in allowed or excluded list — manual review required (US Mainland location)"
+def reason_not_listed_us() -> str:
+    return "Service not in allowed (Rule C) or excluded (Rule B) list — not a validated in-scope service"
 
 
 # ===========================================================================
@@ -592,8 +612,8 @@ def _classify_requirement(hay: str, naics_code: str, full_text: str = "") -> str
         return "SERVICE"
     if _has(hay, *_HARDWARE_TITLE_SIGNALS):
         return "HARDWARE"
-    # Ambiguous with no NAICS and no signals — treat as service (will route to
-    # manual review / location logic rather than auto-pursue).
+    # Ambiguous with no NAICS and no signals — treat as service (routes to the
+    # unlisted-service REJECT rather than auto-pursuing as hardware).
     return "SERVICE"
 
 
@@ -624,7 +644,7 @@ def evaluate_bid(
     title: str = "",
 ) -> dict:
     """
-    Evaluate a bid per SAM_Bid_Evaluation_Spec_v1.
+    Evaluate a bid per evaluation_criteria_sam_bids.docx (company decision guide).
 
     Parameters
     ----------
@@ -639,8 +659,8 @@ def evaluate_bid(
     dict with keys: bid_id, decision, reason, requirement_type, rule,
     location, stopped_at_step.
 
-    decision ∈ {PURSUE, REJECT, MANUAL_REVIEW}
-    The ``reason`` field always uses one of the six standard phrases (spec §7).
+    decision ∈ {PURSUE, REJECT}  (two-mode policy — never MANUAL_REVIEW)
+    The ``reason`` field always uses one of the standard phrases.
     """
     eval_cfg   = config.get("evaluation", {})
     kill_words = [w.lower() for w in eval_cfg.get("kill_words", [])]
@@ -760,17 +780,17 @@ def evaluate_bid(
             logger.info(f"[EVAL] {bid_id} -> REJECT @ Rule C #{num} (outside US Mainland)")
         return result
 
-    # ── Service on neither list ──────────────────────────────────────────────
+    # ── Service on neither list → REJECT (two-mode policy) ───────────────────
+    # An unlisted service is neither a validated allowed service (Rule C) nor
+    # hardware, so it is out of scope and REJECTED in both locations. `location`
+    # is still recorded for the audit trail, and picks the standard reason
+    # phrase, but no longer changes the outcome (no MANUAL_REVIEW).
     if location == "US_MAINLAND":
-        result.update(
-            decision="MANUAL_REVIEW", stopped_at_step=4, rule="none",
-            reason=reason_not_listed_manual(),
-        )
-        logger.info(f"[EVAL] {bid_id} -> MANUAL_REVIEW (not listed, US Mainland)")
+        reason = reason_not_listed_us()
     else:
-        result.update(
-            decision="REJECT", stopped_at_step=4, rule="none",
-            reason=reason_not_listed_outside(),
-        )
-        logger.info(f"[EVAL] {bid_id} -> REJECT (not listed, outside US Mainland)")
+        reason = reason_not_listed_outside()
+    result.update(
+        decision="REJECT", stopped_at_step=4, rule="none", reason=reason,
+    )
+    logger.info(f"[EVAL] {bid_id} -> REJECT (service not in allowed/excluded list, {location})")
     return result

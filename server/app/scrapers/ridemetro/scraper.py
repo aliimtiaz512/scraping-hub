@@ -27,6 +27,8 @@ from app.core import run_manager
 from app.core.base_scraper import BaseScraper
 from app.core.filenames import timestamp
 from app.scrapers.ridemetro import export
+from app.core.exports import archive_run
+from app.services.notifier import notify_scrape_completion
 
 logger = logging.getLogger(__name__)
 
@@ -207,22 +209,33 @@ class RideMetroScraper(BaseScraper):
                 logger.exception("[run %s] DB save failed", self.run_id)
                 run_manager.add_error(self.run_id, "db save failed (see logs)")
 
-            try:
-                label = (run_manager.get_run(self.run_id) or {}).get("label") or timestamp()
-                # The run folder is shared by every run on the same calendar day,
-                # so the run_id keeps each run's sheet distinct (N runs -> N sheets).
-                self.excel_path = self.run_dir / f"RideMetro_Bids ({label}) [{self.run_id}].xlsx"
-                self.set_step("generating_excel")
-                if db_ok:
-                    export.generate_excel(self.run_id, self.excel_path)
-                else:
+            self.set_step("generating_excel")
+            if db_ok:
+                # No Excel is written to disk any more — the sheet is rebuilt
+                # from the DB on demand (Download button / completion email).
+                run_manager.update_run(self.run_id, excel_exported=True)
+            else:
+                # DB outage: the records exist only in memory, so a disk Excel is
+                # the only copy the download/email can serve.
+                try:
+                    label = (run_manager.get_run(self.run_id) or {}).get("label") or timestamp()
+                    # The run folder is shared by every run on the same calendar day,
+                    # so the run_id keeps each run's sheet distinct (N runs -> N sheets).
+                    self.excel_path = self.run_dir / f"RideMetro_Bids ({label}) [{self.run_id}].xlsx"
                     export.generate_excel_from_records(self._records, self.excel_path)
-                run_manager.update_run(self.run_id, excel_path=str(self.excel_path), excel_exported=True)
-            except Exception:  # noqa: BLE001 — never fail the run over the Excel
-                logger.exception("[run %s] Excel generation failed", self.run_id)
-                run_manager.add_error(self.run_id, "excel generation failed (see logs)")
+                    run_manager.update_run(self.run_id, excel_path=str(self.excel_path), excel_exported=True)
+                except Exception:  # noqa: BLE001 — never fail the run over the Excel
+                    logger.exception("[run %s] Excel generation failed", self.run_id)
+                    run_manager.add_error(self.run_id, "excel generation failed (see logs)")
+
+            # Package the run into one archive ZIP (cumulative Excel + any
+            # files) and delete the workspace — nothing stays on local disk.
+            self.set_step("packaging_results")
+            archive_run(self.run_id)
 
             run_manager.update_run(self.run_id, status="completed", step="done")
+            # Email/S3 notification on successful completion.
+            notify_scrape_completion(self.run_id, "ridemetro", len(self._records))
         except Exception as exc:  # noqa: BLE001 — a failed run must be reported, not crash the worker
             logger.exception("[run %s] failed", self.run_id)
             self.screenshot("fatal")
@@ -232,6 +245,7 @@ class RideMetroScraper(BaseScraper):
             self.cleanup()
             run_manager.update_run(self.run_id, finished_at=datetime.now().isoformat())
             self._save_run_row()  # final counts (best-effort)
+            run_manager.remove_empty_folder(self.run_id)
 
     def _save_run_row(self) -> None:
         run = run_manager.get_run(self.run_id)
