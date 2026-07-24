@@ -1,0 +1,261 @@
+# ==============================================================================
+# SAM.gov Scraper – Dedicated Configuration
+# ==============================================================================
+
+urls:
+  sam:
+    # {page} is the only placeholder – substituted at runtime via str.format(page=N)
+    # This URL exactly matches the working search the user verified in the browser.
+    # Key parameters:
+    #   sfm[status][is_active]=true          – only open/active solicitations
+    #   sfm[simpleSearch][keywordRadio]=ALL  – keyword match mode
+    #   sfm[dates][...Select]=customDate     – UI date-picker state (no actual values;
+    #                                          actual posted-date values appended via
+    #                                          url_date_params at runtime)
+    #   Set-asides: SBA, 8A, WOSB, LAS, NONE, SBP
+    #   Type of notice: Solicitation + Combined Synopsis/Solicitation + Award Notice
+    base_url: "https://sam.gov/search/?page={page}&pageSize=100&sort=-modifiedDate&index=opp&sfm%5BsimpleSearch%5D%5BkeywordRadio%5D=ALL&sfm%5Bstatus%5D%5Bis_active%5D=true&sfm%5Bdates%5D%5BresponseDue%5D%5BresponseDueSelect%5D=customDate&sfm%5Bdates%5D%5BupdatedDate%5D%5BupdatedDateSelect%5D=customDate&sfm%5BtypeOfNotice%5D%5B0%5D%5Bkey%5D=o&sfm%5BtypeOfNotice%5D%5B0%5D%5Bvalue%5D=Solicitation&sfm%5BtypeOfNotice%5D%5B1%5D%5Bkey%5D=k&sfm%5BtypeOfNotice%5D%5B1%5D%5Bvalue%5D=Combined%20Synopsis%2FSolicitation&sfm%5BsetAside%5D%5B0%5D%5Bkey%5D=SBA&sfm%5BsetAside%5D%5B0%5D%5Bvalue%5D=Total%20Small%20Business%20Set-Aside%20(FAR%2019.5)&sfm%5BsetAside%5D%5B1%5D%5Bkey%5D=8A&sfm%5BsetAside%5D%5B1%5D%5Bvalue%5D=8(a)%20Set-Aside%20(FAR%2019.8)&sfm%5BsetAside%5D%5B2%5D%5Bkey%5D=WOSB&sfm%5BsetAside%5D%5B2%5D%5Bvalue%5D=SBA%20Certified%20Women-Owned%20Small%20Business%20(WOSB)%20Program%20Set-Aside%20(FAR%2019.15)&sfm%5BsetAside%5D%5B3%5D%5Bkey%5D=LAS&sfm%5BsetAside%5D%5B3%5D%5Bvalue%5D=Local%20Area%20Set-Aside%20(FAR%2026.2)&sfm%5BsetAside%5D%5B4%5D%5Bkey%5D=NONE&sfm%5BsetAside%5D%5B4%5D%5Bvalue%5D=No%20Set%20aside%20used&sfm%5BsetAside%5D%5B5%5D%5Bkey%5D=SBP&sfm%5BsetAside%5D%5B5%5D%5Bvalue%5D=Partial%20Small%20Business%20Set-Aside%20(FAR%2019.5)"
+    # Award Notice URL segment — appended at runtime when award_notice=True
+    award_notice_param: "&sfm%5BtypeOfNotice%5D%5B2%5D%5Bkey%5D=a&sfm%5BtypeOfNotice%5D%5B2%5D%5Bvalue%5D=Award%20Notice"
+    #   Award Notice ONLY URL (used instead of base_url when award_notice=True)
+    award_notice_base_url: "https://sam.gov/search/?page={page}&pageSize=100&sort=-modifiedDate&index=opp&sfm%5BsimpleSearch%5D%5BkeywordRadio%5D=ALL&sfm%5Bstatus%5D%5Bis_active%5D=true&sfm%5Bdates%5D%5BresponseDue%5D%5BresponseDueSelect%5D=customDate&sfm%5Bdates%5D%5BupdatedDate%5D%5BupdatedDateSelect%5D=customDate&sfm%5BtypeOfNotice%5D%5B0%5D%5Bkey%5D=a&sfm%5BtypeOfNotice%5D%5B0%5D%5Bvalue%5D=Award%20Notice&sfm%5BsetAside%5D%5B0%5D%5Bkey%5D=SBA&sfm%5BsetAside%5D%5B0%5D%5Bvalue%5D=Total%20Small%20Business%20Set-Aside%20(FAR%2019.5)&sfm%5BsetAside%5D%5B1%5D%5Bkey%5D=8A&sfm%5BsetAside%5D%5B1%5D%5Bvalue%5D=8(a)%20Set-Aside%20(FAR%2019.8)&sfm%5BsetAside%5D%5B2%5D%5Bkey%5D=WOSB&sfm%5BsetAside%5D%5B2%5D%5Bvalue%5D=SBA%20Certified%20Women-Owned%20Small%20Business%20(WOSB)%20Program%20Set-Aside%20(FAR%2019.15)&sfm%5BsetAside%5D%5B3%5D%5Bkey%5D=LAS&sfm%5BsetAside%5D%5B3%5D%5Bvalue%5D=Local%20Area%20Set-Aside%20(FAR%2026.2)&sfm%5BsetAside%5D%5B4%5D%5Bkey%5D=NONE&sfm%5BsetAside%5D%5B4%5D%5Bvalue%5D=No%20Set%20aside%20used&sfm%5BsetAside%5D%5B5%5D%5Bkey%5D=SBP&sfm%5BsetAside%5D%5B5%5D%5Bvalue%5D=Partial%20Small%20Business%20Set-Aside%20(FAR%2019.5)"
+
+
+sam:
+
+  logging:
+    log_file: "logs/sam_scraper.log"
+    format: "%(asctime)s - %(levelname)s - %(message)s"
+
+  # --------------------------------------------------------------------------
+  # Browser / Chrome options
+  # --------------------------------------------------------------------------
+  browser:
+    user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
+  # --------------------------------------------------------------------------
+  # Timing / waits (seconds)
+  # --------------------------------------------------------------------------
+  timeouts:
+    page_load_wait: 30
+    page_load_sleep: 2
+    results_wait: 25
+    delay_min: 2
+    delay_max: 4
+
+  # --------------------------------------------------------------------------
+  # Scraping limits
+  # --------------------------------------------------------------------------
+  scraping:
+    max_records: 1000           # default maximum records to collect per run
+    save_interval: 10           # save CSV every N extracted records
+    # How many consecutive pages with 0 new records before the scraper gives up.
+    # Keep this high (8+) because Published Date filtering at card level can
+    # leave many pages empty while valid bids still exist on later pages.
+    max_empty_pages: 8
+
+  # --------------------------------------------------------------------------
+  # URL date param templates – appended to base_url when date_filter is provided.
+  # {date} is replaced at runtime with YYYY-MM-DD from the user's input.
+  # --------------------------------------------------------------------------
+  url_date_params: {}
+
+  # --------------------------------------------------------------------------
+  # SAM.gov "Updated Date" range-filter UI inputs
+  # --------------------------------------------------------------------------
+  date_filter_ui:
+    from_input_id:     "formly_31_datepicker_updatedDateFrom_1"
+    to_input_id:       "formly_31_datepicker_updatedDateTo_2"
+    input_date_format: "%m/%d/%Y"
+    apply_wait:        3
+
+  # --------------------------------------------------------------------------
+  # Content filtering (applied at card / search-results level)
+  # --------------------------------------------------------------------------
+  filtering:
+    # Titles containing any of these keywords (case-insensitive) are skipped
+    forbidden_titles:
+      - "rfi"
+      - "market research"
+      - "foods"
+      - "meal"
+      - "survey"
+
+    # Keep only bids whose version/amendment count is 0 or 1.
+    version_count_threshold: 1
+
+  # --------------------------------------------------------------------------
+  # Skip conditions (applied at detail-page level after field extraction)
+  # --------------------------------------------------------------------------
+  skip_conditions:
+    # Bid is skipped if Office contains any of these (case-insensitive)
+    office_skip_terms:
+      - "dla"
+      - "defense logistics agency"
+
+  # --------------------------------------------------------------------------
+  # Bid evaluation (DOC-20260625 criteria: requirement-type-first, then location)
+  # --------------------------------------------------------------------------
+  evaluation:
+    # Step 1: kill-words — instant REJECT if found anywhere in full_text
+    kill_words:
+      - "idiq"
+      - "market research"
+      - "rfi"
+      - "sources sought"
+
+    # Rule B — excluded services: REJECT regardless of location
+    # DB values override these at runtime; these are fallback defaults only.
+    excluded_services:
+      - "maintenance, repair and inspection services"
+      - "management services"
+      - "management software"
+      - "audit"
+      - "construction & demolition services"
+      - "rental of equipment"
+      - "waste management services"
+      - "promotional services"
+      - "training services"
+      - "custodial services"
+      - "lease of equipment"
+      - "engineering support services"
+      - "hotel room booking and lodging"
+      - "yellow ribbon"
+      - "food items"
+      - "religious & education coordinator"
+      - "real estate"
+      - "aircraft lavatory services"
+      - "marine vessel upgrade"
+      - "research & development"
+
+    # Rule C — allowed services: PURSUE only if US Mainland
+    # DB values override these at runtime; these are fallback defaults only.
+    allowed_services:
+      - "cable installation"
+      - "fence installation"
+      - "furniture installation"
+      - "ups / generator repair and maintenance"
+      - "it hardware / software installation and maintenance"
+      - "hvac installation, repair and maintenance"
+      - "industrial hardware installation"
+      - "roofing installation, repair and maintenance"
+      - "door / window installation"
+      - "av equipment installation"
+      - "storage rack and shelving installation"
+
+    # Ollama / LLM settings
+    ollama_model: "llama3"
+    ollama_timeout: 30             # seconds (reserved for future use)
+
+  # --------------------------------------------------------------------------
+  # Date parsing
+  # --------------------------------------------------------------------------
+  date_parsing:
+    # strptime format for dates found inside card/detail text (e.g. "Dec 18, 2025")
+    card_date_format: "%b %d, %Y"
+    # Regex used to extract a date string from card text
+    card_date_regex: "([A-Z][a-z]{2}\\s\\d{1,2},\\s\\d{4})"
+    # strptime format for the date_filter value coming in from the API/UI
+    filter_date_format: "%Y-%m-%d"
+    # Card text label that precedes the updated date value
+    updated_date_card_label: "Updated Date"
+    # Card text label that precedes the published date value (used for card-level filter)
+    published_date_card_label: "Published Date"
+
+  # --------------------------------------------------------------------------
+  # CSS / element selectors for the search results list page
+  # --------------------------------------------------------------------------
+  selectors:
+    # Used in WebDriverWait to detect that results have loaded
+    results_container_css: "sds-search-result-list, .sds-card, sds-card, .usa-card, [role='listitem']"
+
+    # Tried in order until cards are found
+    card_selectors:
+      - "sds-search-result-list > div"
+      - ".sds-card"
+      - "sds-card"
+      - "div[class*='sds-card']"
+      - ".usa-card"
+      - "[role='listitem']"
+
+    # Tried in order to find the title/link inside each card
+    title_selectors:
+      - "a.word-break-all"
+      - "a.usa-link"
+      - "h3 a"
+      - ".sds-card__title a"
+
+    # Fallback: minimum text length a link must have to be considered a title
+    title_min_length: 10
+
+    # Substring that must appear in a fallback link's href
+    title_href_contains: "opp"
+
+    # ── Card-level field extraction ──────────────────────────────────────────
+    card_field_label_class:     "sds-field__label"
+    card_field_value_class:     "sds-field__value"   # also matches sds-field__value0
+    card_pub_date_label:        "Published Date"      # label text to search for
+
+  # --------------------------------------------------------------------------
+  # HTML element IDs on SAM.gov opportunity detail pages
+  # --------------------------------------------------------------------------
+  detail_field_ids:
+    notice_id:              "notice-id"
+    department_agency:      "department-ind-agency"
+    sub_tier:               "sub-tier"
+    office:                 "office"
+    date_offers_due:        "date-offers-date"
+    date_offers_due_alt:    "response-date"
+    published_date:         "published-date"
+    inactive_dates:         "inactive-dates"
+    updated_date:           "updated-date"
+
+  # --------------------------------------------------------------------------
+  # Description extraction – CSS selectors tried in order on detail pages
+  # --------------------------------------------------------------------------
+  description_selectors:
+    - "#desc"
+    - "#desc .usa-prose"
+    - "#desc p"
+    - "sam-display-description .usa-prose"
+    - "sam-display-description"
+    - "#description .usa-prose"
+    - "#description"
+    - ".description-body"
+    - "div.usa-prose"
+    - "[data-entity='description'] .body"
+    - "div[class*='description']"
+
+  # Text heading label used as a last-resort fallback to locate description
+  description_heading_label: "Description"
+
+  # --------------------------------------------------------------------------
+  # CSV output
+  # --------------------------------------------------------------------------
+  csv:
+    # Directory where all CSV files are saved (created automatically if missing).
+    # Relative paths are resolved from the project root (where config.yml lives).
+    output_dir: "sam_output"
+    # Dynamic filename: sam-YYYY-MM-DD & H-MMam/pm.csv  (no static name)
+    filename_prefix: "sam-"
+    backup_prefix: "sam-backup-"
+    timestamp_format: "%Y%m%d_%H%M%S"
+    # Column order matches the 9 required extraction fields
+    columns:
+      - "Notice Title"
+      - "Notice ID"
+      - "Department/Ind. Agency"
+      - "Description"
+      - "Subtier"
+      - "Updated Date"
+      - "Date Offers Due"
+      - "Published Date"
+      - "Office"
+
+  # --------------------------------------------------------------------------
+  # Debug file names (written when scraping fails / timeouts occur)
+  # --------------------------------------------------------------------------
+  debug:
+    timeout_file: "debug_search_timeout.html"
+    no_cards_file: "debug_no_cards.html"
+    error_file: "debug_error.html"

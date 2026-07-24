@@ -28,6 +28,10 @@ const STEP_LABELS: Record<string, string> = {
   awaiting_manual_login: "Waiting for you to solve the CAPTCHA in the browser…",
   opening_solicitations: "Opening Solicitations menu",
   opening_public_solicitation_request: "Opening Public Solicitation Requests",
+  // SAM / Unison / NAICS
+  scraping: "Scraping",
+  saving: "Saving to database",
+  fetching_naics: "Fetching NAICS codes",
   scraping_results: "Scraping results grid",
   done: "Done",
   failed: "Failed",
@@ -54,6 +58,9 @@ function runSubtitle(run: RunStatusData): string {
   if (run.scraper === "myflorida") return "MyFlorida";
   if (run.scraper === "northdakota") return run.search && run.search !== "all public solicitations" ? run.search : "North Dakota";
   if (run.scraper === "septa") return run.date_filter ? `Opens ${run.date_filter}` : "SEPTA";
+  if (run.scraper === "sam") return run.search && run.search !== "all active solicitations" ? run.search : "SAM.gov";
+  if (run.scraper === "unison") return run.filter_by ? run.filter_by : "Unison Marketplace";
+  if (run.scraper === "naics") return "NAICS refresh";
   return "";
 }
 

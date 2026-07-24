@@ -69,6 +69,27 @@ class Settings(BaseSettings):
     cal_eprocure_username: str = ""
     cal_eprocure_password: str = ""
 
+    # Unison Marketplace — the vendored engine (server/scrappers/unison/) reads
+    # these straight from the environment via its own load_dotenv(); declared here
+    # too so the .env keys are documented in one place. SAM.gov needs no creds;
+    # NAICS is a public reference page.
+    unison_email: str = ""
+    unison_password: str = ""
+
+    # Post-scrape notifications (SAM + SEPTA for now) — same mechanism as the
+    # sam-septa project: on a successful run, upload the run's Excel to S3 and
+    # email it to RECIPIENT_EMAILS via AWS SES SMTP. All optional: if
+    # recipient_emails is blank the notifier is a no-op; if the S3 bucket is
+    # blank the upload is skipped but the email (with attachment) still sends.
+    recipient_emails: str = ""
+    aws_s3_bucket_name: str = ""
+    aws_access_key_id: str = ""
+    aws_secret_access_key: str = ""
+    aws_region: str = "us-east-1"
+    aws_ses_from_email: str = ""
+    aws_ses_username: str = ""
+    aws_ses_password: str = ""
+
     # Kept outside the server/ tree so downloads don't trip the uvicorn --reload
     # file watcher (which would restart the process mid-scrape). Resolved against
     # SERVER_ROOT when relative — see documents_root below.

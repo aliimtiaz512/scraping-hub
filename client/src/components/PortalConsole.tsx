@@ -5,8 +5,11 @@ import CalEProcurePanel from "@/components/CalEProcurePanel";
 import MyFloridaPanel from "@/components/MyFloridaPanel";
 import NorthDakotaPanel from "@/components/NorthDakotaPanel";
 import PortalIcon from "@/components/PortalIcon";
+import NaicsPanel from "@/components/NaicsPanel";
 import RideMetroPanel from "@/components/RideMetroPanel";
+import SamPanel from "@/components/SamPanel";
 import SeptaPanel from "@/components/SeptaPanel";
+import UnisonPanel from "@/components/UnisonPanel";
 import WisconsinPanel from "@/components/WisconsinPanel";
 import type { Portal } from "@/lib/api";
 import { portalMeta, type PortalMeta } from "@/lib/portals";
@@ -22,7 +25,13 @@ export default function PortalConsole({ portal }: { portal: Portal }) {
       {portal === "wisconsin" && <WisconsinPanel />}
       {portal === "northdakota" && <NorthDakotaPanel />}
       {portal === "septa" && <SeptaPanel />}
+<<<<<<< HEAD
       {portal === "caleprocure" && <CalEProcurePanel />}
+=======
+      {portal === "sam" && <SamPanel />}
+      {portal === "unison" && <UnisonPanel />}
+      {portal === "naics" && <NaicsPanel />}
+>>>>>>> 6fe90adc95cb7094bccf1e642df404d4cc42fc42
     </div>
   );
 }

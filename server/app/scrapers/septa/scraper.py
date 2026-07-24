@@ -28,6 +28,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 
 from app.config import settings
 from app.core import run_manager
+from app.services.notifier import notify_scrape_completion
 from app.core.base_scraper import BaseScraper
 from app.core.filenames import sanitize_filename
 from app.scrapers.septa import export
@@ -577,6 +578,8 @@ class SeptaScraper(BaseScraper):
                 run_manager.add_error(self.run_id, "excel generation failed (see logs)")
 
             run_manager.update_run(self.run_id, status="completed", step="done")
+            # Email/S3 notification on successful completion.
+            notify_scrape_completion(self.run_id, "septa", len(self._records))
         except Exception as exc:  # noqa: BLE001 — a failed run must be reported, not crash the worker
             logger.exception("[run %s] failed", self.run_id)
             self.screenshot("fatal")

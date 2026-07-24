@@ -7,10 +7,14 @@ from app.core import run_manager
 from app.db import init_db
 from app.scrapers.bidnet.router import router as bidnet_router
 from app.scrapers.caleprocure.router import router as caleprocure_router
+from app.scrapers.evalconfig.router import router as evalconfig_router
 from app.scrapers.myflorida.router import router as myflorida_router
+from app.scrapers.naics.router import router as naics_router
 from app.scrapers.northdakota.router import router as northdakota_router
 from app.scrapers.ridemetro.router import router as ridemetro_router
+from app.scrapers.sam.router import router as sam_router
 from app.scrapers.septa.router import router as septa_router
+from app.scrapers.unison.router import router as unison_router
 from app.scrapers.wisconsin.router import router as wisconsin_router
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -47,6 +51,10 @@ app.include_router(wisconsin_router)
 app.include_router(northdakota_router)
 app.include_router(septa_router)
 app.include_router(caleprocure_router)
+app.include_router(evalconfig_router)
+app.include_router(sam_router)
+app.include_router(unison_router)
+app.include_router(naics_router)
 
 
 @app.get("/")
@@ -54,5 +62,8 @@ def health() -> dict:
     return {
         "status": "ok",
         "service": "scraping-hub",
-        "scrapers": ["myflorida", "ridemetro", "bidnet", "wisconsin", "northdakota", "septa", "caleprocure"],
+        "scrapers": [
+            "myflorida", "ridemetro", "bidnet", "wisconsin", "northdakota",
+            "septa", "caleprocure", "sam", "unison", "naics",
+        ],
     }

@@ -8,3 +8,14 @@ pydantic-settings
 sqlalchemy
 psycopg2-binary
 openpyxl
+# Vendored SAM / Unison / NAICS engine dependencies (app/scrapers/*/engine/).
+beautifulsoup4
+lxml
+PyMuPDF
+python-docx
+pandas
+requests
+PyYAML
+ollama
+# Post-scrape S3 upload for the email notifier (SES email itself uses stdlib smtplib).
+boto3

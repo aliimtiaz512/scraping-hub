@@ -19,7 +19,11 @@ export interface PortalMeta {
   description: string;
   /** What the run produces, listed as capability pills in the hero. */
   outputs: string[];
+<<<<<<< HEAD
   icon: "florida" | "transit" | "network" | "capitol" | "prairie" | "rail" | "bear";
+=======
+  icon: "florida" | "transit" | "network" | "capitol" | "prairie" | "rail" | "federal" | "marketplace" | "catalog";
+>>>>>>> 6fe90adc95cb7094bccf1e642df404d4cc42fc42
   accent: {
     /** Icon tile: background + foreground. */
     tile: string;
@@ -136,6 +140,7 @@ export const PORTALS: PortalMeta[] = [
     },
   },
   {
+<<<<<<< HEAD
     key: "caleprocure",
     label: "Cal eProcure",
     operator: "State of California",
@@ -145,6 +150,34 @@ export const PORTALS: PortalMeta[] = [
       "Sign in to Cal eProcure, California's statewide eProcurement portal. Login verification is live now; solicitation search and Excel export are being built next.",
     outputs: ["Supplier login", "Session verification"],
     icon: "bear",
+=======
+    key: "sam",
+    label: "SAM.gov",
+    operator: "U.S. federal contract opportunities",
+    host: "sam.gov",
+    tagline: "Federal solicitations, auto-evaluated",
+    description:
+      "Search active SAM.gov solicitations by updated-date range and NAICS code, extract each notice with its attachments, and run every bid through the NAICS-first evaluation funnel — PURSUE, REJECT, or MANUAL REVIEW — with editable kill-word and service rules.",
+    outputs: ["Date & NAICS filters", "Auto bid evaluation", "Excel export"],
+    icon: "federal",
+    accent: {
+      tile: "bg-indigo-50 text-indigo-600 ring-indigo-100",
+      dot: "bg-indigo-500",
+      rail: "bg-indigo-500",
+      wash: "from-indigo-50",
+    },
+  },
+  {
+    key: "unison",
+    label: "Unison Marketplace",
+    operator: "Unison Global (formerly FedBid)",
+    host: "marketplace.unisonglobal.com",
+    tagline: "Buyer requests",
+    description:
+      "Sign in to the Unison Marketplace seller dashboard and capture every open buyer request — buyer, description and closing date — to the database and an Excel sheet.",
+    outputs: ["Full request list", "Buyer details", "Excel export"],
+    icon: "marketplace",
+>>>>>>> 6fe90adc95cb7094bccf1e642df404d4cc42fc42
     accent: {
       tile: "bg-orange-50 text-orange-600 ring-orange-100",
       dot: "bg-orange-500",
@@ -152,6 +185,26 @@ export const PORTALS: PortalMeta[] = [
       wash: "from-orange-50",
     },
   },
+<<<<<<< HEAD
+=======
+  {
+    key: "naics",
+    label: "NAICS Codes",
+    operator: "Reference tool",
+    host: "naics.com",
+    tagline: "Searchable code reference",
+    description:
+      "Search the full catalogue of 6-digit NAICS industry codes and titles — a quick reference when choosing filters for the bid portals. Refresh the catalogue any time from the source index.",
+    outputs: ["Code & title search", "One-click refresh"],
+    icon: "catalog",
+    accent: {
+      tile: "bg-slate-100 text-slate-600 ring-slate-200",
+      dot: "bg-slate-500",
+      rail: "bg-slate-500",
+      wash: "from-slate-50",
+    },
+  },
+>>>>>>> 6fe90adc95cb7094bccf1e642df404d4cc42fc42
 ];
 
 export function portalMeta(key: Portal): PortalMeta {
