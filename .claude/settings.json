@@ -27,7 +27,9 @@
       "Bash(cd \"/home/akif-aziz/Public/Head office scrappers/scraping-hub/client/src\" && echo \"=== any panel start a run with livePreview=true? ===\" && grep -rn \"handleStart\\(true\\)\\\\|handleStart\\(\\\\s*true\\\\|Scrape\\(true\\\\|, true\\)\" components/*.tsx || echo \"\\(none — livePreview flag is passed false; modal streams from headless\\)\" && echo && echo \"=== how download_router builds the frame \\(works headless?\\) ===\" && sed -n '20,45p' ../../server/app/core/download_router.py)",
       "Read(//home/akif-aziz/Public/server/app/core/**)",
       "Bash(git check-ignore *)",
-      "Bash(curl -s http://localhost:8000/emma/scrape/status/bb5eefe3a0bb)"
+      "Bash(curl -s http://localhost:8000/emma/scrape/status/bb5eefe3a0bb)",
+      "Bash(.venv/bin/python /tmp/claude-1000/-home-akif-aziz-Public-Head-office-scrappers-scraping-hub/73b7faed-2e10-4d51-818e-ba5fa3199077/scratchpad/test_stop.py)",
+      "Bash(python3 -)"
     ],
     "additionalDirectories": [
       "/home/akif-aziz/Public/Head office scrappers/scraping-hub/client/.next"

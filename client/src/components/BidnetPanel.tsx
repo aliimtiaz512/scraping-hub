@@ -7,6 +7,7 @@ import KeywordSelect from "@/components/KeywordSelect";
 import RunStatusPanel from "@/components/RunStatus";
 import { ErrorBanner, LaunchBar, StartButton } from "@/components/ui";
 import LiveMonitor from "@/components/LiveMonitor";
+import StopButton from "@/components/StopButton";
 import { getBidnetKeywords, getRunStatus, startBidnetScrape, type BidnetNiche, type RunStatus } from "@/lib/api";
 
 const POLL_INTERVAL_MS = 3000;
@@ -67,7 +68,7 @@ export default function BidnetPanel() {
         try {
           const latest = await getRunStatus("bidnet", run_id);
           setRun(latest);
-          if (latest.status === "completed" || latest.status === "failed") stopPolling();
+          if (latest.status === "completed" || latest.status === "failed" || latest.status === "stopped") stopPolling();
         } catch {
           // transient poll failure — keep trying
         }
@@ -96,6 +97,7 @@ export default function BidnetPanel() {
         }
       >
         <div className="flex items-center gap-2">
+          <StopButton run={run} onError={setError} />
           <LiveMonitor run={run} portal="bidnet" />
           <StartButton
             onClick={() => handleStart()}

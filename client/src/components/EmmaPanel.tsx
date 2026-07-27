@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Card, ErrorBanner, LaunchBar, RunBadge, StartButton } from "@/components/ui";
 import LiveMonitor from "@/components/LiveMonitor";
+import StopButton from "@/components/StopButton";
 import { getRunStatus, startEmmaScrape, type RunStatus } from "@/lib/api";
 
 const POLL_INTERVAL_MS = 3000;
@@ -40,7 +41,7 @@ export default function EmmaPanel() {
         try {
           const latest = await getRunStatus("emma", run_id);
           setRun(latest);
-          if (latest.status === "completed" || latest.status === "failed") stopPolling();
+          if (latest.status === "completed" || latest.status === "failed" || latest.status === "stopped") stopPolling();
         } catch {
           // transient poll failure — keep trying
         }
@@ -73,6 +74,7 @@ export default function EmmaPanel() {
 
       <LaunchBar summary="Signs in to emma.maryland.gov and opens Public Solicitations.">
         <div className="flex items-center gap-2">
+          <StopButton run={run} onError={setError} />
           <LiveMonitor run={run} portal="emma" />
           <StartButton onClick={() => handleStart()} disabled={starting || isRunning} running={isRunning} starting={starting}>
             Test login

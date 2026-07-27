@@ -7,6 +7,7 @@ import ResultsTable from "@/components/ResultsTable";
 import RunStatusPanel from "@/components/RunStatus";
 import { ErrorBanner, LaunchBar, StartButton } from "@/components/ui";
 import LiveMonitor from "@/components/LiveMonitor";
+import StopButton from "@/components/StopButton";
 import {
   getCategories,
   getRunStatus,
@@ -80,7 +81,7 @@ export default function MyFloridaPanel() {
         try {
           const latest = await getRunStatus("myflorida", run_id);
           setRun(latest);
-          if (latest.status === "completed" || latest.status === "failed") stopPolling();
+          if (latest.status === "completed" || latest.status === "failed" || latest.status === "stopped") stopPolling();
         } catch {
           // transient poll failure — keep trying
         }
@@ -127,6 +128,7 @@ export default function MyFloridaPanel() {
         }
       >
         <div className="flex items-center gap-2">
+          <StopButton run={run} onError={setError} />
           <LiveMonitor run={run} portal="myflorida" />
           <StartButton
             onClick={() => handleStart()}

@@ -24,6 +24,15 @@ logger = logging.getLogger(__name__)
 _lock = threading.Lock()
 _runs: dict[str, dict[str, Any]] = {}
 
+# run_ids the user asked to stop. Once a run is in here its terminal status is
+# locked to "stopped": update_run ignores later status/step writes and add_error
+# suppresses the browser-teardown errors a forced stop produces, so a
+# user-stopped run reads as a clean "Stopped" instead of a scary "Failed".
+_stopped: set[str] = set()
+
+# Terminal statuses — a run in any of these is finished and no longer active.
+TERMINAL_STATUSES = ("completed", "failed", "stopped")
+
 
 def _persist(run: dict[str, Any]) -> None:
     """Write-through a snapshot of `run` to the run_state table. Best-effort:
@@ -153,11 +162,42 @@ def list_runs(scraper: str | None = None) -> list[dict[str, Any]]:
     return runs
 
 
+def request_stop(run_id: str) -> bool:
+    """Ask an in-flight run to stop. Returns False if the run isn't active.
+
+    Locks the run's terminal status to "stopped" immediately so the UI reflects
+    the stop at once and a later status write from the worker (which is about to
+    unwind through its own error handling as its browser is torn down) can't flip
+    it to "failed". The actual browser interruption is done by the caller via
+    live.stop(); this only owns the run-state side.
+    """
+    with _lock:
+        run = _runs.get(run_id)
+        if not run or run.get("status") not in ("pending", "running"):
+            return False
+        _stopped.add(run_id)
+        run["status"] = "stopped"
+        run["step"] = "stopped"
+        run["finished_at"] = run.get("finished_at") or datetime.now().isoformat()
+        snapshot = dict(run)
+    _persist(snapshot)
+    return True
+
+
+def is_stop_requested(run_id: str) -> bool:
+    with _lock:
+        return run_id in _stopped
+
+
 def update_run(run_id: str, **fields: Any) -> None:
     with _lock:
         run = _runs.get(run_id)
         if not run:
             return
+        if run_id in _stopped:
+            # A stopped run stays stopped: drop status/step reversions from the
+            # worker's teardown, but let finished_at/counts through.
+            fields = {k: v for k, v in fields.items() if k not in ("status", "step")}
         run.update(fields)
         snapshot = dict(run)
     _persist(snapshot)
@@ -167,6 +207,9 @@ def add_error(run_id: str, message: str) -> None:
     with _lock:
         run = _runs.get(run_id)
         if not run:
+            return
+        if run_id in _stopped:
+            # The WebDriver errors a forced stop produces aren't real failures.
             return
         run["errors"].append(message)
         snapshot = dict(run)

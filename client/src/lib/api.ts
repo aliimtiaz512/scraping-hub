@@ -118,7 +118,7 @@ export interface BidResult {
 export interface RunStatus {
   run_id: string;
   scraper?: Portal;
-  status: "pending" | "running" | "completed" | "failed";
+  status: "pending" | "running" | "completed" | "failed" | "stopped";
   step: string;
   // MyFlorida-only
   category?: string;
@@ -351,10 +351,6 @@ export function startSamScrape({
   });
 }
 
-export function stopSamScrape(runId: string): Promise<{ success: boolean; message: string }> {
-  return request(`/sam/scrape/stop/${runId}`, { method: "POST" });
-}
-
 export function getSamScreenshot(runId: string): Promise<{ screenshot: string }> {
   return request(`/sam/screenshot/${runId}`);
 }
@@ -424,6 +420,20 @@ export function startEmmaScrape(livePreview = false): Promise<{ run_id: string; 
 }
 
 // -- shared ------------------------------------------------------------------
+
+/** A run has reached a final state — the UI should stop polling it. */
+export function isTerminalStatus(status: RunStatus["status"]): boolean {
+  return status === "completed" || status === "failed" || status === "stopped";
+}
+
+/**
+ * Stop an in-flight run, whichever scraper owns it. The shared endpoint routes
+ * SAM to its cooperative stop and every other scraper to the run-state lock +
+ * browser interrupt. 409 if the run already finished.
+ */
+export function stopScrape(runId: string): Promise<{ stopped: boolean; run_id: string }> {
+  return request(`/runs/${runId}/stop`, { method: "POST" });
+}
 
 export function getRunStatus(portal: Portal, runId: string): Promise<RunStatus> {
   return request(`/${portal}/scrape/status/${runId}`);

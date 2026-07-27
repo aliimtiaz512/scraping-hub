@@ -6,6 +6,7 @@ import RideMetroResults from "@/components/RideMetroResults";
 import RunStatusPanel from "@/components/RunStatus";
 import { ErrorBanner, LaunchBar, StartButton } from "@/components/ui";
 import LiveMonitor from "@/components/LiveMonitor";
+import StopButton from "@/components/StopButton";
 import { getRunStatus, startRideMetroScrape, type RunStatus } from "@/lib/api";
 
 const POLL_INTERVAL_MS = 3000;
@@ -37,7 +38,7 @@ export default function RideMetroPanel() {
         try {
           const latest = await getRunStatus("ridemetro", run_id);
           setRun(latest);
-          if (latest.status === "completed" || latest.status === "failed") stopPolling();
+          if (latest.status === "completed" || latest.status === "failed" || latest.status === "stopped") stopPolling();
         } catch {
           // transient poll failure — keep trying
         }
@@ -57,6 +58,7 @@ export default function RideMetroPanel() {
 
       <LaunchBar summary="No configuration needed — this run captures every open public opportunity.">
         <div className="flex items-center gap-2">
+          <StopButton run={run} onError={setError} />
           <LiveMonitor run={run} portal="ridemetro" />
           <StartButton onClick={() => handleStart()} disabled={starting || isRunning} running={isRunning} starting={starting}>
             Start scrape

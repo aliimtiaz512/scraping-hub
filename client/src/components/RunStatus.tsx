@@ -37,6 +37,8 @@ const STEP_LABELS: Record<string, string> = {
   packaging_results: "Packaging results into ZIP",
   done: "Done",
   failed: "Failed",
+  stopping: "Stopping…",
+  stopped: "Stopped by you",
 };
 
 export function stepLabel(step: string): string {
@@ -105,8 +107,14 @@ export default function RunStatus({ run }: { run: RunStatusData }) {
         <Stat label="Results" value={run.excel_exported ? "Ready" : "—"} muted={!run.excel_exported} />
       </div>
 
-      {(run.errors.length > 0 || run.no_results || (run.warnings?.length ?? 0) > 0 || run.status === "completed") && (
+      {(run.errors.length > 0 || run.no_results || (run.warnings?.length ?? 0) > 0 || run.status === "completed" || run.status === "stopped") && (
         <div className="space-y-3 border-t border-ink-100 p-5">
+          {run.status === "stopped" && (
+            <Notice tone="amber" title="Stopped">
+              You stopped this run{run.bids_processed > 0 ? ` after ${run.bids_processed} processed` : ""}. Anything captured before the stop is kept below.
+            </Notice>
+          )}
+
           {run.errors.length > 0 && (
             <Notice tone="red" title={`${run.errors.length} ${run.errors.length === 1 ? "error" : "errors"}`}>
               <ul className="max-h-28 space-y-1 overflow-y-auto">

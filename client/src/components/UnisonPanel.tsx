@@ -6,6 +6,7 @@ import RunStatusPanel from "@/components/RunStatus";
 import UnisonResults from "@/components/UnisonResults";
 import { Card, ErrorBanner, Field, LaunchBar, StartButton } from "@/components/ui";
 import LiveMonitor from "@/components/LiveMonitor";
+import StopButton from "@/components/StopButton";
 import { getRunStatus, startUnisonScrape, type RunStatus } from "@/lib/api";
 
 const POLL_INTERVAL_MS = 3000;
@@ -38,7 +39,7 @@ export default function UnisonPanel() {
         try {
           const latest = await getRunStatus("unison", run_id);
           setRun(latest);
-          if (latest.status === "completed" || latest.status === "failed") stopPolling();
+          if (latest.status === "completed" || latest.status === "failed" || latest.status === "stopped") stopPolling();
         } catch {
           // transient poll failure — keep trying
         }
@@ -79,6 +80,7 @@ export default function UnisonPanel() {
         }
       >
         <div className="flex items-center gap-2">
+          <StopButton run={run} onError={setError} />
           <LiveMonitor run={run} portal="unison" />
           <StartButton onClick={() => handleStart()} disabled={starting || isRunning} running={isRunning} starting={starting}>
             Start scrape

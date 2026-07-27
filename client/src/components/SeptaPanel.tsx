@@ -6,6 +6,7 @@ import RunStatusPanel from "@/components/RunStatus";
 import SeptaResults from "@/components/SeptaResults";
 import { Card, ErrorBanner, Field, LaunchBar, StartButton } from "@/components/ui";
 import LiveMonitor from "@/components/LiveMonitor";
+import StopButton from "@/components/StopButton";
 import { getRunStatus, startSeptaScrape, type RunStatus } from "@/lib/api";
 
 const POLL_INTERVAL_MS = 3000;
@@ -45,7 +46,7 @@ export default function SeptaPanel() {
         try {
           const latest = await getRunStatus("septa", run_id);
           setRun(latest);
-          if (latest.status === "completed" || latest.status === "failed") stopPolling();
+          if (latest.status === "completed" || latest.status === "failed" || latest.status === "stopped") stopPolling();
         } catch {
           // transient poll failure — keep trying
         }
@@ -107,6 +108,7 @@ export default function SeptaPanel() {
         }
       >
         <div className="flex items-center gap-2">
+          <StopButton run={run} onError={setError} />
           <LiveMonitor run={run} portal="septa" />
           <StartButton onClick={() => handleStart()} disabled={starting || isRunning} running={isRunning} starting={starting}>
             Search &amp; scrape

@@ -276,12 +276,17 @@ export function DataTable({
 }
 
 /** Run lifecycle badge — shared by the live monitor and the history table. */
-export function RunBadge({ status }: { status: "pending" | "running" | "completed" | "failed" }) {
+export function RunBadge({
+  status,
+}: {
+  status: "pending" | "running" | "completed" | "failed" | "stopped";
+}) {
   const map = {
     pending: { cls: "border-ink-200 bg-ink-50 text-ink-600", label: "Queued" },
     running: { cls: "border-gold-300 bg-gold-50 text-gold-700", label: "Running" },
     completed: { cls: "border-emerald-200 bg-emerald-50 text-emerald-700", label: "Completed" },
     failed: { cls: "border-red-200 bg-red-50 text-red-700", label: "Failed" },
+    stopped: { cls: "border-ink-300 bg-ink-100 text-ink-700", label: "Stopped" },
   }[status];
   const live = status === "running" || status === "pending";
   return (

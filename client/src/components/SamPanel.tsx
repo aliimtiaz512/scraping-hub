@@ -4,9 +4,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import RunStatusPanel from "@/components/RunStatus";
 import SamResults from "@/components/SamResults";
-import { Button, Card, ErrorBanner, LaunchBar, StartButton } from "@/components/ui";
+import { Card, ErrorBanner, LaunchBar, StartButton } from "@/components/ui";
 import LiveMonitor from "@/components/LiveMonitor";
-import { getRunStatus, startSamScrape, stopSamScrape, type RunStatus } from "@/lib/api";
+import StopButton from "@/components/StopButton";
+import { getRunStatus, startSamScrape, type RunStatus } from "@/lib/api";
 
 const POLL_INTERVAL_MS = 3000;
 const inputClass =
@@ -61,15 +62,6 @@ export default function SamPanel() {
     }
   };
 
-  const handleStop = async () => {
-    if (!runIdRef.current) return;
-    try {
-      await stopSamScrape(runIdRef.current);
-    } catch (e) {
-      setError((e as Error).message);
-    }
-  };
-
   const isRunning = run !== null && (run.status === "pending" || run.status === "running");
 
   return (
@@ -111,11 +103,7 @@ export default function SamPanel() {
 
       <LaunchBar summary="Each bid is scored PURSUE / REJECT by the evaluator as it is scraped.">
         <div className="flex items-center gap-2">
-          {isRunning && (
-            <Button variant="secondary" onClick={handleStop}>
-              Stop
-            </Button>
-          )}
+          <StopButton run={run} onError={setError} />
           <LiveMonitor run={run} portal="sam" />
           <StartButton onClick={() => handleStart()} disabled={starting || isRunning} running={isRunning} starting={starting}>
             Start scrape

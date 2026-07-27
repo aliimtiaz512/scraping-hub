@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Card, ErrorBanner, LaunchBar, RunBadge, StartButton } from "@/components/ui";
+import StopButton from "@/components/StopButton";
 import { getRunStatus, startCalEProcureScrape, type RunStatus } from "@/lib/api";
 
 const POLL_INTERVAL_MS = 3000;
@@ -38,7 +39,7 @@ export default function CalEProcurePanel() {
         try {
           const latest = await getRunStatus("caleprocure", run_id);
           setRun(latest);
-          if (latest.status === "completed" || latest.status === "failed") stopPolling();
+          if (latest.status === "completed" || latest.status === "failed" || latest.status === "stopped") stopPolling();
         } catch {
           // transient poll failure — keep trying
         }
@@ -69,9 +70,12 @@ export default function CalEProcurePanel() {
       </Card>
 
       <LaunchBar summary="Signs in to caleprocure.ca.gov and confirms the session.">
-        <StartButton onClick={handleStart} disabled={starting || isRunning} running={isRunning} starting={starting}>
-          Test login
-        </StartButton>
+        <div className="flex items-center gap-2">
+          <StopButton run={run} onError={setError} />
+          <StartButton onClick={handleStart} disabled={starting || isRunning} running={isRunning} starting={starting}>
+            Test login
+          </StartButton>
+        </div>
       </LaunchBar>
 
       {run && (

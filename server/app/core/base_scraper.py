@@ -49,6 +49,11 @@ TRANSIENT_NET_ERRORS = (
 NAVIGATE_ATTEMPTS = 4      # total tries before giving up
 NAVIGATE_BACKOFF = 2.0     # seconds, doubled after each failed attempt
 
+
+class StopRequested(Exception):
+    """Raised inside a scrape when the user has asked it to stop, so the flow
+    unwinds at the next checkpoint instead of running to completion."""
+
 # A realistic desktop-Chrome UA. Under --headless=new the default UA no longer
 # leaks a "HeadlessChrome" token, but some portals (e.g. BidNet Direct) still
 # 403 the automation fingerprint, so we pin a normal UA to match.
@@ -68,6 +73,8 @@ class BaseScraper:
         self.driver: webdriver.Chrome | None = None
         # Last step reported via set_step — used to say where a failure happened.
         self.current_step: str | None = None
+        # Flipped by stop() (from another thread) when the user asks to stop.
+        self._stop_requested = False
 
     # -- lifecycle ----------------------------------------------------------
 
@@ -190,6 +197,7 @@ class BaseScraper:
         delay = backoff
         last_exc: WebDriverException | None = None
         for attempt in range(1, attempts + 1):
+            self.raise_if_stopped()  # don't start/retry a load the user has cancelled
             try:
                 self.driver.get(url)
                 if attempt > 1:
@@ -222,6 +230,31 @@ class BaseScraper:
             f"or 1.1.1.1 fixes that)."
         ) from last_exc
 
+    # -- stop support -------------------------------------------------------
+
+    def stop(self) -> None:
+        """Interrupt this run from another thread (the stop endpoint).
+
+        Sets the cooperative flag and quits the browser: quitting makes whatever
+        Selenium call the worker is blocked on (a page load, a WebDriverWait)
+        raise at once, so the run unwinds immediately rather than only at the
+        next checkpoint. Safe to call more than once.
+        """
+        self._stop_requested = True
+        driver = self.driver
+        if driver is not None:
+            try:
+                driver.quit()
+            except Exception:  # noqa: BLE001 — the driver may already be gone
+                pass
+
+    def raise_if_stopped(self) -> None:
+        """Checkpoint: raise StopRequested if a stop was asked for. Called at
+        safe points (each step, each navigate attempt, the download wait) so a
+        stop takes effect promptly even between Selenium calls."""
+        if self._stop_requested or run_manager.is_stop_requested(self.run_id):
+            raise StopRequested("run stopped by user")
+
     def scroll_into_view(self, element) -> None:
         self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", element)
 
@@ -233,6 +266,9 @@ class BaseScraper:
                 pass
 
     def set_step(self, step: str) -> None:
+        # Every step boundary is a natural stop checkpoint — and it covers the
+        # window before the browser is even up, when stop() can't interrupt.
+        self.raise_if_stopped()
         logger.info("[run %s] %s", self.run_id, step)
         self.current_step = step
         run_manager.update_run(self.run_id, step=step)
@@ -246,6 +282,7 @@ class BaseScraper:
         """
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
+            self.raise_if_stopped()  # don't keep waiting on a download the user cancelled
             partial = [
                 f for f in self.download_dir.iterdir()
                 if f.is_file() and (f.suffix == ".crdownload" or f.name.startswith(".com.google.Chrome."))

@@ -28,6 +28,32 @@ def run_screenshot(run_id: str) -> dict:
     return {"screenshot": live.capture(run_id)}
 
 
+@router.post("/runs/{run_id}/stop")
+def stop_run(run_id: str) -> dict:
+    """Stop an in-flight run, whichever scraper owns it.
+
+    SAM runs on its own threaded engine with a cooperative stop event, so those
+    are routed to it. Every other scraper is a BaseScraper: locking its run state
+    to "stopped" (run_manager) plus interrupting its browser (live.stop) unwinds
+    it cleanly. 409 if the run isn't in progress — there is nothing to stop.
+    """
+    run = run_manager.get_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail=f"Unknown run: {run_id}")
+    if run.get("status") not in ("pending", "running"):
+        raise HTTPException(status_code=409, detail="Run is not in progress — nothing to stop.")
+
+    if run.get("scraper") == "sam":
+        # Lazy import to avoid a heavy engine import at module load.
+        from app.scrapers.sam import runner as sam_runner
+
+        sam_runner.request_stop(run_id)
+    else:
+        run_manager.request_stop(run_id)
+        live.stop(run_id)
+    return {"stopped": True, "run_id": run_id}
+
+
 @router.get("/runs/{run_id}/download")
 def download_run(run_id: str):
     run = run_manager.get_run(run_id)
