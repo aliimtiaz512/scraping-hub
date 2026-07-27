@@ -31,6 +31,8 @@ _HEADER_FILL = PatternFill("solid", fgColor="1E3A5F")
 _HEADER_FONT = Font(bold=True, color="FFFFFF", size=11)
 _HEADER_ALIGN = Alignment(horizontal="center", vertical="center", wrap_text=True)
 _REJECT_FILL = PatternFill("solid", fgColor="FFCCCC")
+# MANUAL_REVIEW rows are tinted amber so they stand apart from clean REJECTs.
+_REVIEW_FILL = PatternFill("solid", fgColor="FFF2CC")
 
 
 def _sanitize_cell(value: Any) -> Any:
@@ -61,9 +63,15 @@ def _write_styled_sheet(rows: list[list[Any]], out_path: str | Path) -> None:
     for row_idx, row in enumerate(rows, start=2):
         sanitized = [_sanitize_cell(v) for v in row]
         sheet.append(sanitized)
-        if dec_idx != -1 and sanitized[dec_idx] == "REJECT":
-            for cell in sheet[row_idx]:
-                cell.fill = _REJECT_FILL
+        if dec_idx != -1:
+            fill = None
+            if sanitized[dec_idx] == "REJECT":
+                fill = _REJECT_FILL
+            elif sanitized[dec_idx] == "MANUAL_REVIEW":
+                fill = _REVIEW_FILL
+            if fill is not None:
+                for cell in sheet[row_idx]:
+                    cell.fill = fill
 
     for col in sheet.columns:
         max_len = max((len(str(c.value or "")) for c in col), default=10)

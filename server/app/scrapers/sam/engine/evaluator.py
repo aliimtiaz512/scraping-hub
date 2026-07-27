@@ -10,21 +10,26 @@ implements that guide's Combined Decision Matrix (§3) exactly:
   Hardware / material supply  | PURSUE        | PURSUE
   Allowed service (Rule C)    | PURSUE        | REJECT
   Excluded service (Rule B)   | REJECT        | REJECT
-  Service on neither list     | REJECT        | REJECT
+  Service on neither list     | MANUAL_REVIEW | REJECT
 
-Two decision modes only — PURSUE or REJECT. The guide's matrix marks the
-"unlisted service in the US Mainland" cell as manual review, but this system
-runs strictly two-mode (company policy): an unlisted service is not a validated
-in-scope requirement, so it is REJECTED (guide config note #5 — never auto-pass
-a requirement that has not been validated against Rules A/B/C). No path ever
-returns MANUAL_REVIEW.
+Three decision modes — PURSUE, REJECT, or MANUAL_REVIEW. An unlisted service
+(matching neither Rule B nor Rule C) performed in the US Mainland is not
+auto-decided: it is flagged MANUAL_REVIEW so a human validates scope, rather
+than being silently rejected. The same requirement performed OUTSIDE the US
+Mainland is REJECTED outright (location alone disqualifies it). Hardware and
+listed services (Rules A/B/C) are always auto-decided to PURSUE or REJECT.
 
 Decision algorithm (strict order — the guide's Decision Flow §4):
 
   STEP 0  Kill-Word Sieve         → instant REJECT on dealbreaker keyword
-                                     (operational pre-filter: idiq / rfi /
-                                      sources sought / market research — these
-                                      are not biddable solicitations)
+                                     (operational pre-filter: rfi / sources
+                                      sought / market research — these are not
+                                      biddable solicitations. IDIQ is NOT a
+                                      kill-word: hardware IDIQ contracts are
+                                      biddable and must not be auto-rejected.)
+  STEP 0b Rental override         → "rental" / "rental services" named as the
+                                     primary scope → REJECT Rule B #6 outright,
+                                     ahead of the hardware gate and Rule C.
   STEP 1  Requirement Type        → HARDWARE / MATERIAL vs SERVICE
                                      (NAICS code is the primary signal,
                                       title keywords confirm/override)
@@ -32,7 +37,8 @@ Decision algorithm (strict order — the guide's Decision Flow §4):
   STEP 3  If SERVICE: Rule B?     → REJECT (excluded service, any location)
   STEP 4  If not Rule B: Rule C?  → proceed to location check
   STEP 5  Rule C service location → US Mainland = PURSUE, else REJECT
-          Service on neither list → REJECT (any location — not in scope)
+          Service on neither list → US Mainland = MANUAL_REVIEW,
+                                    outside US Mainland = REJECT
 
 The cardinal rule (guide §1): the requirement type is classified BEFORE any
 Rule B/C or location logic — decisions are driven primarily by WHAT is
@@ -66,6 +72,9 @@ def reason_not_listed_outside() -> str:
 
 def reason_not_listed_us() -> str:
     return "Service not in allowed (Rule C) or excluded (Rule B) list — not a validated in-scope service"
+
+def reason_manual_review() -> str:
+    return "Manual Review required — service not in Rule B or Rule C scope list"
 
 
 # ===========================================================================
@@ -156,15 +165,128 @@ _OVERSEAS_BASES = [
     "souda bay", "diego garcia", "camp humphreys",
 ]
 
-# Foreign-location indicators
-_FOREIGN = [
-    "germany", "japan", "djibouti", "bermuda", "italy", "korea", "afghanistan",
-    "iraq", "kuwait", "qatar", "bahrain", "united kingdom", "england", "spain",
-    "poland", "belgium", "netherlands", "turkey ", "greece", "australia",
-    "philippines", "singapore", "thailand", "kenya", "egypt", "jordan",
-    "luanda", "angola", "diego garcia", "okinawa", "oconus", "overseas",
-    "outside the united states", "outside the continental united states",
+# Foreign-country names (word-boundary matched). Comprehensive so that a place
+# of performance stated as a country — "Jakarta, Indonesia", "Sierra Leone" —
+# reads as OUTSIDE_MAINLAND. Deliberately EXCLUDES "georgia" (collides with the
+# US state, handled as mainland) and bare "chad"/"jordan" are matched only with
+# word boundaries. "united states"/"usa" are of course NOT here.
+_FOREIGN_COUNTRIES = {
+    # Americas (ex-US)
+    "canada", "mexico", "guatemala", "honduras", "el salvador", "nicaragua",
+    "costa rica", "panama", "colombia", "venezuela", "ecuador", "peru",
+    "bolivia", "chile", "argentina", "brazil", "uruguay", "paraguay", "cuba",
+    "haiti", "dominican republic", "jamaica", "bahamas", "belize", "suriname",
+    "guyana", "trinidad",
+    # Europe
+    "united kingdom", "great britain", "england", "scotland", "wales",
+    "ireland", "france", "germany", "italy", "spain", "portugal", "belgium",
+    "netherlands", "holland", "luxembourg", "switzerland", "austria", "poland",
+    "czech republic", "czechia", "slovakia", "hungary", "romania", "bulgaria",
+    "greece", "cyprus", "malta", "ukraine", "russia", "belarus", "moldova",
+    "sweden", "norway", "finland", "denmark", "iceland", "estonia", "latvia",
+    "lithuania", "croatia", "serbia", "slovenia", "bosnia", "albania",
+    "north macedonia", "montenegro", "kosovo",
+    # Middle East
+    "iraq", "iran", "syria", "yemen", "oman", "qatar", "kuwait", "bahrain",
+    "saudi arabia", "united arab emirates", "u.a.e.", "israel", "jordan",
+    "lebanon", "palestine",
+    # Africa
+    "egypt", "libya", "tunisia", "algeria", "morocco", "sudan", "south sudan",
+    "ethiopia", "eritrea", "somalia", "kenya", "tanzania", "uganda", "rwanda",
+    "burundi", "djibouti", "angola", "mozambique", "zambia", "zimbabwe",
+    "malawi", "botswana", "namibia", "south africa", "lesotho", "eswatini",
+    "madagascar", "mauritius", "senegal", "gambia", "guinea-bissau", "guinea",
+    "sierra leone", "liberia", "ivory coast", "cote d'ivoire", "ghana", "togo",
+    "benin", "nigeria", "niger", "mali", "burkina faso", "mauritania", "chad",
+    "cameroon", "gabon", "congo", "central african republic",
+    # Asia / Pacific
+    "afghanistan", "pakistan", "india", "bangladesh", "sri lanka", "nepal",
+    "bhutan", "maldives", "china", "taiwan", "hong kong", "mongolia", "japan",
+    "south korea", "north korea", "korea", "vietnam", "cambodia", "laos",
+    "thailand", "myanmar", "burma", "malaysia", "indonesia", "philippines",
+    "singapore", "brunei", "timor-leste", "papua new guinea", "australia",
+    "new zealand", "fiji", "kazakhstan", "uzbekistan", "turkmenistan",
+    "kyrgyzstan", "tajikistan", "azerbaijan", "armenia", "turkey",
+}
+
+# Well-known foreign cities that host US diplomatic posts or bases and often
+# appear WITHOUT their country in a place-of-performance line (word-boundary).
+_FOREIGN_CITIES = {
+    "jakarta", "manila", "seoul", "tokyo", "bangkok", "hanoi", "kabul",
+    "baghdad", "manama", "doha", "riyadh", "dubai", "abu dhabi", "amman",
+    "beirut", "cairo", "nairobi", "addis ababa", "kampala", "kinshasa",
+    "lagos", "abuja", "accra", "dakar", "freetown", "monrovia", "luanda",
+    "pretoria", "johannesburg", "islamabad", "new delhi", "dhaka", "colombo",
+    "kuala lumpur", "beijing", "shanghai", "frankfurt", "berlin", "brussels",
+    "the hague", "geneva", "vienna", "warsaw", "kyiv", "moscow", "ankara",
+    "istanbul",
+}
+
+# Explicit "this bid is performed overseas" phrases (never in FAR boilerplate).
+_OVERSEAS_PHRASES = [
+    "oconus", "overseas", "outside the united states",
+    "outside the continental united states", "outside conus",
 ]
+
+# Diplomatic-post / foreign-base indicators. A US Embassy, Consulate, Naval
+# Operating Base (NOB) etc. is by definition on foreign soil, so any of these
+# anywhere in the text flags the bid OUTSIDE_MAINLAND. These strings do not
+# appear in the FAR certification clauses that pollute the document body, so
+# they are safe to scan against the whole body.
+_DIPLOMATIC_RE = re.compile(
+    r"\b(?:u\.?s\.?|american)\s+embassy\b"
+    r"|\bembassy\s+of\s+the\s+united\s+states\b"
+    r"|\bamerican\s+consulate\b"
+    r"|\bconsulate\b|\bconsular\b|\bchancery\b|\bdiplomatic\s+post\b"
+    r"|\bnob\s+[a-z]",  # "NOB <city>" — Naval Operating Base abroad
+    re.IGNORECASE,
+)
+
+# Cues that mark where a place of performance is stated in the body — foreign
+# country/city names are trusted only within ~120 chars after one of these, so
+# a country named inside an unrelated FAR sanction clause does NOT flip the bid.
+_POP_CUE_RE = re.compile(
+    r"place\s+of\s+performance|performance\s+location|delivery\s+location|"
+    r"ship[\s-]*to|pop\s*[:\-]|location\s*[:\-]|country\s*[:\-]|"
+    r"performed\s+(?:at|in)",
+    re.IGNORECASE,
+)
+
+
+def _foreign_token_present(text: str) -> bool:
+    """True if any foreign country or well-known foreign city appears in `text`
+    as a whole word (word boundaries stop 'india' matching 'indiana')."""
+    for token in _FOREIGN_COUNTRIES:
+        if re.search(rf"\b{re.escape(token)}\b", text):
+            return True
+    for city in _FOREIGN_CITIES:
+        if re.search(rf"\b{re.escape(city)}\b", text):
+            return True
+    return False
+
+
+def _body_place_is_foreign(body_l: str) -> bool:
+    """Scan the description body for an overseas place of performance without
+    tripping on FAR-clause country names. Country/city tokens count only inside
+    the window that follows a place-of-performance cue; diplomatic-post and
+    overseas-base/phrase indicators count anywhere (they never occur in FAR
+    boilerplate)."""
+    if not body_l:
+        return False
+    if _DIPLOMATIC_RE.search(body_l):
+        return True
+    for phrase in _OVERSEAS_PHRASES:
+        if phrase in body_l:
+            return True
+    for base in _OVERSEAS_BASES:
+        if re.search(rf"\b{re.escape(base)}\b", body_l):
+            return True
+    # Country/city names only inside a place-of-performance window.
+    for cue in _POP_CUE_RE.finditer(body_l):
+        window = body_l[cue.end(): cue.end() + 120]
+        if _foreign_token_present(window):
+            return True
+    return False
 
 
 def _detect_location(title: str, hay: str, body: str = "") -> str:
@@ -176,19 +298,23 @@ def _detect_location(title: str, hay: str, body: str = "") -> str:
     found, default to US_MAINLAND (most SAM bids are domestic; the spec only
     rejects services on an *affirmative* outside-mainland finding).
     """
+    body_l = (body or "").lower()
+
     # 1) Affirmative outside-mainland signals (highest priority)
     for kw in _NON_MAINLAND:
         if kw in hay:
             return "OUTSIDE_MAINLAND"
-    for kw in _FOREIGN:
-        if kw in hay:
+    for phrase in _OVERSEAS_PHRASES:
+        if phrase in hay:
             return "OUTSIDE_MAINLAND"
-    # Fix 3: known overseas base names in the description body (place of
-    # performance is often stated only in the body, not the title).
-    body_l = (body or "").lower()
-    for base in _OVERSEAS_BASES:
-        if re.search(rf"\b{re.escape(base)}\b", body_l):
-            return "OUTSIDE_MAINLAND"
+    # Title (reliable) is scanned against the full foreign country/city list and
+    # the diplomatic-post patterns.
+    if _foreign_token_present(hay) or _DIPLOMATIC_RE.search(hay):
+        return "OUTSIDE_MAINLAND"
+    # Body (noisy) — overseas bases, diplomatic posts, overseas phrases, and
+    # country/city names gated to a place-of-performance cue (Fix 1).
+    if _body_place_is_foreign(body_l):
+        return "OUTSIDE_MAINLAND"
     # Postal abbreviations for AK/HI/territories (case-sensitive, word-boundary)
     for abbr in _NON_MAINLAND_ABBR:
         if re.search(rf"\b{abbr}\b", title):
@@ -223,6 +349,19 @@ _SERVICE_VERBS = (
     "maintenance", "repair", "overhaul", "inspection", "inspect", "servicing",
     "preventive maintenance", "pm service",
 )
+
+
+def _is_rental_primary(hay: str, full_text: str = "") -> bool:
+    """Fix 2 — True when "rental" / "rental services" is the primary scope.
+
+    Whole-word match on the title-primary `hay`, or in the opening of the
+    description body (rentals are stated up front, not buried in FAR
+    boilerplate). Rented equipment is Rule B #6 regardless of what is rented, so
+    this fires ahead of the hardware gate and Rule C matching."""
+    if re.search(r"\brental\b", hay):
+        return True
+    opening = (full_text or "")[:500].lower()
+    return bool(re.search(r"\brental\b", opening))
 
 
 # ===========================================================================
@@ -286,13 +425,35 @@ def _check_marine_vessel(hay: str, naics_full: str) -> bool:
     return False
 
 
-def _check_rule_c(hay: str) -> tuple[int, str] | None:
+def _check_rule_c(hay: str, naics_full: str = "") -> tuple[int, str] | None:
     """
     Return (category_number, category_name) if the bid is a Rule C allowed
     service, else None. Each matcher requires BOTH an equipment keyword AND an
     action keyword so that physical-product titles (e.g. "HVAC Controller
     circuit card") are NOT misclassified as services.
+
+    Fix 3 (re-run of the 121 catch-all bids): under a special-trade construction
+    NAICS (238xxx) the requirement is inherently install/repair work, so the
+    equipment keyword alone is decisive — no separate action verb is required:
+        * 238xxx + HVAC/cooling/mini-split   → Rule C #6
+        * 238210 + wiring/cable/conduit      → Rule C #1
+        * 238990 + fence                     → Rule C #2
     """
+    naics6 = (naics_full or "")[:6]
+    naics3 = (naics_full or "")[:3]
+
+    # -- NAICS-gated fast paths (equipment keyword alone is enough) ------------
+    if naics3 == "238":
+        if _has(hay, "hvac", "mini-split", "mini split", "minisplit", "cooling",
+                "air conditioning", "air-conditioning", "chiller", "condenser",
+                "heating", "heater"):
+            return (6, RULE_C[6])
+        if naics6 == "238210" and _has(hay, "wiring", "cable", "cabling",
+                                       "conduit", "electrical"):
+            return (1, RULE_C[1])
+        if naics6 == "238990" and _has(hay, "fence", "fencing"):
+            return (2, RULE_C[2])
+
     install = _has(hay, *_INSTALL_ACTIONS)
     serviceable = install or _has(hay, *_SERVICE_VERBS)
 
@@ -581,6 +742,7 @@ def _classify_requirement(hay: str, naics_code: str, full_text: str = "") -> str
     SERVICE. With no NAICS, title hardware-signals decide.
     """
     prefix = _naics_prefix(naics_code)
+    naics_full = _naics_full(naics_code)
 
     # Construction (236–238) → always SERVICE (Rule C candidate)
     if prefix is not None and 236 <= prefix <= 238:
@@ -597,7 +759,7 @@ def _classify_requirement(hay: str, naics_code: str, full_text: str = "") -> str
             return "SERVICE"
         if _has_product_signal(hay):
             return "HARDWARE"
-        if _service_signal_present(hay):
+        if _service_signal_present(hay, naics_full):
             return "SERVICE"
         return "HARDWARE"
 
@@ -608,7 +770,7 @@ def _classify_requirement(hay: str, naics_code: str, full_text: str = "") -> str
         return "SERVICE"
 
     # No / unknown NAICS — decide by title content.
-    if _service_signal_present(hay):
+    if _service_signal_present(hay, naics_full):
         return "SERVICE"
     if _has(hay, *_HARDWARE_TITLE_SIGNALS):
         return "HARDWARE"
@@ -617,7 +779,7 @@ def _classify_requirement(hay: str, naics_code: str, full_text: str = "") -> str
     return "SERVICE"
 
 
-def _service_signal_present(hay: str) -> bool:
+def _service_signal_present(hay: str, naics_full: str = "") -> bool:
     """
     True if the text carries a decisive SERVICE signal that should override a
     manufacturing-NAICS hardware default: a Rule C equipment+action match, a
@@ -627,7 +789,7 @@ def _service_signal_present(hay: str) -> bool:
         return True
     if _has(hay, "drydock", "dry dock", "dockside", "ssra", "vessel"):
         return True
-    if _check_rule_c(hay) is not None:
+    if _check_rule_c(hay, naics_full) is not None:
         return True
     return False
 
@@ -659,7 +821,9 @@ def evaluate_bid(
     dict with keys: bid_id, decision, reason, requirement_type, rule,
     location, stopped_at_step.
 
-    decision ∈ {PURSUE, REJECT}  (two-mode policy — never MANUAL_REVIEW)
+    decision ∈ {PURSUE, REJECT, MANUAL_REVIEW}. MANUAL_REVIEW is reserved for an
+    unlisted service (neither Rule B nor Rule C) performed in the US Mainland;
+    every other path resolves to PURSUE or REJECT.
     The ``reason`` field always uses one of the standard phrases.
     """
     eval_cfg   = config.get("evaluation", {})
@@ -716,6 +880,18 @@ def evaluate_bid(
         logger.info(f"[EVAL] {bid_id} -> REJECT @ Rule B #19 (marine vessel)")
         return result
 
+    # ── STEP 0b: Rental override (Rule B #6) — beats hardware AND Rule C ──────
+    # Fix 2: rented equipment is out of scope no matter what is rented or where
+    # it is performed, so a "rental" primary scope rejects immediately, ahead of
+    # the hardware gate and any Rule C matching.
+    if _is_rental_primary(hay, full_text):
+        result.update(
+            decision="REJECT", stopped_at_step=3, rule="B6",
+            requirement_type="SERVICE", reason=reason_rule_b(6, RULE_B[6]),
+        )
+        logger.info(f"[EVAL] {bid_id} -> REJECT @ Rule B #6 (rental override)")
+        return result
+
     # ── STEP 1: Hardware vs Service ──────────────────────────────────────────
     req_type = _classify_requirement(hay, naics_code, full_text)
     result["requirement_type"] = req_type
@@ -747,7 +923,7 @@ def evaluate_bid(
         return result
 
     # ── STEP 3: Service → Rule B (excluded) check ────────────────────────────
-    rule_c = _check_rule_c(hay)
+    rule_c = _check_rule_c(hay, naics_full)
     if rule_c is None:
         rule_b = _check_rule_b(hay)
         if rule_b is not None:
@@ -780,17 +956,22 @@ def evaluate_bid(
             logger.info(f"[EVAL] {bid_id} -> REJECT @ Rule C #{num} (outside US Mainland)")
         return result
 
-    # ── Service on neither list → REJECT (two-mode policy) ───────────────────
-    # An unlisted service is neither a validated allowed service (Rule C) nor
-    # hardware, so it is out of scope and REJECTED in both locations. `location`
-    # is still recorded for the audit trail, and picks the standard reason
-    # phrase, but no longer changes the outcome (no MANUAL_REVIEW).
+    # ── Service on neither list → split by location (Fix 3) ──────────────────
+    # An unlisted service matches neither Rule C (allowed) nor Rule B (excluded).
+    #   * OUTSIDE US Mainland → REJECT: the location alone disqualifies it, so no
+    #     human review is warranted.
+    #   * INSIDE US Mainland  → MANUAL_REVIEW: it could still be in scope; flag
+    #     it for a human to validate against Rules B/C rather than auto-reject.
     if location == "US_MAINLAND":
-        reason = reason_not_listed_us()
+        result.update(
+            decision="MANUAL_REVIEW", stopped_at_step=4, rule="none",
+            reason=reason_manual_review(),
+        )
+        logger.info(f"[EVAL] {bid_id} -> MANUAL_REVIEW (unlisted service, US Mainland)")
     else:
-        reason = reason_not_listed_outside()
-    result.update(
-        decision="REJECT", stopped_at_step=4, rule="none", reason=reason,
-    )
-    logger.info(f"[EVAL] {bid_id} -> REJECT (service not in allowed/excluded list, {location})")
+        result.update(
+            decision="REJECT", stopped_at_step=4, rule="none",
+            reason=reason_not_listed_outside(),
+        )
+        logger.info(f"[EVAL] {bid_id} -> REJECT (unlisted service, outside US Mainland)")
     return result

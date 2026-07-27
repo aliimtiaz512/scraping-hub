@@ -97,9 +97,10 @@ sam:
   # Bid evaluation (DOC-20260625 criteria: requirement-type-first, then location)
   # --------------------------------------------------------------------------
   evaluation:
-    # Step 1: kill-words — instant REJECT if found anywhere in full_text
+    # Step 1: kill-words — instant REJECT if found anywhere in full_text.
+    # NOTE: "idiq" is intentionally NOT a kill-word (Fix 4) — IDIQ is a contract
+    # vehicle, not a solicitation type, and hardware IDIQ contracts are biddable.
     kill_words:
-      - "idiq"
       - "market research"
       - "rfi"
       - "sources sought"

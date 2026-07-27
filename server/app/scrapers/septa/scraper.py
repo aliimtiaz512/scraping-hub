@@ -80,7 +80,14 @@ SEL = {
         "//input[@value='SUBMIT' or @value='Submit' or @type='submit']"
     ),
     "logout_xpath": "//a[contains(@href, 'logout')]",
-    "login_error_xpath": "//*[contains(text(), 'Invalid') or contains(text(), 'Failed')]",
+    # The failure alert renders as separate lines ("Invalid Login: ...", plus a
+    # "Warning: You have N more attempts before your account is locked for 60
+    # minutes."). Match all of them so the run's error carries the lockout
+    # countdown, not just "Invalid".
+    "login_error_xpath": (
+        "//*[contains(text(), 'Invalid') or contains(text(), 'Failed') or "
+        "contains(text(), 'locked') or contains(text(), 'more attempts')]"
+    ),
     "date_input_xpath": (
         "//*[@id='ctl00_ctl00_masterMain_cntMain_ctl00_txtOpensStartDate'] | "
         "//input[contains(@name, 'txtOpensStartDate')] | "
@@ -230,7 +237,14 @@ class SeptaScraper(BaseScraper):
             By.XPATH, SEL["logout_xpath"]
         ):
             errors = self.driver.find_elements(By.XPATH, SEL["login_error_xpath"])
-            detail = f" Portal said: {errors[0].text.strip()}" if errors else ""
+            messages: list[str] = []
+            for el in errors:
+                text = " ".join(el.text.split())
+                # Ancestors match too and repeat their children's text; keep the
+                # first (outermost) wording and drop anything already covered.
+                if text and not any(text in seen for seen in messages):
+                    messages.append(text)
+            detail = f" Portal said: {' '.join(messages)}" if messages else ""
             self.screenshot("login_failed")
             raise WebDriverException(
                 "SEPTA login did not complete — check the SEPTA credentials in "

@@ -102,7 +102,7 @@ export interface BidResult {
   naics_title?: string;
   date_offers_due?: string;
   published_date?: string;
-  decision?: string;   // PURSUE | REJECT (PENDING | ERROR only on eval failure)
+  decision?: string;   // PURSUE | REJECT | MANUAL_REVIEW (PENDING | ERROR only on eval failure)
   reason?: string;
   // Unison
   buyer_number?: string;
