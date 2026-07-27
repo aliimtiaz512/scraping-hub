@@ -163,7 +163,11 @@ class EmmaScraper(BaseScraper):
 
         url = settings.emma_link or LOGIN_URL
         logger.info("[run %s] navigating to %s", self.run_id, url)
-        self.driver.get(url)
+        # EMMA resolves via a CNAME into the .app TLD (maryland.ivalua.app), which
+        # some ISP resolvers answer with an empty record set — so the first lookup
+        # can fail even though the host is perfectly reachable. navigate() retries
+        # those transient DNS/network errors instead of failing the whole run.
+        self.navigate(url)
 
         try:
             user_field = self.wait(LOGIN_REDIRECT_WAIT).until(

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Card, ErrorBanner, LaunchBar, RunBadge, StartButton } from "@/components/ui";
+import LiveMonitor from "@/components/LiveMonitor";
 import { getRunStatus, startEmmaScrape, type RunStatus } from "@/lib/api";
 
 const POLL_INTERVAL_MS = 3000;
@@ -28,11 +29,11 @@ export default function EmmaPanel() {
 
   useEffect(() => stopPolling, [stopPolling]);
 
-  const handleStart = async () => {
+  const handleStart = async (livePreview = false) => {
     setError(null);
     setStarting(true);
     try {
-      const { run_id } = await startEmmaScrape();
+      const { run_id } = await startEmmaScrape(livePreview);
       setRun(await getRunStatus("emma", run_id));
       stopPolling();
       pollRef.current = setInterval(async () => {
@@ -64,15 +65,19 @@ export default function EmmaPanel() {
       >
         <p className="text-sm leading-relaxed text-ink-600">
           Press <span className="font-medium text-ink-900">Test login</span> to open the portal, sign in,
-          and verify the session. With <span className="font-mono text-xs">HEADLESS=false</span> in{" "}
-          <span className="font-mono text-xs">server/.env</span>, you can watch the browser drive it.
+          and navigate to Public Solicitations. While it runs, hit{" "}
+          <span className="font-medium text-ink-900">Live preview</span> to watch the browser drive it,
+          step by step.
         </p>
       </Card>
 
-      <LaunchBar summary="Signs in to emma.maryland.gov and confirms the session.">
-        <StartButton onClick={handleStart} disabled={starting || isRunning} running={isRunning} starting={starting}>
-          Test login
-        </StartButton>
+      <LaunchBar summary="Signs in to emma.maryland.gov and opens Public Solicitations.">
+        <div className="flex items-center gap-2">
+          <LiveMonitor run={run} portal="emma" />
+          <StartButton onClick={() => handleStart()} disabled={starting || isRunning} running={isRunning} starting={starting}>
+            Test login
+          </StartButton>
+        </div>
       </LaunchBar>
 
       {run && (

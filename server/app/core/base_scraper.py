@@ -9,6 +9,7 @@ import logging
 import shutil
 import time
 from pathlib import Path
+from urllib.parse import urlparse
 
 from selenium import webdriver
 from selenium.common.exceptions import TimeoutException, WebDriverException
@@ -17,6 +18,7 @@ from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.support.ui import WebDriverWait
 from webdriver_manager.chrome import ChromeDriverManager
 
+from app.config import settings
 from app.core import live, run_manager
 from app.core.filenames import sanitize_filename
 
@@ -24,6 +26,28 @@ logger = logging.getLogger(__name__)
 
 WAIT_TIMEOUT = 30
 DOWNLOAD_TIMEOUT = 120
+
+# Chrome network errors that are worth retrying: a transient DNS/socket failure
+# rather than a real "this page is wrong" problem. DNS is the common one — a
+# resolver that round-robins across upstreams (systemd-resolved does) will fail
+# a lookup on a broken upstream and succeed on the next attempt via a good one.
+TRANSIENT_NET_ERRORS = (
+    "err_name_not_resolved",
+    "err_name_resolution_failed",
+    "err_dns_timed_out",
+    "err_internet_disconnected",
+    "err_connection_reset",
+    "err_connection_closed",
+    "err_connection_timed_out",
+    "err_connection_failed",
+    "err_timed_out",
+    "err_empty_response",
+    "err_socket_not_connected",
+    "err_address_unreachable",
+    "err_network_changed",
+)
+NAVIGATE_ATTEMPTS = 4      # total tries before giving up
+NAVIGATE_BACKOFF = 2.0     # seconds, doubled after each failed attempt
 
 # A realistic desktop-Chrome UA. Under --headless=new the default UA no longer
 # leaks a "HeadlessChrome" token, but some portals (e.g. BidNet Direct) still
@@ -67,6 +91,15 @@ class BaseScraper:
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--window-size=1920,1080")
+        # Resolve hostnames over DNS-over-HTTPS rather than through the machine's
+        # resolver, which on some networks answers whole TLDs (.app, .dev) with an
+        # empty record set and breaks a run with net::ERR_NAME_NOT_RESOLVED.
+        # "secure" means DoH only — no silent fall back to the broken resolver.
+        if settings.dns_over_https and settings.dns_over_https_templates.strip():
+            options.add_argument("--dns-over-https-mode=secure")
+            options.add_argument(
+                f"--dns-over-https-templates={settings.dns_over_https_templates.strip()}"
+            )
         # Return from driver.get() at DOMContentLoaded instead of the load event.
         # These portals pull third-party subresources (fonts, analytics) that can
         # stall for a minute on a flaky network, and waiting for the load event
@@ -135,6 +168,59 @@ class BaseScraper:
 
     def wait(self, timeout: int = WAIT_TIMEOUT) -> WebDriverWait:
         return WebDriverWait(self.driver, timeout)
+
+    def navigate(
+        self,
+        url: str,
+        attempts: int = NAVIGATE_ATTEMPTS,
+        backoff: float = NAVIGATE_BACKOFF,
+    ) -> None:
+        """driver.get(url), retrying transient network/DNS failures.
+
+        A single failed lookup is not proof the site is unreachable: a resolver
+        that rotates across several upstreams returns NXDOMAIN/NODATA whenever it
+        lands on a broken one and the correct answer on the next try. Retrying
+        with backoff turns that intermittent failure into a successful run.
+
+        Non-transient WebDriver errors are re-raised immediately — only the
+        errors in TRANSIENT_NET_ERRORS are worth a second attempt. If every
+        attempt fails we raise with the host name and the underlying Chrome
+        error, so the cause is obvious instead of a bare stack trace.
+        """
+        delay = backoff
+        last_exc: WebDriverException | None = None
+        for attempt in range(1, attempts + 1):
+            try:
+                self.driver.get(url)
+                if attempt > 1:
+                    logger.info(
+                        "[run %s] navigation to %s succeeded on attempt %d",
+                        self.run_id, url, attempt,
+                    )
+                return
+            except WebDriverException as exc:
+                message = (getattr(exc, "msg", None) or str(exc)).lower()
+                if not any(err in message for err in TRANSIENT_NET_ERRORS):
+                    raise  # a real navigation error — don't mask it behind retries
+                last_exc = exc
+                if attempt == attempts:
+                    break
+                logger.warning(
+                    "[run %s] transient network error loading %s (attempt %d/%d) — "
+                    "retrying in %.1fs", self.run_id, url, attempt, attempts, delay,
+                )
+                time.sleep(delay)
+                delay *= 2
+
+        host = urlparse(url).hostname or url
+        detail = (getattr(last_exc, "msg", None) or str(last_exc)).strip().splitlines()[0]
+        raise WebDriverException(
+            f"Could not reach {host} after {attempts} attempts — {detail}. "
+            f"This is a network/DNS problem rather than a portal change: check "
+            f"that this machine can resolve {host} (some ISP resolvers return an "
+            f"empty answer for certain domains; a public resolver such as 8.8.8.8 "
+            f"or 1.1.1.1 fixes that)."
+        ) from last_exc
 
     def scroll_into_view(self, element) -> None:
         self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", element)

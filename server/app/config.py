@@ -129,6 +129,18 @@ class Settings(BaseSettings):
     # unless it was started from the "Live preview" button (which sets the run's
     # live_preview flag). See BaseScraper.start_driver.
 
+    # Resolve portal hostnames in Chrome via DNS-over-HTTPS instead of the
+    # machine's resolver. Some ISP resolvers answer certain domains (notably the
+    # Google-run .app / .dev TLDs) with an empty record set, which surfaces as
+    # net::ERR_NAME_NOT_RESOLVED mid-run — EMMA is affected because it is a CNAME
+    # to maryland.ivalua.app. Talking DoH straight to a public resolver makes runs
+    # independent of however this machine's DNS happens to be configured.
+    # Set dns_over_https=false to fall back to the system resolver.
+    dns_over_https: bool = True
+    dns_over_https_templates: str = (
+        "https://dns.google/dns-query https://cloudflare-dns.com/dns-query"
+    )
+
     # SQLAlchemy URL for the Postgres database that holds scraped bids.
     database_url: str = "postgresql+psycopg2://postgres:postgres@localhost:5432/scraping-hub"
 

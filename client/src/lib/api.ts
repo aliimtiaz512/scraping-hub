@@ -419,8 +419,8 @@ export function startCalEProcureScrape(): Promise<{ run_id: string; folder: stri
  * EMMA currently signs in and opens the Public Solicitations list, capturing the
  * page. It takes no search criteria yet; list scraping and export come next.
  */
-export function startEmmaScrape(): Promise<{ run_id: string; folder: string }> {
-  return request("/emma/scrape", { method: "POST" });
+export function startEmmaScrape(livePreview = false): Promise<{ run_id: string; folder: string }> {
+  return request(`/emma/scrape${livePreviewQuery(livePreview)}`, { method: "POST" });
 }
 
 // -- shared ------------------------------------------------------------------
