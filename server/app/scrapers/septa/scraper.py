@@ -185,6 +185,45 @@ class SeptaScraper(BaseScraper):
         except WebDriverException:
             return False
 
+    def _fill_field(self, element, value: str) -> bool:
+        """Type ``value`` into ``element`` and make sure it actually stuck.
+
+        SEPTA's login is an ASP.NET page: the password box in particular tends
+        to swallow ``send_keys`` (the field re-renders after the first postback,
+        or is only interactable once focused), which historically left the
+        password blank and locked the account. Focus + click, type, then verify
+        the value landed; if it didn't, set it via JS and fire the input/change
+        events the page listens for.
+        """
+        try:
+            self._safe_click(element)
+        except WebDriverException:
+            pass
+        try:
+            element.clear()
+            element.send_keys(value)
+        except WebDriverException:
+            pass
+
+        try:
+            if (element.get_attribute("value") or "") == value:
+                return True
+        except WebDriverException:
+            pass
+
+        # send_keys didn't land — force it through the DOM.
+        try:
+            self.driver.execute_script(
+                "arguments[0].value = arguments[1];"
+                "arguments[0].dispatchEvent(new Event('input', {bubbles: true}));"
+                "arguments[0].dispatchEvent(new Event('change', {bubbles: true}));",
+                element,
+                value,
+            )
+            return (element.get_attribute("value") or "") == value
+        except WebDriverException:
+            return False
+
     # -- login --------------------------------------------------------------
 
     def login(self) -> None:
@@ -209,12 +248,19 @@ class SeptaScraper(BaseScraper):
             except WebDriverException:
                 self.screenshot("login_no_password")
                 raise WebDriverException("SEPTA login: could not find the password field.")
-        password_field = password_fields[0]
+        # Prefer a visible, interactable field — the raw XPath can match hidden
+        # ASP.NET inputs that silently drop send_keys.
+        password_field = next(
+            (f for f in password_fields if f.is_displayed()), password_fields[0]
+        )
 
-        username_field.clear()
-        username_field.send_keys(settings.septa_username)
-        password_field.clear()
-        password_field.send_keys(settings.septa_password)
+        if not self._fill_field(username_field, settings.septa_username):
+            logger.warning("[run %s] username field may not have been filled", self.run_id)
+        if not self._fill_field(password_field, settings.septa_password):
+            self.screenshot("login_no_password_value")
+            raise WebDriverException(
+                "SEPTA login: could not enter the password into the field."
+            )
 
         login_button = self._find(By.XPATH, SEL["login_btn_xpath"], 5)
         if not login_button:
