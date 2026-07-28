@@ -8,6 +8,7 @@ date-bucketed folder like the other portals.
 """
 
 import logging
+import os
 import threading
 from datetime import datetime
 from pathlib import Path
@@ -20,8 +21,15 @@ from app.core.exports import archive_run
 from app.services.notifier import notify_scrape_completion
 from app.scrapers.sam.evaluation import evaluate, seed_defaults
 from app.scrapers.sam.engine.sam_scraper import SAMGovScraper
+from app.scrapers.sam.ollama_bridge import ollama_evaluate
 
 logger = logging.getLogger(__name__)
+
+# Shadow mode (default ON): Ollama is consulted on every MANUAL_REVIEW bid and
+# its raw output is recorded to the audit columns, but it does NOT replace the
+# stored decision. Only after shadow mode proves out (85%+ agreement with human
+# reviewers) should OLLAMA_SHADOW_MODE=false enable live confidence gating.
+OLLAMA_SHADOW_MODE = os.getenv("OLLAMA_SHADOW_MODE", "true").lower() == "true"
 
 # Live scrapers keyed by run_id, so the screenshot/stop endpoints can reach the
 # running Selenium session. Cleaned up when the run ends.
@@ -70,8 +78,39 @@ def execute_run(
 
     def _on_bid(bid: dict[str, Any]) -> None:
         notice_id, title, naics_code, full_text = _bid_to_record(bid)
+        naics_title = bid.get("NAICS Title", "")
+        ollama_decision = ollama_rule = ollama_confidence = None
         try:
             result = evaluate(notice_id, full_text, naics_code=naics_code, title=title)
+
+            # ── Ollama wall ──────────────────────────────────────────────────
+            # Intercept only bids the rule engine could not decide. Ollama sees a
+            # ~400-token structured brief, never full_text. A None result
+            # (disabled/timeout/error/malformed) leaves MANUAL_REVIEW untouched.
+            if result.get("decision") == "MANUAL_REVIEW":
+                ollama_result = ollama_evaluate(
+                    title=title,
+                    naics_code=naics_code,
+                    naics_title=naics_title,
+                    full_text=full_text,  # brief builder reads this; Ollama does NOT
+                    result=result,        # carries location + stopped_at_step
+                )
+                if ollama_result is not None:
+                    # Always record Ollama's raw output for auditing, regardless
+                    # of whether it is allowed to replace the decision.
+                    ollama_decision = ollama_result["decision"]
+                    ollama_rule = ollama_result["rule"]
+                    ollama_confidence = ollama_result["confidence"]
+                    if not OLLAMA_SHADOW_MODE:
+                        # Live mode — apply confidence gating.
+                        if ollama_confidence == "HIGH":
+                            result = ollama_result
+                        elif ollama_confidence == "MEDIUM":
+                            result = ollama_result
+                            result["reason"] += " [Ollama — medium confidence, verify]"
+                        # LOW confidence: keep MANUAL_REVIEW unchanged.
+            # ─────────────────────────────────────────────────────────────────
+
             decision = result.get("decision", "PENDING")
             reason = result.get("reason", "")
         except Exception as exc:  # noqa: BLE001 — an eval error must not drop the bid
@@ -92,6 +131,10 @@ def execute_run(
             "published_date": bid.get("Published Date", ""),
             "decision": decision,
             "reason": reason,
+            # Ollama audit columns — NULL for bids that never reached the wall.
+            "ollama_decision": ollama_decision,
+            "ollama_rule": ollama_rule,
+            "ollama_confidence": ollama_confidence,
         }
         records.append(record)
         run_manager.add_bid_result(run_id, {**record, "documents": [], "error": None})

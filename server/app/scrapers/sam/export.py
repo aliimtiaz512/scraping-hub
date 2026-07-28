@@ -83,6 +83,7 @@ _BID_FIELDS = {
     "notice_id", "title", "department", "subtier", "office", "description",
     "updated_date", "bid_repeat_count", "naics_code", "naics_title",
     "date_offers_due", "published_date", "decision", "reason",
+    "ollama_decision", "ollama_rule", "ollama_confidence",
 }
 
 

@@ -63,6 +63,13 @@ class SamBid(Base):
     decision: Mapped[str | None] = mapped_column(String(20))
     reason: Mapped[str | None] = mapped_column(Text)
 
+    # Raw Ollama-wall output for MANUAL_REVIEW bids, recorded for auditing the
+    # model's accuracy over time independently of which decision was accepted.
+    # NULL for bids that never reached the wall (PURSUE/REJECT from the rules).
+    ollama_decision: Mapped[str | None] = mapped_column(String(20))
+    ollama_rule: Mapped[str | None] = mapped_column(String(120))
+    ollama_confidence: Mapped[str | None] = mapped_column(String(10))
+
     # Complete original scraped record: {field -> value}.
     raw_data: Mapped[dict] = mapped_column(JSONB, default=dict)
 

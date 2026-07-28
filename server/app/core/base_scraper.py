@@ -12,10 +12,15 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from selenium import webdriver
-from selenium.common.exceptions import TimeoutException, WebDriverException
+from selenium.common.exceptions import (
+    InvalidSessionIdException,
+    TimeoutException,
+    WebDriverException,
+)
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.support.ui import WebDriverWait
+from urllib3.exceptions import HTTPError as _Urllib3HTTPError
 from webdriver_manager.chrome import ChromeDriverManager
 
 from app.config import settings
@@ -98,6 +103,15 @@ class BaseScraper:
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--window-size=1920,1080")
+        # Trim Chrome's memory/CPU footprint. These portals are plain form-and-
+        # table pages that need none of the GPU stack, extensions, or background
+        # services, and on a memory-tight host that headroom is the difference
+        # between a run finishing and Chrome being OOM-killed mid-flow (which
+        # surfaces as a dead WebDriver session — see _driver_error_detail).
+        options.add_argument("--disable-gpu")
+        options.add_argument("--disable-extensions")
+        options.add_argument("--disable-background-networking")
+        options.add_argument("--disable-default-apps")
         # Resolve hostnames over DNS-over-HTTPS rather than through the machine's
         # resolver, which on some networks answers whole TLDs (.app, .dev) with an
         # empty record set and breaks a run with net::ERR_NAME_NOT_RESOLVED.
@@ -152,7 +166,7 @@ class BaseScraper:
         if self.driver:
             try:
                 self.driver.quit()
-            except WebDriverException:
+            except Exception:  # noqa: BLE001 — a dead session raises urllib3 errors, not WebDriverException
                 pass
             self.driver = None
 
@@ -168,7 +182,7 @@ class BaseScraper:
             return None
         try:
             return self.driver.get_screenshot_as_base64()
-        except WebDriverException:
+        except Exception:  # noqa: BLE001 — a dead session raises urllib3 errors; a frame grab must never break a run
             return None
 
     # -- helpers ------------------------------------------------------------
@@ -230,6 +244,56 @@ class BaseScraper:
             f"or 1.1.1.1 fixes that)."
         ) from last_exc
 
+    # A dead browser (Chrome killed by the OOM reaper, a hard renderer crash, or
+    # the Live-Preview window being closed) doesn't surface as a clean Selenium
+    # error: the command socket to chromedriver is simply gone, so the call
+    # raises a urllib3 connection error instead. Match those signatures anywhere
+    # in the exception chain so the run reports a clear cause instead of a bare
+    # "Connection refused" / MaxRetryError stack trace.
+    _DEAD_SESSION_SIGNATURES = (
+        "connection refused",
+        "failed to establish a new connection",
+        "max retries exceeded",
+        "chrome not reachable",
+        "no such session",
+        "invalid session id",
+        "session deleted because of page crash",
+        "disconnected: not connected to devtools",
+        "unable to connect to renderer",
+    )
+
+    @classmethod
+    def _is_dead_session_error(cls, exc: BaseException) -> bool:
+        """True if `exc` (or anything it wraps) means the browser process is gone."""
+        seen: set[int] = set()
+        cur: BaseException | None = exc
+        while cur is not None and id(cur) not in seen:
+            seen.add(id(cur))
+            if isinstance(cur, (InvalidSessionIdException, _Urllib3HTTPError)):
+                return True
+            text = (getattr(cur, "msg", None) or str(cur)).lower()
+            if any(sig in text for sig in cls._DEAD_SESSION_SIGNATURES):
+                return True
+            cur = cur.__cause__ or cur.__context__
+        return False
+
+    @classmethod
+    def describe_failure(cls, exc: BaseException) -> str:
+        """A human-readable cause for a run failure, cleaned up for a dead browser.
+
+        For an OOM/crash the raw exception is an unhelpful connection-refused
+        stack; return an actionable message instead. Everything else passes
+        through as its first line, trimmed for the run's error field.
+        """
+        if cls._is_dead_session_error(exc):
+            return (
+                "The browser was terminated mid-run — most likely the machine ran "
+                "out of memory (Chrome was OOM-killed), or the Live-Preview window "
+                "was closed. Free up RAM (close other browsers / stale dev servers) "
+                "and run it again."
+            )
+        return (str(getattr(exc, "msg", None) or exc).strip().splitlines() or [""])[0][:500]
+
     # -- stop support -------------------------------------------------------
 
     def stop(self) -> None:
@@ -262,7 +326,7 @@ class BaseScraper:
         if self.driver:
             try:
                 self.driver.save_screenshot(str(self.run_dir / f"error_{sanitize_filename(name)}.png"))
-            except WebDriverException:
+            except Exception:  # noqa: BLE001 — never let a failure screenshot (esp. on a dead session) mask the real error
                 pass
 
     def set_step(self, step: str) -> None:

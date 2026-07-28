@@ -723,7 +723,7 @@ class SeptaScraper(BaseScraper):
         except Exception as exc:  # noqa: BLE001 — a failed run must be reported, not crash the worker
             logger.exception("[run %s] failed", self.run_id)
             self.screenshot("fatal")
-            run_manager.add_error(self.run_id, str(exc)[:500])
+            run_manager.add_error(self.run_id, self.describe_failure(exc))
             run_manager.update_run(self.run_id, status="failed", step="failed")
         finally:
             self.cleanup()
