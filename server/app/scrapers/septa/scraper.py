@@ -37,7 +37,9 @@ from app.scrapers.septa import export
 logger = logging.getLogger(__name__)
 
 # -- timeouts (seconds) ------------------------------------------------------
-LOGIN_REDIRECT_WAIT = 15
+LOGIN_FIELD_WAIT = 30       # per-field wait for the login form to render
+LOGIN_SETTLE_SLEEP = 2      # let ASP.NET/Bootstrap finish wiring the form
+LOGIN_REDIRECT_WAIT = 45    # postback + redirect can be slow
 NAVIGATION_SLEEP = 3
 SEARCH_RESULT_WAIT = 20
 DATE_FIELD_WAIT = 5
@@ -105,6 +107,18 @@ MENU_PROCUREMENT_KEYWORDS = ["procurement", "quote", "bid", "tender"]
 
 # -- selectors (ported verbatim from the package config) ---------------------
 SEL = {
+    # Exact IDs as rendered by https://epsadmin.septa.org/vendor/login. Tried
+    # before the fuzzy xpaths below, which also match hidden inputs belonging to
+    # other ASP.NET panels on the same page.
+    "username_id": "ctl00_ctl00_masterMain_cntMain_ctl00_txtUsername",
+    "password_id": "ctl00_ctl00_masterMain_cntMain_ctl00_txtPassword",
+    "login_btn_id": "ctl00_ctl00_masterMain_cntMain_ctl00_lbtnSubmit",
+    # Lockout / attempt-countdown banner, checked BEFORE submitting so a locked
+    # account is never handed another failed attempt.
+    "lockout_xpath": (
+        "//*[contains(text(), 'locked') or contains(text(), 'Locked') or "
+        "contains(text(), 'more attempts')]"
+    ),
     "username_xpath": (
         "//input[contains(@id, 'Username') or contains(@name, 'Username') or "
         "contains(@id, 'User') or contains(@name, 'User') or "
@@ -277,12 +291,54 @@ class SeptaScraper(BaseScraper):
 
     # -- login --------------------------------------------------------------
 
-    def login(self) -> None:
+    def _abort_if_locked(self, when: str) -> None:
+        """Raise if the page is showing a lockout or attempts-remaining banner.
+
+        SEPTA locks the account for 60 minutes after a few bad logins, and while
+        locked it rejects the correct password too. Retrying restarts the window,
+        so a locked account has to stop the run rather than feed the counter.
+        """
+        messages: list[str] = []
+        for el in self.driver.find_elements(By.XPATH, SEL["lockout_xpath"]):
+            try:
+                text = " ".join(el.text.split())
+            except WebDriverException:
+                continue
+            if text and not any(text in seen for seen in messages):
+                messages.append(text)
+        if not messages:
+            return
+
+        detail = " ".join(messages)
+        self.screenshot("login_locked")
+        if "lock" in detail.lower():
+            raise WebDriverException(
+                f"SEPTA account is locked ({when}) — wait for the lockout to expire "
+                f"before running again; retrying now restarts the 60-minute window. "
+                f"Portal said: {detail}"
+            )
+        # "N more attempts" — a warning, not yet a lock. Surface it loudly.
+        logger.warning("[run %s] SEPTA lockout warning (%s): %s",
+                       self.run_id, when, detail)
         self.set_step("logging_in")
         logger.info("[run %s] navigating to %s", self.run_id, settings.septa_login_url)
         self.driver.get(settings.septa_login_url)
 
-        username_field = self._find(By.XPATH, SEL["username_xpath"], 10)
+        # Let the ASP.NET page finish rendering before touching the form.
+        time.sleep(LOGIN_SETTLE_SLEEP)
+
+        # Refuse to spend an attempt on an account the portal has already locked
+        # — a locked account rejects the correct password too, and each retry
+        # restarts the 60-minute window.
+        self._abort_if_locked("before submitting")
+
+        username_field = self._find(By.ID, SEL["username_id"], LOGIN_FIELD_WAIT)
+        if not username_field:
+            logger.warning(
+                "[run %s] username not found by exact ID %s — falling back to xpath",
+                self.run_id, SEL["username_id"],
+            )
+            username_field = self._find(By.XPATH, SEL["username_xpath"], 10)
         if not username_field:
             try:
                 username_field = self.driver.find_element(By.XPATH, SEL["username_label_xpath"])
@@ -292,18 +348,26 @@ class SeptaScraper(BaseScraper):
             self.screenshot("login_no_username")
             raise WebDriverException("SEPTA login: could not find the username field.")
 
-        password_fields = self.driver.find_elements(By.XPATH, SEL["password_xpath"])
-        if not password_fields:
-            try:
-                password_fields = [self.driver.find_element(By.XPATH, SEL["password_label_xpath"])]
-            except WebDriverException:
-                self.screenshot("login_no_password")
-                raise WebDriverException("SEPTA login: could not find the password field.")
-        # Prefer a visible, interactable field — the raw XPath can match hidden
-        # ASP.NET inputs that silently drop send_keys.
-        password_field = next(
-            (f for f in password_fields if f.is_displayed()), password_fields[0]
-        )
+        password_field = self._find(By.ID, SEL["password_id"], LOGIN_FIELD_WAIT)
+        if not password_field:
+            logger.warning(
+                "[run %s] password not found by exact ID %s — falling back to xpath",
+                self.run_id, SEL["password_id"],
+            )
+            password_fields = self.driver.find_elements(By.XPATH, SEL["password_xpath"])
+            if not password_fields:
+                try:
+                    password_fields = [
+                        self.driver.find_element(By.XPATH, SEL["password_label_xpath"])
+                    ]
+                except WebDriverException:
+                    self.screenshot("login_no_password")
+                    raise WebDriverException("SEPTA login: could not find the password field.")
+            # Prefer a visible, interactable field — the raw XPath can match hidden
+            # ASP.NET inputs that silently drop send_keys.
+            password_field = next(
+                (f for f in password_fields if f.is_displayed()), password_fields[0]
+            )
 
         if not self._fill_field(username_field, settings.septa_username):
             logger.warning("[run %s] username field may not have been filled", self.run_id)
@@ -313,11 +377,38 @@ class SeptaScraper(BaseScraper):
                 "SEPTA login: could not enter the password into the field."
             )
 
-        login_button = self._find(By.XPATH, SEL["login_btn_xpath"], 5)
+        # Record what is actually in the form at submit time. Lengths only —
+        # never the values. Without this, "wrong password" and "empty password
+        # box" are indistinguishable in the logs, since the portal reports both
+        # as invalid credentials.
+        u_len = len(username_field.get_attribute("value") or "")
+        p_len = len(password_field.get_attribute("value") or "")
+        logger.info(
+            "[run %s] submitting login — username=%s chars (expected %s), "
+            "password=%s chars (expected %s)",
+            self.run_id, u_len, len(settings.septa_username or ""),
+            p_len, len(settings.septa_password or ""),
+        )
+        if p_len == 0:
+            self.screenshot("login_password_empty")
+            raise WebDriverException(
+                "SEPTA login: the password box was empty at submit time — aborting "
+                "rather than spending a failed attempt against the lockout counter."
+            )
+
+        login_button = self._find(By.ID, SEL["login_btn_id"], 10)
         if not login_button:
-            self.screenshot("login_no_button")
-            raise WebDriverException("SEPTA login: could not find the submit button.")
-        self._safe_click(login_button)
+            login_button = self._find(By.XPATH, SEL["login_btn_xpath"], 5)
+        if login_button:
+            self._safe_click(login_button)
+        else:
+            # The submit control is an <a> whose href is a __doPostBack call;
+            # invoking it directly works even when the anchor is unclickable.
+            logger.warning("[run %s] submit link not found — calling __doPostBack",
+                           self.run_id)
+            self.driver.execute_script(
+                "__doPostBack('ctl00$ctl00$masterMain$cntMain$ctl00$lbtnSubmit','');"
+            )
 
         # Wait for the redirect away from the login page.
         try:
