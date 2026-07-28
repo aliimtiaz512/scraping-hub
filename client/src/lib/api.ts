@@ -143,6 +143,12 @@ export interface RunStatus {
   // SEPTA-only: the optional filters a run was launched with.
   date_filter?: string | null;
   commodity_code?: string | null;
+  // SEPTA-only: the always-on close-date filter's effect. Only quotes closing at
+  // least `min_days_until_close` days out are kept; these tally what it dropped
+  // (closing sooner) and kept-but-couldn't-verify (unreadable close date).
+  min_days_until_close?: number;
+  bids_skipped_closing_soon?: number;
+  bids_kept_unreadable_close?: number;
   // SAM-only filters.
   date_from?: string | null;
   date_to?: string | null;

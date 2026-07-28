@@ -29,7 +29,10 @@
       "Bash(git check-ignore *)",
       "Bash(curl -s http://localhost:8000/emma/scrape/status/bb5eefe3a0bb)",
       "Bash(.venv/bin/python /tmp/claude-1000/-home-akif-aziz-Public-Head-office-scrappers-scraping-hub/73b7faed-2e10-4d51-818e-ba5fa3199077/scratchpad/test_stop.py)",
-      "Bash(python3 -)"
+      "Bash(python3 -)",
+      "Bash(.venv/bin/python -c \"import main; from app.scrapers.septa.scraper import parse_close_date, SeptaScraper; print\\('server imports OK'\\)\")",
+      "Bash(.venv/bin/python /tmp/claude-1000/-home-akif-aziz-Public-Head-office-scrappers-scraping-hub/73b7faed-2e10-4d51-818e-ba5fa3199077/scratchpad/test_septa_filter.py)",
+      "Bash(.venv/bin/python /tmp/claude-1000/-home-akif-aziz-Public-Head-office-scrappers-scraping-hub/73b7faed-2e10-4d51-818e-ba5fa3199077/scratchpad/test_septa_integration.py)"
     ],
     "additionalDirectories": [
       "/home/akif-aziz/Public/Head office scrappers/scraping-hub/client/.next"

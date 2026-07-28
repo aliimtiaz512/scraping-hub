@@ -13,7 +13,7 @@ SQLAlchemy conventions so storage matches every other portal.
 
 import logging
 import time
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -46,6 +46,53 @@ PAGE_CHANGE_SLEEP = 2
 
 MAX_PAGES = 50
 PREVIEW_LIMIT = 100   # rows mirrored to the live run state for the UI table
+
+# Only keep quotes whose closing date is still at least this many days away, so
+# there is enough runway to prepare and submit a bid. Quotes we can confirm
+# close sooner are dropped; quotes whose close date we cannot read are KEPT (we
+# can't prove they fail the rule) and counted so the drop is never silent.
+MIN_DAYS_UNTIL_CLOSE = 7
+
+# Close-date strings SEPTA renders, most specific first. Tried against the whole
+# cell and, failing that, against its first whitespace-delimited token (so a
+# trailing time or label doesn't defeat an otherwise-valid date).
+_CLOSE_DATE_FORMATS = (
+    "%m/%d/%Y %I:%M:%S %p",
+    "%m/%d/%Y %I:%M %p",
+    "%m/%d/%Y %H:%M:%S",
+    "%m/%d/%Y %H:%M",
+    "%m/%d/%Y",
+    "%m-%d-%Y",
+    "%Y-%m-%d %H:%M:%S",
+    "%Y-%m-%d",
+    "%b %d, %Y",
+    "%B %d, %Y",
+)
+
+
+def parse_close_date(raw: str | None) -> date | None:
+    """Parse a SEPTA close-date cell into a calendar date, or None if unreadable.
+
+    SEPTA formats dates as MM/DD/YYYY (sometimes with a trailing time); a handful
+    of other shapes are tolerated. Returns None on blank/unknown input so the
+    caller can decide what to do with a quote whose deadline can't be determined.
+    """
+    if not raw:
+        return None
+    text = raw.strip()
+    if not text:
+        return None
+    candidates = [text]
+    first_token = text.split()[0]
+    if first_token != text:
+        candidates.append(first_token)
+    for candidate in candidates:
+        for fmt in _CLOSE_DATE_FORMATS:
+            try:
+                return datetime.strptime(candidate, fmt).date()
+            except ValueError:
+                continue
+    return None
 
 # -- navigation heuristics (ported from the package config) ------------------
 OPEN_QUOTES_LINK_TEXTS = [
@@ -152,6 +199,10 @@ class SeptaScraper(BaseScraper):
         # Full in-memory copy of every scraped row — the Excel fallback source if
         # the DB is unavailable.
         self._records: list[dict[str, Any]] = []
+        # Close-date filter tallies (see MIN_DAYS_UNTIL_CLOSE): quotes dropped for
+        # closing too soon, and quotes kept despite an unreadable close date.
+        self._skipped_closing_soon = 0
+        self._kept_unreadable_close = 0
 
     # -- selenium helpers (mirror the package's BrowserManager) -------------
 
@@ -558,6 +609,17 @@ class SeptaScraper(BaseScraper):
                     continue
                 if key:
                     seen.add(key)
+
+                # Keep only quotes with at least MIN_DAYS_UNTIL_CLOSE days left.
+                # An unreadable close date can't be proven to fail, so it's kept
+                # (and tallied); a date we can read that's too near is dropped.
+                close_on = parse_close_date(rec.get("close_date"))
+                if close_on is None:
+                    self._kept_unreadable_close += 1
+                elif (close_on - date.today()).days < MIN_DAYS_UNTIL_CLOSE:
+                    self._skipped_closing_soon += 1
+                    continue
+
                 self._records.append(rec)
                 scraped += 1
                 if len(preview) < PREVIEW_LIMIT:
@@ -587,6 +649,21 @@ class SeptaScraper(BaseScraper):
             self.navigate_to_open_quotes()
             self.apply_filters()
             self.scrape_all_pages()
+
+            # Surface the close-date filter's effect so the smaller count is never
+            # a mystery: how many quotes were dropped for closing too soon, how
+            # many were kept despite an unreadable close date, and the threshold.
+            run_manager.update_run(
+                self.run_id,
+                min_days_until_close=MIN_DAYS_UNTIL_CLOSE,
+                bids_skipped_closing_soon=self._skipped_closing_soon,
+                bids_kept_unreadable_close=self._kept_unreadable_close,
+            )
+            logger.info(
+                "[run %s] close-date filter (≥%sd): kept %s, skipped %s closing soon, %s unreadable kept",
+                self.run_id, MIN_DAYS_UNTIL_CLOSE, len(self._records),
+                self._skipped_closing_soon, self._kept_unreadable_close,
+            )
 
             if not self._records:
                 run_manager.update_run(self.run_id, no_results=True)

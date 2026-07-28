@@ -117,7 +117,7 @@ export default function SeptaPanel() {
       </LaunchBar>
 
       {run && <RunStatusPanel run={run} />}
-      {run && <SeptaResults bids={run.bids} />}
+      {run && <SeptaResults bids={run.bids} run={run} />}
     </div>
   );
 }
