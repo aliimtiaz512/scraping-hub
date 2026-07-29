@@ -27,6 +27,12 @@ XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 # Portals whose runs download real document files → their download is a ZIP.
 DOC_PORTALS = {"myflorida", "bidnet", "northdakota"}
 
+# Portals whose run produces nothing but the spreadsheet, so wrapping it in a
+# ZIP adds a folder to unpack for no gain. SAM downloads each bid's attachments
+# only to extract their text for the evaluator, then deletes them — the sheet is
+# the entire deliverable. These runs are archived and delivered as a bare .xlsx.
+EXCEL_ONLY_PORTALS = {"sam"}
+
 # Portals whose export module can rebuild the run's Excel from the DB via
 # `generate_excel(run_id, path)`. MyFlorida is absent on purpose: its workbook
 # is downloaded from the portal itself and merged on disk (run["excel_path"]).
@@ -130,13 +136,14 @@ def build_zip(run: dict[str, Any], out_path: Path) -> str:
 
 
 def archive_run(run_id: str) -> str | None:
-    """Package a finished run into its final ZIP and clean up its workspace.
+    """Package a finished run into its final artifact and clean up its workspace.
 
-    The ZIP (cumulative Excel + all bid documents in their niche-wise folders)
-    is written to settings.archive_root and recorded on the run as `zip_path`;
-    the temp workspace folder is then deleted. Best-effort: on failure the
-    workspace is kept so the download endpoint can still package it on demand.
-    Returns the archive path, or None if packaging failed.
+    Normally that artifact is one ZIP (cumulative Excel + all bid documents in
+    their niche-wise folders), written to settings.archive_root and recorded on
+    the run as `zip_path`. For EXCEL_ONLY_PORTALS it is the bare .xlsx instead.
+    Either way the temp workspace folder is then deleted. Best-effort: on
+    failure the workspace is kept so the download endpoint can still package it
+    on demand. Returns the archive path, or None if packaging failed.
     """
     from app.core import run_manager
 
@@ -146,7 +153,12 @@ def archive_run(run_id: str) -> str | None:
     folder = Path(run.get("folder") or "")
     label = folder.name or f"{run.get('scraper')}_{run_id}"
     # The run_id suffix keeps same-second runs from colliding in the archive.
-    out = settings.archive_root / (sanitize_filename(label, max_length=140) + f" [{run_id}].zip")
+    stem = settings.archive_root / (sanitize_filename(label, max_length=140) + f" [{run_id}]")
+
+    if run.get("scraper") in EXCEL_ONLY_PORTALS:
+        return _archive_excel(run_id, run, folder, stem.with_suffix(".xlsx"))
+
+    out = stem.with_suffix(".zip")
     try:
         build_zip(run, out)
     except Exception:  # noqa: BLE001 — packaging must never fail the run
@@ -155,6 +167,36 @@ def archive_run(run_id: str) -> str | None:
         return None
 
     run_manager.update_run(run_id, zip_path=str(out), zip_name=out.name)
+    _cleanup_workspace(run_id, folder)
+    return str(out)
+
+
+def _archive_excel(run_id: str, run: dict[str, Any], folder: Path, out: Path) -> str | None:
+    """Persist an excel-only run's sheet into the archive, unwrapped.
+
+    The sheet is materialised here rather than left to be regenerated on demand
+    so it survives the workspace deletion — that matters for a run whose DB save
+    failed, where the in-memory records were only ever written to the scratch
+    workbook that this replaces.
+    """
+    from app.core import run_manager
+
+    payload = excel_bytes(run)
+    if payload is None:
+        logger.error("[run %s] no Excel to archive — keeping the workspace", run_id)
+        return None
+    data, _ = payload
+    try:
+        out.write_bytes(data)
+    except OSError:
+        logger.exception("[run %s] could not write archive Excel", run_id)
+        out.unlink(missing_ok=True)
+        return None
+
+    # excel_path now points at the archive, so the download/email paths keep
+    # working after the workspace is gone. No zip_path is recorded — its absence
+    # is what tells the delivery layer this run ships a bare sheet.
+    run_manager.update_run(run_id, excel_path=str(out), excel_name=out.name)
     _cleanup_workspace(run_id, folder)
     return str(out)
 

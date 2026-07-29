@@ -4,17 +4,19 @@ import { useEffect, useState } from "react";
 
 import { Button, DataTable, EmptyState, ErrorBanner, LinkButton, Spinner } from "@/components/ui";
 import { bidnetExportUrl, runDownloadUrl } from "@/lib/api";
-import { fetchRunsState, formatTimestamp, runDownloadable, runTarget, RUNS_LOADING, type RunsState } from "@/lib/runs";
+import { downloadKind, fetchRunsState, formatTimestamp, runDownloadable, runTarget, RUNS_LOADING, type RunsState } from "@/lib/runs";
 import type { PortalMeta } from "@/lib/portals";
 
 /**
  * Per-run downloads for past runs — the fallback when the completion email
  * didn't arrive. Every row's button hits `GET /runs/{id}/download`, which
  * serves the run's archive ZIP: the cumulative Excel report plus all
- * downloaded bid documents in their niche-wise folders. Nothing sits in
+ * downloaded bid documents in their niche-wise folders. Portals that produce
+ * no documents (see downloadKind) serve the Excel bare instead. Nothing sits in
  * data/documents — runs are packaged into the archive on completion.
  */
 export default function ExportsPanel({ meta }: { meta: PortalMeta }) {
+  const excelOnly = downloadKind(meta.key) === "excel";
   const [{ runs, error, loading }, setState] = useState<RunsState>(RUNS_LOADING);
 
   useEffect(() => {
@@ -40,7 +42,9 @@ export default function ExportsPanel({ meta }: { meta: PortalMeta }) {
         <div>
           <h2 className="font-display text-2xl text-ink-900">Downloads</h2>
           <p className="mt-1 text-sm text-ink-500">
-            Every completed {meta.label} run as one ZIP — the cumulative Excel report plus all downloaded bid documents.
+            {excelOnly
+              ? `Every completed ${meta.label} run as its cumulative Excel report.`
+              : `Every completed ${meta.label} run as one ZIP — the cumulative Excel report plus all downloaded bid documents.`}
           </p>
         </div>
         <Button
@@ -132,7 +136,7 @@ export default function ExportsPanel({ meta }: { meta: PortalMeta }) {
                       </svg>
                     }
                   >
-                    Download ZIP
+                    {excelOnly ? "Download Excel" : "Download ZIP"}
                   </LinkButton>
                 </td>
               </tr>

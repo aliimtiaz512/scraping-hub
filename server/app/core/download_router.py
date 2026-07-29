@@ -71,6 +71,11 @@ def download_run(run_id: str):
             media_type="application/zip",
         )
 
+    # Portals whose only output is the spreadsheet serve it unwrapped — there is
+    # nothing else a ZIP would carry.
+    if run.get("scraper") in exports.EXCEL_ONLY_PORTALS:
+        return _excel_response(run)
+
     # Legacy fallbacks below: runs made before the archive existed (their files
     # may still sit in data/documents), or a run whose packaging failed.
     if run.get("scraper") in exports.DOC_PORTALS or Path(run.get("folder") or "").is_dir():
@@ -91,6 +96,12 @@ def download_run(run_id: str):
             background=BackgroundTask(tmp_path.unlink, missing_ok=True),
         )
 
+    return _excel_response(run)
+
+
+def _excel_response(run: dict) -> Response:
+    """The run's sheet as a download — regenerated from the DB when possible,
+    else read from its archived/on-disk copy."""
     payload = exports.excel_bytes(run)
     if not payload:
         raise HTTPException(status_code=404, detail="No results are available for this run.")

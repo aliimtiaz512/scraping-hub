@@ -6,7 +6,7 @@ import PortalResults from "@/components/PortalResults";
 import RunStatusPanel from "@/components/RunStatus";
 import { Button, DataTable, EmptyState, ErrorBanner, IconButton, LinkButton, RunBadge, Spinner } from "@/components/ui";
 import { runDownloadUrl, type RunStatus } from "@/lib/api";
-import { fetchRunsState, formatDuration, formatTimestamp, runDownloadable, runTarget, RUNS_LOADING, type RunsState } from "@/lib/runs";
+import { downloadKind, fetchRunsState, formatDuration, formatTimestamp, runDownloadable, runTarget, RUNS_LOADING, type RunsState } from "@/lib/runs";
 import type { PortalMeta } from "@/lib/portals";
 
 /**
@@ -143,7 +143,11 @@ export default function RunHistory({ meta }: { meta: PortalMeta }) {
                       href={runDownloadUrl(run.run_id)}
                       size="sm"
                       onClick={(e) => e.stopPropagation()}
-                      title="Download ZIP (cumulative Excel + bid documents)"
+                      title={
+                        downloadKind(run.scraper ?? "") === "excel"
+                          ? "Download the cumulative Excel report"
+                          : "Download ZIP (cumulative Excel + bid documents)"
+                      }
                       icon={
                         <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden>
                           <path d="M8 2v8m0 0L5 7m3 3l3-3M2.5 12.5h11" strokeLinecap="round" strokeLinejoin="round" />

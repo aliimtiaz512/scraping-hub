@@ -5,8 +5,9 @@ This is the same mechanism as the sam-septa project's services/notifier.py,
 adapted to the hub: config comes from the hub `settings` (pydantic-settings)
 rather than os.getenv. The attachment is the run's archive ZIP (cumulative
 Excel + all bid documents, built by exports.archive_run) when it fits in an
-email, else just the cumulative Excel — with the ZIP's download link in the
-body either way. Wired into every scraping portal's completion.
+email, else just the cumulative Excel — with the download link in the body
+either way. Portals in exports.EXCEL_ONLY_PORTALS have no ZIP at all and
+attach the sheet itself. Wired into every scraping portal's completion.
 
 Everything here is best-effort — a notification failure never affects a scrape.
 """
@@ -160,14 +161,18 @@ def _notify(run_id: str, scraper: str, record_count: int) -> None:
     s3_link = f' You can also <a href="{s3_url}">download it from S3</a>.' if s3_url else ""
 
     download_url = f"{settings.public_base_url.rstrip('/')}/runs/{run_id}/download"
-    attach_note = (
-        "The complete ZIP (cumulative Excel report + all bid documents) is attached."
-        if attached_zip
-        else (
+    # Portals with no documents ship the sheet alone — never promise a ZIP there.
+    excel_only = scraper in exports.EXCEL_ONLY_PORTALS
+    if attached_zip:
+        attach_note = "The complete ZIP (cumulative Excel report + all bid documents) is attached."
+    elif excel_only:
+        attach_note = "The Excel report is attached — it is this run's complete output."
+    else:
+        attach_note = (
             "The cumulative Excel report is attached; the complete ZIP with all bid "
             "documents was too large to email — use the download link below."
         )
-    )
+    link_text = "Download the Excel report" if excel_only else "Download the full ZIP"
 
     subject = f"{scraper.upper()} Scrape Complete — {record_count} records ({ts})"
     body_html = f"""\
@@ -179,7 +184,7 @@ def _notify(run_id: str, scraper: str, record_count: int) -> None:
   <li><strong>Completed at:</strong> {ts}</li>
 </ul>
 <p>{attach_note}{s3_link}</p>
-<p><a href="{download_url}">Download the full ZIP from the Scraping Hub</a></p>
+<p><a href="{download_url}">{link_text} from the Scraping Hub</a></p>
 </body></html>"""
 
     _send_email(recipients, subject, body_html, data, filename)

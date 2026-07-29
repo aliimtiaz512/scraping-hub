@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import NaicsSelect from "@/components/NaicsSelect";
 import RunStatusPanel from "@/components/RunStatus";
 import SamResults from "@/components/SamResults";
 import { Card, ErrorBanner, LaunchBar, StartButton } from "@/components/ui";
@@ -16,7 +17,7 @@ const inputClass =
 export default function SamPanel() {
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
-  const [naics, setNaics] = useState("");
+  const [naicsCodes, setNaicsCodes] = useState<string[]>([]);
   const [awardNotice, setAwardNotice] = useState(false);
 
   const [run, setRun] = useState<RunStatus | null>(null);
@@ -36,7 +37,6 @@ export default function SamPanel() {
     setError(null);
     setStarting(true);
     try {
-      const naicsCodes = naics.split(/[\s,]+/).map((c) => c.trim()).filter(Boolean);
       const { run_id } = await startSamScrape({
         dateFrom: dateFrom.trim(),
         dateTo: dateTo.trim(),
@@ -83,14 +83,11 @@ export default function SamPanel() {
           </div>
           <div className="sm:col-span-2">
             <label className="mb-1.5 block text-xs font-semibold text-ink-700">NAICS codes</label>
-            <input
-              type="text"
-              value={naics}
-              disabled={isRunning}
-              onChange={(e) => setNaics(e.target.value)}
-              placeholder="e.g. 541511, 236220 (comma or space separated)"
-              className={inputClass}
-            />
+            <NaicsSelect selected={naicsCodes} onChange={setNaicsCodes} disabled={isRunning} />
+            <p className="mt-1.5 text-xs text-ink-500">
+              Type part of a code or an industry name and pick from the catalogue. Leave empty to
+              search every NAICS.
+            </p>
           </div>
         </div>
         <div className="mt-4 flex flex-wrap gap-5">

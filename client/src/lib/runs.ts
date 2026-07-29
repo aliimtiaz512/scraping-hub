@@ -129,15 +129,28 @@ export function runTarget(run: RunStatus): string {
 /** Portals with nothing to download (reference data / login-only). */
 const NO_DOWNLOAD = new Set(["naics", "caleprocure", "evalconfig"]);
 
-/** True when this portal's runs produce a downloadable archive ZIP. */
+/**
+ * Portals whose run output is only the spreadsheet, so the download is a bare
+ * .xlsx with no ZIP around it. Mirrors EXCEL_ONLY_PORTALS in app/core/exports.py
+ * — SAM discards each bid's attachments once their text has been evaluated.
+ */
+const EXCEL_ONLY = new Set(["sam"]);
+
+/** True when this portal's runs produce something to download. */
 export function portalDownloadable(portal: string): boolean {
   return !NO_DOWNLOAD.has(portal);
 }
 
+/** What `GET /runs/{id}/download` hands back for this portal. */
+export function downloadKind(portal: string): "zip" | "excel" {
+  return EXCEL_ONLY.has(portal) ? "excel" : "zip";
+}
+
 /**
- * True when `GET /runs/{id}/download` will serve this run's archive ZIP —
- * the cumulative Excel report plus all downloaded bid documents. Null-ish
- * (false) while the run hasn't completed or for portals with no results.
+ * True when `GET /runs/{id}/download` will serve this run's results — the
+ * archive ZIP (cumulative Excel plus all downloaded bid documents), or a bare
+ * Excel for excel-only portals. False while the run hasn't completed or for
+ * portals with no results.
  */
 export function runDownloadable(run: RunStatus): boolean {
   return run.status === "completed" && portalDownloadable(run.scraper ?? "");

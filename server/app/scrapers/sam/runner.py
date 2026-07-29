@@ -213,9 +213,10 @@ def execute_run(
                 logger.exception("[run %s] SAM Excel generation failed", run_id)
                 run_manager.add_error(run_id, "excel generation failed (see logs)")
 
-        # Package the run into one archive ZIP (cumulative Excel + any files)
-        # and delete the workspace — nothing stays on local disk.
-        run_manager.update_run(run_id, step="packaging_results")
+        # SAM's whole deliverable is the sheet — attachments were deleted once
+        # their text was extracted — so archive_run stores a bare .xlsx rather
+        # than a ZIP, then deletes the workspace.
+        run_manager.update_run(run_id, step="saving_excel")
         archive_run(run_id)
 
         stopped = stop_event.is_set()

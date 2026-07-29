@@ -2,7 +2,7 @@
 
 import { runDownloadUrl, type RunStatus as RunStatusData } from "@/lib/api";
 import { LinkButton, RunBadge } from "@/components/ui";
-import { runDownloadable } from "@/lib/runs";
+import { downloadKind, runDownloadable } from "@/lib/runs";
 
 const STEP_LABELS: Record<string, string> = {
   queued: "Queued",
@@ -35,6 +35,7 @@ const STEP_LABELS: Record<string, string> = {
   fetching_naics: "Fetching NAICS codes",
   scraping_results: "Scraping results grid",
   packaging_results: "Packaging results into ZIP",
+  saving_excel: "Saving the Excel report",
   done: "Done",
   failed: "Failed",
   stopping: "Stopping…",
@@ -72,6 +73,7 @@ export default function RunStatus({ run }: { run: RunStatusData }) {
   const inFlight = run.status === "running" || run.status === "pending";
   const subtitle = runSubtitle(run);
   const download = runDownloadable(run);
+  const excelOnly = downloadKind(run.scraper ?? "") === "excel";
 
   return (
     <section className="overflow-hidden rounded-xl border border-ink-200 bg-white shadow-sm">
@@ -158,7 +160,9 @@ export default function RunStatus({ run }: { run: RunStatusData }) {
               <div className="min-w-0">
                 <p className="text-xs font-medium text-ink-600">Results ready</p>
                 <p className="truncate text-xs text-ink-500">
-                  Cumulative Excel report plus every downloaded bid document, bundled as one ZIP.
+                  {excelOnly
+                    ? "The cumulative Excel report — this run's complete output."
+                    : "Cumulative Excel report plus every downloaded bid document, bundled as one ZIP."}
                 </p>
               </div>
               <LinkButton
@@ -171,7 +175,7 @@ export default function RunStatus({ run }: { run: RunStatusData }) {
                   </svg>
                 }
               >
-                Download ZIP
+                {excelOnly ? "Download Excel" : "Download ZIP"}
               </LinkButton>
             </div>
           )}

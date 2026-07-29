@@ -459,8 +459,9 @@ export function bidnetExportUrl(): string {
 }
 
 /**
- * A completed run's archive ZIP as a browser download: the cumulative Excel
- * report plus every downloaded bid document in its niche-wise folder.
+ * A completed run's results as a browser download: the archive ZIP holding the
+ * cumulative Excel report plus every downloaded bid document in its niche-wise
+ * folder — or, for portals that download no documents, the bare Excel report.
  */
 export function runDownloadUrl(runId: string): string {
   return `${API_URL}/runs/${runId}/download`;
