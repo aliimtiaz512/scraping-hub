@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from app.core import live, run_manager
+from app.core.closing_filter import MIN_DAYS_UNTIL_CLOSE, days_until_close
 from app.core.filenames import sanitize_filename
 from app.scrapers.sam import export
 from app.core.exports import archive_run
@@ -71,12 +72,23 @@ def execute_run(
     _save_run_row(run_id)
 
     records: list[dict[str, Any]] = []
+    close_filter = {"skipped": 0, "unreadable": 0}  # close-date filter tallies
     stop_event = threading.Event()
     _stops[run_id] = stop_event
     scraper: SAMGovScraper | None = None
     run_dir = run_manager.run_folder(run_id)
 
     def _on_bid(bid: dict[str, Any]) -> None:
+        # Keep only bids still at least MIN_DAYS_UNTIL_CLOSE days from their
+        # response deadline, checked before the (costly) evaluation. An unreadable
+        # Date Offers Due is kept and tallied; a too-soon bid is dropped.
+        days_left = days_until_close(bid.get("Date Offers Due", ""))
+        if days_left is None:
+            close_filter["unreadable"] += 1
+        elif days_left < MIN_DAYS_UNTIL_CLOSE:
+            close_filter["skipped"] += 1
+            return
+
         notice_id, title, naics_code, full_text = _bid_to_record(bid)
         naics_title = bid.get("NAICS Title", "")
         ollama_decision = ollama_rule = ollama_confidence = None
@@ -155,6 +167,19 @@ def execute_run(
 
         run_manager.update_run(run_id, step="scraping")
         scraper.run(max_records=1000)
+
+        # Surface the close-date filter's effect (see app/core/closing_filter).
+        run_manager.update_run(
+            run_id,
+            min_days_until_close=MIN_DAYS_UNTIL_CLOSE,
+            bids_skipped_closing_soon=close_filter["skipped"],
+            bids_kept_unreadable_close=close_filter["unreadable"],
+        )
+        logger.info(
+            "[run %s] close-date filter (≥%sd): kept %s, skipped %s closing soon, %s unreadable kept",
+            run_id, MIN_DAYS_UNTIL_CLOSE, len(records),
+            close_filter["skipped"], close_filter["unreadable"],
+        )
 
         if not records:
             run_manager.update_run(run_id, no_results=True)

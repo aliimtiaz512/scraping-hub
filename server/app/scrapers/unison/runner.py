@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from app.core import live, run_manager
+from app.core.closing_filter import MIN_DAYS_UNTIL_CLOSE, filter_records
 from app.core.filenames import sanitize_filename
 from app.scrapers.unison import export
 from app.scrapers.unison.engine.unison_scraper import UnisonMarketplaceScraper
@@ -59,6 +60,21 @@ def execute_run(run_id: str, filter_by: str | None = None) -> None:
         scraper.run_scraper(filter_by=filter_by)
 
         records = _read_records(Path(scraper.csv_file))
+
+        # Keep only requests still at least MIN_DAYS_UNTIL_CLOSE days from their
+        # End Date; unreadable end dates are kept and tallied (see closing_filter).
+        records, skipped_soon, unreadable_close = filter_records(records, lambda r: r.get("end_date"))
+        run_manager.update_run(
+            run_id,
+            min_days_until_close=MIN_DAYS_UNTIL_CLOSE,
+            bids_skipped_closing_soon=skipped_soon,
+            bids_kept_unreadable_close=unreadable_close,
+        )
+        logger.info(
+            "[run %s] close-date filter (≥%sd): kept %s, skipped %s closing soon, %s unreadable kept",
+            run_id, MIN_DAYS_UNTIL_CLOSE, len(records), skipped_soon, unreadable_close,
+        )
+
         run_manager.update_run(run_id, bids_found=len(records), bids_processed=len(records))
         for rec in records[:100]:  # mirror a preview into the live run state
             run_manager.add_bid_result(run_id, {**rec, "documents": [], "error": None})

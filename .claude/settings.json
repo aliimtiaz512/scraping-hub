@@ -32,7 +32,13 @@
       "Bash(python3 -)",
       "Bash(.venv/bin/python -c \"import main; from app.scrapers.septa.scraper import parse_close_date, SeptaScraper; print\\('server imports OK'\\)\")",
       "Bash(.venv/bin/python /tmp/claude-1000/-home-akif-aziz-Public-Head-office-scrappers-scraping-hub/73b7faed-2e10-4d51-818e-ba5fa3199077/scratchpad/test_septa_filter.py)",
-      "Bash(.venv/bin/python /tmp/claude-1000/-home-akif-aziz-Public-Head-office-scrappers-scraping-hub/73b7faed-2e10-4d51-818e-ba5fa3199077/scratchpad/test_septa_integration.py)"
+      "Bash(.venv/bin/python /tmp/claude-1000/-home-akif-aziz-Public-Head-office-scrappers-scraping-hub/73b7faed-2e10-4d51-818e-ba5fa3199077/scratchpad/test_septa_integration.py)",
+      "Bash(.venv/bin/python -c \"from dateutil import parser; print\\('dateutil OK:', parser.parse\\('9/11/2026'\\).date\\(\\), '|', parser.parse\\('Nov 25, 2025 3:00 PM EST', fuzzy=True\\).date\\(\\), '|', parser.parse\\('11/25/2025 2:00PM'\\).date\\(\\)\\)\")",
+      "Bash(.venv/bin/python -c \"import app.scrapers.wisconsin.scraper, app.scrapers.northdakota.scraper, app.scrapers.septa.scraper; print\\('grid scrapers import OK'\\)\")",
+      "Bash(.venv/bin/python -c \"import app.scrapers.bidnet.scraper; print\\('bidnet imports OK'\\)\")",
+      "Bash(.venv/bin/python -c \"import app.scrapers.ridemetro.scraper, app.scrapers.myflorida.scraper, app.scrapers.myflorida.ingest; print\\('ridemetro + myflorida import OK'\\)\")",
+      "Bash(sed -i 's#from app.scrapers.septa.scraper import parse_close_date, MIN_DAYS_UNTIL_CLOSE#from app.core.closing_filter import parse_close_date, MIN_DAYS_UNTIL_CLOSE#' /tmp/claude-1000/-home-akif-aziz-Public-Head-office-scrappers-scraping-hub/73b7faed-2e10-4d51-818e-ba5fa3199077/scratchpad/test_septa_filter.py)",
+      "Bash(.venv/bin/python /tmp/claude-1000/-home-akif-aziz-Public-Head-office-scrappers-scraping-hub/73b7faed-2e10-4d51-818e-ba5fa3199077/scratchpad/test_portals_filter.py)"
     ],
     "additionalDirectories": [
       "/home/akif-aziz/Public/Head office scrappers/scraping-hub/client/.next"

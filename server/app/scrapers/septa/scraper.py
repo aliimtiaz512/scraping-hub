@@ -13,7 +13,7 @@ SQLAlchemy conventions so storage matches every other portal.
 
 import logging
 import time
-from datetime import date, datetime
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +28,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 
 from app.config import settings
 from app.core import run_manager
+from app.core.closing_filter import MIN_DAYS_UNTIL_CLOSE, days_until_close
 from app.core.exports import archive_run
 from app.services.notifier import notify_scrape_completion
 from app.core.base_scraper import BaseScraper
@@ -49,52 +50,8 @@ PAGE_CHANGE_SLEEP = 2
 MAX_PAGES = 50
 PREVIEW_LIMIT = 100   # rows mirrored to the live run state for the UI table
 
-# Only keep quotes whose closing date is still at least this many days away, so
-# there is enough runway to prepare and submit a bid. Quotes we can confirm
-# close sooner are dropped; quotes whose close date we cannot read are KEPT (we
-# can't prove they fail the rule) and counted so the drop is never silent.
-MIN_DAYS_UNTIL_CLOSE = 7
-
-# Close-date strings SEPTA renders, most specific first. Tried against the whole
-# cell and, failing that, against its first whitespace-delimited token (so a
-# trailing time or label doesn't defeat an otherwise-valid date).
-_CLOSE_DATE_FORMATS = (
-    "%m/%d/%Y %I:%M:%S %p",
-    "%m/%d/%Y %I:%M %p",
-    "%m/%d/%Y %H:%M:%S",
-    "%m/%d/%Y %H:%M",
-    "%m/%d/%Y",
-    "%m-%d-%Y",
-    "%Y-%m-%d %H:%M:%S",
-    "%Y-%m-%d",
-    "%b %d, %Y",
-    "%B %d, %Y",
-)
-
-
-def parse_close_date(raw: str | None) -> date | None:
-    """Parse a SEPTA close-date cell into a calendar date, or None if unreadable.
-
-    SEPTA formats dates as MM/DD/YYYY (sometimes with a trailing time); a handful
-    of other shapes are tolerated. Returns None on blank/unknown input so the
-    caller can decide what to do with a quote whose deadline can't be determined.
-    """
-    if not raw:
-        return None
-    text = raw.strip()
-    if not text:
-        return None
-    candidates = [text]
-    first_token = text.split()[0]
-    if first_token != text:
-        candidates.append(first_token)
-    for candidate in candidates:
-        for fmt in _CLOSE_DATE_FORMATS:
-            try:
-                return datetime.strptime(candidate, fmt).date()
-            except ValueError:
-                continue
-    return None
+# The >=7-days-until-close rule and its date parsing live in one shared place
+# (app/core/closing_filter) so every portal behaves identically.
 
 # -- navigation heuristics (ported from the package config) ------------------
 OPEN_QUOTES_LINK_TEXTS = [
@@ -704,10 +661,10 @@ class SeptaScraper(BaseScraper):
                 # Keep only quotes with at least MIN_DAYS_UNTIL_CLOSE days left.
                 # An unreadable close date can't be proven to fail, so it's kept
                 # (and tallied); a date we can read that's too near is dropped.
-                close_on = parse_close_date(rec.get("close_date"))
-                if close_on is None:
+                days_left = days_until_close(rec.get("close_date"))
+                if days_left is None:
                     self._kept_unreadable_close += 1
-                elif (close_on - date.today()).days < MIN_DAYS_UNTIL_CLOSE:
+                elif days_left < MIN_DAYS_UNTIL_CLOSE:
                     self._skipped_closing_soon += 1
                     continue
 

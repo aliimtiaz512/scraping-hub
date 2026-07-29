@@ -30,7 +30,8 @@ from app.config import settings
 from app.core import run_manager
 from app.core.base_scraper import BaseScraper
 from app.core.filenames import sanitize_filename
-from app.scrapers.myflorida.ingest import ingest_excel
+from app.core.closing_filter import MIN_DAYS_UNTIL_CLOSE
+from app.scrapers.myflorida.ingest import filter_workbook_by_close_date, ingest_excel
 from app.scrapers.myflorida.workbook import merge_exports
 from app.core.exports import archive_run
 from app.services.notifier import notify_scrape_completion
@@ -653,6 +654,27 @@ class MFMPScraper(BaseScraper):
             logger.exception("[run %s] workbook merge failed", self.run_id)
             run_manager.add_error(self.run_id, f"workbook merge failed: {exc.__class__.__name__}")
             return
+
+        # Keep only ads still at least MIN_DAYS_UNTIL_CLOSE days from close. The
+        # close date lives only in this merged export (the ad list has just
+        # number/title), so we prune the workbook here — which filters both the
+        # downloadable Excel and the DB ingest that reads it next. Unreadable
+        # close dates are kept; a failure must not fail the run.
+        try:
+            kept, skipped, unreadable = filter_workbook_by_close_date(self.excel_path)
+            run_manager.update_run(
+                self.run_id,
+                min_days_until_close=MIN_DAYS_UNTIL_CLOSE,
+                bids_skipped_closing_soon=skipped,
+                bids_kept_unreadable_close=unreadable,
+            )
+            logger.info(
+                "[run %s] close-date filter (≥%sd): kept %s, skipped %s closing soon, %s unreadable kept",
+                self.run_id, MIN_DAYS_UNTIL_CLOSE, kept, skipped, unreadable,
+            )
+        except Exception:  # noqa: BLE001 — filtering must never fail the run
+            logger.exception("[run %s] close-date filter failed", self.run_id)
+
         try:
             self.ingest_to_db()
         except Exception as exc:  # noqa: BLE001 — DB issues shouldn't fail the run

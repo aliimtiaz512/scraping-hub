@@ -25,6 +25,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from app.config import settings
 from app.core import run_manager
 from app.core.base_scraper import BaseScraper
+from app.core.closing_filter import MIN_DAYS_UNTIL_CLOSE, days_until_close
 from app.scrapers.bidnet import export
 from app.scrapers.bidnet.keywords import group_keywords
 from app.core.exports import archive_run
@@ -70,6 +71,11 @@ class BidnetScraper(BaseScraper):
         # each additional group's folder so every group folder stays complete.
         self._bid_cache: dict[str, dict] = {}      # link -> scraped record (no docs)
         self._bid_doc_dir: dict[str, Path] = {}    # link -> folder its docs first landed in
+        # Close-date filter tallies (see app/core/closing_filter): solicitations
+        # dropped for closing too soon (before their documents are downloaded),
+        # and those kept despite an unreadable Closing Date.
+        self._skipped_closing_soon = 0
+        self._kept_unreadable_close = 0
 
     # -- helpers ------------------------------------------------------------
 
@@ -240,11 +246,13 @@ class BidnetScraper(BaseScraper):
                     continue
         return None
 
-    def process_bid(self, link: str, group_folder: Path) -> dict[str, Any]:
+    def process_bid(self, link: str, group_folder: Path) -> dict[str, Any] | None:
         """Open one solicitation, scrape its fields, download its documents into
-        `group_folder`. If this solicitation was already scraped for an earlier
-        niche+tier group, reuse the scraped fields and *copy* its documents into
-        this group's folder rather than re-opening and re-downloading."""
+        `group_folder`. Returns None when the solicitation is skipped by the
+        close-date filter (closing sooner than MIN_DAYS_UNTIL_CLOSE). If this
+        solicitation was already scraped for an earlier niche+tier group, reuse
+        the scraped fields and *copy* its documents into this group's folder
+        rather than re-opening and re-downloading."""
         if link in self._bid_cache:
             record = dict(self._bid_cache[link])
             record["documents"] = self._copy_cached_docs(link, record, group_folder)
@@ -260,6 +268,19 @@ class BidnetScraper(BaseScraper):
         record: dict[str, Any] = {key: self._extract_field(label).strip() for key, label in DETAIL_FIELDS.items()}
         reference_number = record.get("reference_number") or ""
         title = record.get("title") or ""
+
+        # Keep only solicitations still at least MIN_DAYS_UNTIL_CLOSE days from
+        # their Closing Date, checked here — before the costly document download —
+        # so a too-soon bid is skipped without fetching anything. An unreadable
+        # closing date is kept and tallied. Returning None tells the caller to
+        # drop this solicitation (and it is deliberately left out of the reuse
+        # cache, so it never short-circuits the filter for a later keyword group).
+        days_left = days_until_close(record.get("closing_date"))
+        if days_left is None:
+            self._kept_unreadable_close += 1
+        elif days_left < MIN_DAYS_UNTIL_CLOSE:
+            self._skipped_closing_soon += 1
+            return None
 
         documents_count = self._document_count()
         record["documents_count"] = documents_count
@@ -472,13 +493,18 @@ class BidnetScraper(BaseScraper):
                 # its documents into the group folder.
                 group_records: list[dict] = []
                 for index, (link, matched) in enumerate(link_keywords.items()):
-                    record = {"reference_number": None, "title": None, "documents": [], "error": None}
+                    record: dict[str, Any] | None = {
+                        "reference_number": None, "title": None, "documents": [], "error": None,
+                    }
                     try:
                         record = self.process_bid(link, group_folder)
                     except (TimeoutException, WebDriverException) as exc:
                         record["error"] = str(exc)[:300]
                         run_manager.add_error(self.run_id, f"bid failed: {exc.__class__.__name__}")
                         self.screenshot(f"bid_{index}")
+                    if record is None:
+                        # Skipped by the close-date filter — no documents fetched.
+                        continue
                     record["matched_keyword"] = ", ".join(matched)
                     record["niche"] = group["label"]
                     record["tier"] = group["tier"]
@@ -491,6 +517,19 @@ class BidnetScraper(BaseScraper):
 
             logger.info("[run %s] %s unique solicitations across %s group(s)",
                         self.run_id, len(unique_links), len(groups))
+
+            # Surface the close-date filter's effect (see app/core/closing_filter).
+            run_manager.update_run(
+                self.run_id,
+                min_days_until_close=MIN_DAYS_UNTIL_CLOSE,
+                bids_skipped_closing_soon=self._skipped_closing_soon,
+                bids_kept_unreadable_close=self._kept_unreadable_close,
+            )
+            logger.info(
+                "[run %s] close-date filter (≥%sd): kept %s, skipped %s closing soon, %s unreadable kept",
+                self.run_id, MIN_DAYS_UNTIL_CLOSE, len(all_records),
+                self._skipped_closing_soon, self._kept_unreadable_close,
+            )
 
             # Persist every scraped solicitation in one transaction (mirrors
             # MyFlorida). The DB stays globally de-duplicated per run (by reference

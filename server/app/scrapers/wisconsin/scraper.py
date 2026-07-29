@@ -26,6 +26,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from app.config import settings
 from app.core import run_manager
 from app.core.base_scraper import BaseScraper
+from app.core.closing_filter import MIN_DAYS_UNTIL_CLOSE, days_until_close
 from app.core.filenames import sanitize_filename
 from app.scrapers.wisconsin import export
 from app.core.exports import archive_run
@@ -75,6 +76,10 @@ class WisconsinScraper(BaseScraper):
         # Full in-memory copy of every scraped row, used only as a fallback source
         # for the Excel if the DB is unavailable.
         self._records: list[dict[str, Any]] = []
+        # Close-date filter tallies (see app/core/closing_filter): rows dropped for
+        # closing too soon, and rows kept despite an unreadable Due Date/Time.
+        self._skipped_closing_soon = 0
+        self._kept_unreadable_close = 0
         # Set when the search settled with zero result rows — lets the run report
         # "no records found" instead of a silent empty completion.
         self._no_rows_after_search = False
@@ -286,6 +291,16 @@ class WisconsinScraper(BaseScraper):
                     continue
                 if key:
                     seen.add(key)
+
+                # Keep only events still at least MIN_DAYS_UNTIL_CLOSE days from
+                # their Due Date/Time; an unreadable due date is kept and tallied.
+                days_left = days_until_close(rec.get("due_datetime"))
+                if days_left is None:
+                    self._kept_unreadable_close += 1
+                elif days_left < MIN_DAYS_UNTIL_CLOSE:
+                    self._skipped_closing_soon += 1
+                    continue
+
                 self._records.append(rec)
                 scraped += 1
                 if len(preview) < PREVIEW_LIMIT:
@@ -523,6 +538,19 @@ class WisconsinScraper(BaseScraper):
             self.open_current_solicitations()
             self.search()
             self.scrape_all_pages()
+
+            # Surface the close-date filter's effect (see app/core/closing_filter).
+            run_manager.update_run(
+                self.run_id,
+                min_days_until_close=MIN_DAYS_UNTIL_CLOSE,
+                bids_skipped_closing_soon=self._skipped_closing_soon,
+                bids_kept_unreadable_close=self._kept_unreadable_close,
+            )
+            logger.info(
+                "[run %s] close-date filter (≥%sd): kept %s, skipped %s closing soon, %s unreadable kept",
+                self.run_id, MIN_DAYS_UNTIL_CLOSE, len(self._records),
+                self._skipped_closing_soon, self._kept_unreadable_close,
+            )
 
             # Mark an empty run so the UI can say "search worked, portal has
             # nothing" rather than showing a silent zero-result completion.

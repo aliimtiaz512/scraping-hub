@@ -107,8 +107,16 @@ export default function RunStatus({ run }: { run: RunStatusData }) {
         <Stat label="Results" value={run.excel_exported ? "Ready" : "—"} muted={!run.excel_exported} />
       </div>
 
-      {(run.errors.length > 0 || run.no_results || (run.warnings?.length ?? 0) > 0 || run.status === "completed" || run.status === "stopped") && (
+      {(run.errors.length > 0 || run.no_results || (run.warnings?.length ?? 0) > 0 || run.status === "completed" || run.status === "stopped" || !!run.min_days_until_close) && (
         <div className="space-y-3 border-t border-ink-100 p-5">
+          {!!run.min_days_until_close && (
+            <ClosingFilterNote
+              minDays={run.min_days_until_close}
+              skipped={run.bids_skipped_closing_soon ?? 0}
+              unreadable={run.bids_kept_unreadable_close ?? 0}
+            />
+          )}
+
           {run.status === "stopped" && (
             <Notice tone="amber" title="Stopped">
               You stopped this run{run.bids_processed > 0 ? ` after ${run.bids_processed} processed` : ""}. Anything captured before the stop is kept below.
@@ -200,6 +208,36 @@ function Notice({
     <div className={`rounded-lg border p-3.5 ${cls.box}`}>
       <p className={`mb-1 text-xs font-semibold ${cls.head}`}>{title}</p>
       <div className={`text-sm ${cls.body}`}>{children}</div>
+    </div>
+  );
+}
+
+/**
+ * Informational (not a warning) note explaining the always-on close-date filter:
+ * every portal keeps only bids closing at least N days out, so a smaller list is
+ * expected. Shown whenever a run recorded the filter (min_days_until_close set).
+ */
+function ClosingFilterNote({
+  minDays,
+  skipped,
+  unreadable,
+}: {
+  minDays: number;
+  skipped: number;
+  unreadable: number;
+}) {
+  return (
+    <div className="rounded-lg border border-ink-200 bg-ink-50 p-3.5">
+      <p className="mb-1 text-xs font-semibold text-ink-700">Closing-date filter · ≥ {minDays} days out</p>
+      <p className="text-sm text-ink-600">
+        Only bids closing at least {minDays} days from today are kept.
+        {skipped > 0
+          ? ` ${skipped} closing sooner ${skipped === 1 ? "was" : "were"} skipped.`
+          : " None were closing sooner."}
+        {unreadable > 0
+          ? ` ${unreadable} with an unreadable close date ${unreadable === 1 ? "was" : "were"} kept.`
+          : ""}
+      </p>
     </div>
   );
 }
