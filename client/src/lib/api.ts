@@ -112,6 +112,7 @@ export interface BidResult {
   buyer_description?: string;
   buyer?: string;
   end_date?: string;
+<<<<<<< Updated upstream
   // MyFlorida ad-status sweep: the classifier's verdict for this ad. The sweep
   // reports rows itself rather than through the per-bid document crawl, so it
   // carries these instead of `documents`/`error` — see MyFloridaSweepResults.
@@ -122,6 +123,21 @@ export interface BidResult {
   // because the sweep does not.
   documents?: string[];
   error?: string | null;
+=======
+  // EMMA (eMaryland Marketplace Advantage) — reuses shared solicitation_type/status/close_date/title
+  emma_id?: string;
+  bpm_code?: string;
+  publish_date?: string;
+  main_category?: string;
+  issuing_agency?: string;
+  time_remaining?: string;
+  award_status?: string;
+  procurement_officer?: string;
+  matched_filters?: string;
+  // shared
+  documents: string[];
+  error: string | null;
+>>>>>>> Stashed changes
   document_errors?: string[];
 }
 
@@ -449,12 +465,29 @@ export function startCalEProcureScrape(): Promise<{ run_id: string; folder: stri
 
 // -- EMMA (eMaryland Marketplace Advantage) -----------------------------------
 
+export interface StartEmmaScrapeOptions {
+  // All optional and combinable; all blank captures every public solicitation.
+  category?: string;
+  solicitationType?: string;
+  status?: string;
+  livePreview?: boolean;
+}
+
 /**
- * EMMA currently signs in and opens the Public Solicitations list, capturing the
- * page. It takes no search criteria yet; list scraping and export come next.
+ * Sign in, open Public Solicitations, optionally apply the filter bar (Main
+ * Category / Solicitation Type / Status), scrape the whole grid, and store every
+ * solicitation still closing at least 7 days out.
  */
-export function startEmmaScrape(livePreview = false): Promise<{ run_id: string; folder: string }> {
-  return request(`/emma/scrape${livePreviewQuery(livePreview)}`, { method: "POST" });
+export function startEmmaScrape({
+  category = "",
+  solicitationType = "",
+  status = "",
+  livePreview = false,
+}: StartEmmaScrapeOptions = {}): Promise<{ run_id: string; search: string; folder: string }> {
+  return request(`/emma/scrape${livePreviewQuery(livePreview)}`, {
+    method: "POST",
+    body: JSON.stringify({ category, solicitation_type: solicitationType, status }),
+  });
 }
 
 // -- shared ------------------------------------------------------------------

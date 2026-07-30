@@ -1,6 +1,7 @@
 "use client";
 
 import BidnetResults from "@/components/BidnetResults";
+import EmmaResults from "@/components/EmmaResults";
 import NorthDakotaResults from "@/components/NorthDakotaResults";
 import ResultsTable from "@/components/ResultsTable";
 import RideMetroResults from "@/components/RideMetroResults";
@@ -34,8 +35,9 @@ export default function PortalResults({ portal, bids }: { portal: Portal; bids: 
       return <UnisonResults bids={bids} />;
     case "naics":
       return null; // NAICS is a reference tool, not a bid list
-    case "caleprocure":
     case "emma":
+      return <EmmaResults bids={bids} />;
+    case "caleprocure":
       // Login-only so far — no scraped rows to render yet.
       return null;
   }

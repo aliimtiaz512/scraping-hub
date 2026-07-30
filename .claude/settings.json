@@ -38,7 +38,15 @@
       "Bash(.venv/bin/python -c \"import app.scrapers.bidnet.scraper; print\\('bidnet imports OK'\\)\")",
       "Bash(.venv/bin/python -c \"import app.scrapers.ridemetro.scraper, app.scrapers.myflorida.scraper, app.scrapers.myflorida.ingest; print\\('ridemetro + myflorida import OK'\\)\")",
       "Bash(sed -i 's#from app.scrapers.septa.scraper import parse_close_date, MIN_DAYS_UNTIL_CLOSE#from app.core.closing_filter import parse_close_date, MIN_DAYS_UNTIL_CLOSE#' /tmp/claude-1000/-home-akif-aziz-Public-Head-office-scrappers-scraping-hub/73b7faed-2e10-4d51-818e-ba5fa3199077/scratchpad/test_septa_filter.py)",
-      "Bash(.venv/bin/python /tmp/claude-1000/-home-akif-aziz-Public-Head-office-scrappers-scraping-hub/73b7faed-2e10-4d51-818e-ba5fa3199077/scratchpad/test_portals_filter.py)"
+      "Bash(.venv/bin/python /tmp/claude-1000/-home-akif-aziz-Public-Head-office-scrappers-scraping-hub/73b7faed-2e10-4d51-818e-ba5fa3199077/scratchpad/test_portals_filter.py)",
+      "Bash(cd \"/home/akif-aziz/Public/Head office scrappers/scraping-hub\" && echo \"=== captured EMMA HTML still around? ===\" && find /tmp/scraping-hub-runs data -name \"page_public_solicitations.html\" 2>/dev/null | head -3; echo && echo \"=== ND search/scrape selectors \\(likely shared with EMMA/Ivalua\\) ===\" && grep -nE \"KEYWORD_ID|COMMODITY|SEARCH_BTN|GRID_ID|ROW_CSS|NEXT_BTN|body_x_\" server/app/scrapers/northdakota/scraper.py | head -20 && echo && echo \"=== ND _read_rows \\(grid row parsing\\) ===\" && grep -nE \"def _read_rows|def search|def _select_commodity|def _first_row_id|def _wait_grid\" server/app/scrapers/northdakota/scraper.py)",
+      "Read(//tmp/scraping-hub-runs/**)",
+      "Bash(curl -s \"http://localhost:8000/emma/bids?limit=2\")",
+      "Bash(.venv/bin/python -m json.tool)",
+      "Bash(.venv/bin/python -c \"from app.scrapers.emma import scraper; print\\('emma scraper imports OK; has download_all_documents:', hasattr\\(scraper.EmmaScraper,'download_all_documents'\\)\\)\")",
+      "Bash(.venv/bin/python -c \"import main; print\\('full server imports OK'\\)\")",
+      "Bash(git -C .. status --short)",
+      "Bash(curl -s --max-time 6 http://localhost:8000/)"
     ],
     "additionalDirectories": [
       "/home/akif-aziz/Public/Head office scrappers/scraping-hub/client/.next"

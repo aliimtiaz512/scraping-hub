@@ -1,30 +1,63 @@
-"""EMMA API — login + navigation milestone.
+"""EMMA (eMaryland Marketplace Advantage) API.
 
-Only the run lifecycle is wired here so sign-in and the hop to Public
-Solicitations can be verified end-to-end (POST /emma/scrape → poll
-/emma/scrape/status/{run_id}). The search request body, the `/bids` listing,
-and the Excel export are added with the scraping flow, following the North
-Dakota router.
+Signs in, opens Public Solicitations, optionally applies the filter bar
+(Main Category / Solicitation Type / Status), scrapes the whole results grid,
+stores every kept solicitation, and rebuilds the run's Excel from the DB. Mirrors
+the North Dakota router.
 """
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from pydantic import BaseModel
+from sqlalchemy import or_, select
+from sqlalchemy.exc import OperationalError
+from sqlalchemy.orm import Session
 
 from app.core import run_manager
 from app.core.filenames import timestamp
+from app.db import get_session
+from app.scrapers.emma.models import EXCEL_COLUMNS, EmmaBid
 from app.scrapers.emma.scraper import execute_run
 
 router = APIRouter(prefix="/emma", tags=["emma"])
 
 
+class ScrapeRequest(BaseModel):
+    # All optional; an empty request captures every current public solicitation.
+    category: str = ""
+    solicitation_type: str = ""
+    status: str = ""
+
+
 @router.post("/scrape")
-def start_scrape(background_tasks: BackgroundTasks, live_preview: bool = False) -> dict:
-    """Start a run. For now this signs in and opens the Public Solicitations
-    list; the list scraping is added next."""
-    label = timestamp()  # e.g. 2026-07-21 14-30-05
-    folder = run_manager.make_run_folder(f"EMMA ({label})")
-    run = run_manager.create_run("emma", folder, {"label": label, "live_preview": live_preview})
-    background_tasks.add_task(execute_run, run["run_id"])
-    return {"run_id": run["run_id"], "folder": run["folder"]}
+def start_scrape(request: ScrapeRequest, background_tasks: BackgroundTasks, live_preview: bool = False) -> dict:
+    category = request.category.strip()
+    solicitation_type = request.solicitation_type.strip()
+    status = request.status.strip()
+    search = ", ".join(
+        part for part in (
+            f"category={category}" if category else "",
+            f"type={solicitation_type}" if solicitation_type else "",
+            f"status={status}" if status else "",
+        ) if part
+    ) or "all public solicitations"
+
+    label = timestamp()  # e.g. 2026-07-30 14-30-05
+    folder = run_manager.make_run_folder(f"Document_Bids_EMMA ({label})")
+    run = run_manager.create_run(
+        "emma",
+        folder,
+        {
+            "label": label,
+            "search": search,
+            "category": category,
+            "solicitation_type": solicitation_type,
+            "status": status,
+            "excel_exported": False,
+            "live_preview": live_preview,
+        },
+    )
+    background_tasks.add_task(execute_run, run["run_id"], category, solicitation_type, status)
+    return {"run_id": run["run_id"], "search": search, "folder": run["folder"]}
 
 
 @router.get("/scrape/status/{run_id}")
@@ -38,3 +71,41 @@ def scrape_status(run_id: str) -> dict:
 @router.get("/scrape/runs")
 def scrape_runs() -> dict:
     return {"runs": run_manager.list_runs(scraper="emma")}
+
+
+def _bid_to_dict(bid: EmmaBid) -> dict:
+    data = {attr: getattr(bid, attr) for attr, _ in EXCEL_COLUMNS}
+    data.update(id=bid.id, run_id=bid.run_id, emma_id=bid.emma_id, documents=bid.documents or [])
+    return data
+
+
+@router.get("/bids")
+def list_bids(
+    run_id: str | None = Query(None, description="Filter by scrape run"),
+    query: str = Query("", description="Search title / category / status / ID"),
+    limit: int = Query(100, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+    session: Session = Depends(get_session),
+) -> dict:
+    """Return EMMA solicitations stored in the database, most recent first."""
+    stmt = select(EmmaBid).order_by(EmmaBid.scraped_at.desc(), EmmaBid.id.desc())
+    if run_id:
+        stmt = stmt.where(EmmaBid.run_id == run_id)
+    if query:
+        like = f"%{query}%"
+        stmt = stmt.where(
+            or_(
+                EmmaBid.title.ilike(like),
+                EmmaBid.main_category.ilike(like),
+                EmmaBid.status.ilike(like),
+                EmmaBid.bpm_code.ilike(like),
+            )
+        )
+    try:
+        rows = session.execute(stmt.limit(limit).offset(offset)).scalars().all()
+    except OperationalError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Database unavailable — check DATABASE_URL in server/.env",
+        ) from exc
+    return {"bids": [_bid_to_dict(b) for b in rows], "count": len(rows)}

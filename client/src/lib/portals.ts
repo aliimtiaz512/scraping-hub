@@ -219,10 +219,10 @@ export const PORTALS: PortalMeta[] = [
     label: "EMMA",
     operator: "State of Maryland",
     host: "emma.maryland.gov",
-    tagline: "Maryland procurement portal",
+    tagline: "Public solicitations",
     description:
-      "Sign in to eMaryland Marketplace Advantage (EMMA), Maryland's statewide procurement portal, and open the Public Solicitations list. Login and navigation are live now; list scraping and Excel export are being built next.",
-    outputs: ["Supplier login", "Public Solicitations"],
+      "Sign in to eMaryland Marketplace Advantage (EMMA), open Public Solicitations, and scrape the whole list — optionally filtered by Main Category, Solicitation Type or Status — to the database and an Excel sheet, keeping only solicitations closing at least 7 days out.",
+    outputs: ["Category / type / status filters", "Full solicitation grid", "Excel export"],
     icon: "crab",
     accent: {
       tile: "bg-cyan-50 text-cyan-600 ring-cyan-100",

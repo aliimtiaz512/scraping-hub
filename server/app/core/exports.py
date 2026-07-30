@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 # Portals whose runs download real document files → their download is a ZIP.
-DOC_PORTALS = {"myflorida", "bidnet", "northdakota"}
+DOC_PORTALS = {"myflorida", "bidnet", "northdakota", "emma"}
 
 # Portals whose run produces nothing but the spreadsheet, so wrapping it in a
 # ZIP adds a folder to unpack for no gain. SAM downloads each bid's attachments
@@ -40,6 +40,7 @@ EXCEL_ONLY_PORTALS = {"sam", "myflorida_sweep", "septa"}
 # Portals whose export module can rebuild the run's Excel from the DB via
 # `generate_excel(run_id, path)`. MyFlorida is absent on purpose: its workbook
 # is downloaded from the portal itself and merged on disk (run["excel_path"]).
+<<<<<<< Updated upstream
 _GENERATOR_PORTALS = {
     "septa", "wisconsin", "ridemetro", "northdakota", "sam", "unison", "bidnet",
     "myflorida_sweep",
@@ -49,6 +50,9 @@ _GENERATOR_PORTALS = {
 # The MyFlorida sweep is a sub-package of the portal it belongs to, so its key
 # does not spell its import path.
 _EXPORT_MODULES = {"myflorida_sweep": "app.scrapers.myflorida.sweep.export"}
+=======
+_GENERATOR_PORTALS = {"septa", "wisconsin", "ridemetro", "northdakota", "sam", "unison", "bidnet", "emma"}
+>>>>>>> Stashed changes
 
 
 def _excel_name(run: dict[str, Any]) -> str:
@@ -64,7 +68,11 @@ def _excel_name(run: dict[str, Any]) -> str:
         "ridemetro": f"RideMetro_Bids ({run.get('label') or run['run_id']})",
         "northdakota": f"NorthDakota_({search or 'all public solicitations'})",
         "bidnet": f"Bidnetdirect_({search or 'all solicitations'})",
+<<<<<<< Updated upstream
         "myflorida_sweep": f"MyFlorida_Sweep_({search or 'all statuses'})",
+=======
+        "emma": f"EMMA_({search or 'all public solicitations'})",
+>>>>>>> Stashed changes
     }.get(scraper, f"{scraper}_{run['run_id']}")
     return sanitize_filename(label, max_length=150) + ".xlsx"
 
