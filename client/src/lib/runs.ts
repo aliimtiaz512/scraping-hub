@@ -134,7 +134,7 @@ const NO_DOWNLOAD = new Set(["naics", "caleprocure", "evalconfig"]);
  * .xlsx with no ZIP around it. Mirrors EXCEL_ONLY_PORTALS in app/core/exports.py
  * — SAM discards each bid's attachments once their text has been evaluated.
  */
-const EXCEL_ONLY = new Set(["sam"]);
+const EXCEL_ONLY = new Set(["sam", "myflorida_sweep"]);
 
 /** True when this portal's runs produce something to download. */
 export function portalDownloadable(portal: string): boolean {

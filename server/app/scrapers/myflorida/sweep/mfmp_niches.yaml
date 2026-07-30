@@ -1,0 +1,576 @@
+# MFMP niche classification — single source of truth.
+#
+# Per MFMP_Niche_Classification_Criteria.md §9.2, NOTHING in this file may be
+# duplicated in Python: every lexicon, commodity code, weight and threshold
+# lives here, and adding a seventh niche must be a YAML edit and nothing else.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# SEED FILE — REVIEW BEFORE TRUSTING THE OUTPUT
+#
+# The lexicons below were drafted from the criteria document's prose so the
+# engine has something to run against. They are a starting point for you to
+# correct, not a validated vocabulary. The criteria doc says it plainly (§8):
+# "The lexicons will be wrong on day one."
+#
+# Commodity codes carry `source:` markers:
+#   validated                       — confirmed against the MFMP v20 workbook
+#   seed_from_existing_catalogue    — taken from commodity_codes.py, which was
+#                                     curated for MFMP but never tier-checked
+#   candidate_requires_validation   — proposed, unverified (criteria doc §9.6)
+#
+# Codes marked `candidate_requires_validation` demote to Tier C when a v20
+# workbook is configured and does not contain them. With no workbook configured
+# validation is skipped with a warning and declared tiers stand — demoting every
+# code because the reference file is absent would silently gut the model.
+# ─────────────────────────────────────────────────────────────────────────────
+
+version: "2.0"
+
+# §1.1 of the implementation plan. false = one row per bid, in its primary lane
+# only (secondary niches recorded in a column). true = the criteria doc's §5
+# behaviour, an OWNER row plus a CROSS-LISTED row in every secondary lane.
+cross_listing: false
+
+# ── Scoring weights (criteria doc §3) ────────────────────────────────────────
+scoring:
+  code:                     # §3.1 — C, max 45
+    tier_a: 45
+    tier_b: 34
+    tier_c: 22
+    prefix6_of_tier_a: 22
+    other_niche_tier_a: 10  # requires this niche's title or scope to fire
+    absent: 15              # the load-bearing neutral rule
+    unrelated: 0
+    max: 45
+  title:                    # §3.2 — T, max 25
+    core_first: 17
+    core_additional: 4      # a second distinct core term, once only
+    high_intent_modifier: 4
+    umbrella_only: 10       # also sets deep_read_required
+    max: 25
+  scope:                    # §3.3 — S, max 30
+    # Base by count of distinct niche terms (core + supporting); index 4 covers
+    # "4 or more".
+    base_by_distinct: [0, 8, 15, 22, 26]
+    deliverable_bonus: 6
+    max: 30
+
+# ── Thresholds (criteria doc §4, §5) ─────────────────────────────────────────
+thresholds:
+  niche_match: 40           # below this, the niche did not match
+  secondary_min: 55         # a secondary lane needs at least this
+  secondary_max_gap: 20     # ...and must be within this of the primary
+  contested_gap: 8          # primary - runner-up <= this marks it contested
+  strength:
+    strong: 75
+    probable: 55
+    possible: 40
+
+# §3.2 — +4 on the title score when any of these accompany a core term.
+high_intent_modifiers:
+  - services
+  - service
+  - development
+  - develop
+  - redesign
+  - design services
+  - campaign
+  - repair
+  - maintenance
+  - support
+  - implementation
+  - production
+  - consulting
+  - solutions
+
+# §5.1 — N6 hard override. Any of these in title or scope takes the primary
+# slot outright, even when another niche scores higher. An electronics scope
+# filed under Software is the most damaging error this engine can make.
+routing:
+  hard_primary_override:
+    niche: N6
+    terms:
+      - pcb
+      - pcba
+      - printed circuit board
+      - circuit board
+      - controller board
+      - schematic
+      - schematic capture
+      - gerber
+      - solder
+      - soldering
+      - reflow
+      - bga
+      - smd
+      - smt
+      - through-hole
+      - vfd
+      - firmware flashing
+      - board repair
+      - board-level repair
+      - component-level repair
+      - reverse engineering board
+
+# ── Tie-breaks (criteria doc §6) ─────────────────────────────────────────────
+# Applied when the top two niches are within `contested_gap`, before contested
+# marking. `prefer_a` / `prefer_b` name the pair's two sides; whichever side has
+# more distinct hits takes the primary slot. `codes_force_b` overrides both.
+# `contested_when_tied` leaves the score order alone and flags it for a human
+# rather than guessing — used where no keyword list can resolve the question.
+tie_breaks:
+  N1|N2:
+    # Deliverable is assets → N1. Deliverable is audience outcome → N2.
+    prefer_a: [logo, logotype, layout, template, brand standards, style guide, artwork, illustration, typography]
+    prefer_b: [reach, impressions, media buy, media placement, campaign management, audience, targeting, click-through, engagement rate]
+  N1|N3:
+    # File creation → N1. Quantities, stock, trim, binding, delivery → N3.
+    prefer_a: [design, layout, artwork, concept, mockup]
+    prefer_b: [quantity, quantities, paper stock, trim size, bindery, binding, saddle stitch, perfect bound, press run, delivery locations, impressions per, cover stock]
+  N2|N3:
+    prefer_a: [targeting, strategy, media plan, audience, campaign]
+    prefer_b: [print and mail, direct mail quantity, mailing list, postage, fulfilment, fulfillment, press run]
+  N1|N4:
+    # Working system → N4. Mockups / wireframes / style guide only → N1.
+    prefer_a: [mockup, wireframe, style guide, comps, visual concept]
+    prefer_b: [build, deploy, implementation, database, api, hosting, integration, source code]
+  N4|N5:
+    prefer_a: [crud, portal, forms, workflow, content management, cms, web application, user interface]
+    prefer_b: [model, model training, inference, llm, large language model, prediction, classification, nlp, natural language processing, computer vision, machine learning]
+    # §6 "AI-powered portal → N4 if the portal is the deliverable, N5 if the
+    # model is" cannot be settled by keyword lists. When both sides fire and
+    # neither dominates, flag rather than guess.
+    contested_when_tied: true
+    # §6 BI rule — fully deterministic: BI/analytics codes force N5.
+    codes_force_b: ["43232314", "80101508"]
+
+# ── The six niches ───────────────────────────────────────────────────────────
+niches:
+  N1:
+    label: "Graphic Design & Creative Services"
+    sheet: "N1 Graphic Design"
+    order: 1
+    codes:
+      tier_a:
+        - {code: "82141501", title: "Layout or graphics editing services", source: seed_from_existing_catalogue}
+        - {code: "82141502", title: "Art design or graphics", source: seed_from_existing_catalogue}
+        - {code: "82141600", title: "Graphic display services", source: seed_from_existing_catalogue}
+      tier_b:
+        - {code: "82121501", title: "Planning or layout of graphic production", source: seed_from_existing_catalogue}
+        - {code: "82141500", title: "Graphic design", source: candidate_requires_validation}
+      tier_c:
+        - {code: "82101500", title: "Commercial art", source: candidate_requires_validation}
+    core_terms:
+      - graphic design
+      - creative services
+      - branding
+      - brand identity
+      - visual identity
+      - visual communications
+      - publication design
+      - exhibit design
+      - illustration
+      - infographic
+      - logo design
+      - art direction
+      - presentation design
+      - signage design
+    supporting_terms:
+      - layout
+      - typography
+      - artwork
+      - brand standards
+      - style guide
+      - annual report
+      - poster
+      - brochure design
+      - template
+      - creative concept
+      - photography
+      - video production
+    umbrella_terms:
+      - creative support
+      - communications support
+      - professional services
+    exclusion_terms:
+      - landscape design
+      - instructional design
+      - engineering design
+      - interior design
+      - architectural design
+      - design-build
+      - curriculum design
+    deliverables:
+      - brand standards manual
+      - style guide
+      - logo files
+      - vector artwork
+      - print-ready artwork
+      - design comps
+      - mockup
+    stem_map:
+      design: [designs, designing, designed]
+      branding: [brand, brands, branded]
+      illustration: [illustrations, illustrator]
+
+  N2:
+    label: "Digital Marketing, Advertising & Outreach"
+    sheet: "N2 Digital Marketing"
+    order: 2
+    codes:
+      tier_a:
+        - {code: "80171600", title: "Publicity and marketing support services", source: seed_from_existing_catalogue}
+        - {code: "80171602", title: "Online and social media publicity service", source: seed_from_existing_catalogue}
+        - {code: "80171604", title: "Public information campaign service", source: seed_from_existing_catalogue}
+        - {code: "82101800", title: "Advertising agency services", source: seed_from_existing_catalogue}
+      tier_b:
+        - {code: "80171603", title: "Publicity and marketing advisory service", source: seed_from_existing_catalogue}
+        - {code: "82101603", title: "Internet advertising", source: seed_from_existing_catalogue}
+        - {code: "82101801", title: "Advertising campaign services", source: seed_from_existing_catalogue}
+        - {code: "82101900", title: "Media placement and fulfillment", source: seed_from_existing_catalogue}
+      tier_c:
+        - {code: "80170000", title: "Marketing and distribution", source: candidate_requires_validation}
+    core_terms:
+      - digital marketing
+      - advertising
+      - social media
+      - public relations
+      - strategic communications
+      - community outreach
+      - public information
+      - media buying
+      - media planning
+      - media placement
+      - search engine optimization
+      - seo
+      - paid media
+      - content marketing
+      - email marketing
+      - campaign management
+      - marketing campaign
+      - outreach campaign
+    supporting_terms:
+      - impressions
+      - reach
+      - audience
+      - targeting
+      - engagement
+      - influencer
+      - press release
+      - newsletter
+      - analytics reporting
+      - ad placement
+      - creative testing
+    umbrella_terms:
+      - communications support
+      - outreach support
+      - professional services
+    exclusion_terms:
+      # MFMP boilerplate. Every advertisement's description opens with
+      # "Advertisement Number: …" and its begin/end date lines, so without these
+      # the `advertisement` stem of `advertising` fires on all six niches' worth
+      # of ads and inflates N2's scope score on every single record.
+      - advertisement number
+      - advertisement begin date
+      - advertisement end date
+      - original single source advertisement
+      - legal advertising
+      - legal notice advertising
+      - classified advertising notice
+      - help wanted advertising
+      - recruitment advertising
+    deliverables:
+      - media plan
+      - campaign plan
+      - communications plan
+      - editorial calendar
+      - analytics dashboard
+      - creative brief
+    stem_map:
+      advertising: [advertisement, advertisements, advertise, ads]
+      campaign: [campaigns]
+      marketing: [market, markets]
+
+  N3:
+    label: "Printing & Print Production"
+    sheet: "N3 Printing"
+    order: 3
+    codes:
+      tier_a:
+        - {code: "82121500", title: "Printing", source: seed_from_existing_catalogue}
+        - {code: "82121503", title: "Digital printing", source: seed_from_existing_catalogue}
+        - {code: "82121506", title: "Publication printing", source: seed_from_existing_catalogue}
+      tier_b:
+        - {code: "82121505", title: "Promotional or advertising printing", source: seed_from_existing_catalogue}
+        - {code: "82121507", title: "Stationery or business form printing", source: seed_from_existing_catalogue}
+      tier_c:
+        - {code: "82121700", title: "Photocopying", source: seed_from_existing_catalogue}
+    core_terms:
+      - printing
+      - commercial printing
+      - offset printing
+      - digital printing
+      - publication printing
+      - print production
+      - direct mail
+      - large format printing
+      - wide format printing
+      - bindery
+      - print fulfillment
+      - print fulfilment
+    supporting_terms:
+      - brochure
+      - booklet
+      - postcard
+      - banner
+      - poster printing
+      - envelope
+      - letterhead
+      - paper stock
+      - trim size
+      - saddle stitch
+      - perfect bound
+      - press run
+      - collating
+      - laminating
+      - mailing
+      - postage
+    umbrella_terms:
+      - production services
+      - professional services
+    exclusion_terms:
+      - 3d printing
+      - three-dimensional printing
+      - managed print services
+      - print management services
+      - printer maintenance
+      - printer cartridge
+      - printer toner
+      - fingerprinting
+      - blueprint
+    deliverables:
+      - press-ready pdf
+      - print-ready pdf
+      - proof
+      - press proof
+      - printed copies
+      - bound copies
+    stem_map:
+      printing: [print, prints, printed]
+      binding: [bindery, bound]
+
+  N4:
+    label: "Software, Web & UI/UX Development"
+    sheet: "N4 Software & Web"
+    order: 4
+    codes:
+      tier_a:
+        - {code: "81111504", title: "Application programming services", source: seed_from_existing_catalogue}
+        - {code: "81111509", title: "Internet or intranet client application development services", source: seed_from_existing_catalogue}
+        - {code: "81112103", title: "World Wide Web site design services", source: seed_from_existing_catalogue}
+      tier_b:
+        - {code: "81111500", title: "Software or hardware engineering", source: seed_from_existing_catalogue}
+        - {code: "81111503", title: "Systems integration design", source: seed_from_existing_catalogue}
+        - {code: "81111508", title: "Application implementation services", source: seed_from_existing_catalogue}
+        - {code: "81111510", title: "Internet or intranet server application development services", source: seed_from_existing_catalogue}
+      tier_c:
+        - {code: "43232400", title: "Development software", source: seed_from_existing_catalogue}
+        - {code: "81111705", title: "Systems architecture", source: seed_from_existing_catalogue}
+    core_terms:
+      - software development
+      - application development
+      - web development
+      - website development
+      - website redesign
+      - web application
+      - portal development
+      - systems integration
+      - mobile application
+      - ui/ux
+      - user interface design
+      - user experience design
+      - custom application
+      - software engineering
+      - api integration
+      - content management system
+      - quality assurance testing
+    supporting_terms:
+      - database
+      - api
+      - hosting
+      - cloud platform
+      - saas
+      - responsive design
+      - accessibility remediation
+      - wcag
+      - source code
+      - deployment
+      - workflow
+      - forms
+      - single sign-on
+      - migration
+    umbrella_terms:
+      - system modernization
+      - modernization
+      - it services
+      - professional services
+    exclusion_terms:
+      - software license renewal
+      - software maintenance renewal
+      - off-the-shelf software purchase
+      - hardware maintenance
+      - printer supplies
+      - website hosting only
+    deliverables:
+      - wireframe
+      - wireframes
+      - prototype
+      - source code
+      - technical specification
+      - test plan
+      - user acceptance testing
+      - sitemap
+    stem_map:
+      development: [develop, develops, developed, developing]
+      integration: [integrate, integrates, integrated]
+
+  N5:
+    label: "AI, Data & Automation"
+    sheet: "N5 AI & Data"
+    order: 5
+    codes:
+      tier_a:
+        - {code: "43232314", title: "Business intelligence and data analysis software", source: seed_from_existing_catalogue}
+        - {code: "80101508", title: "Business intelligence consulting service", source: candidate_requires_validation}
+      tier_b:
+        - {code: "43232403", title: "Enterprise application integration software", source: seed_from_existing_catalogue}
+        - {code: "43232701", title: "Application server software", source: seed_from_existing_catalogue}
+      tier_c:
+        - {code: "81111705", title: "Systems architecture", source: seed_from_existing_catalogue}
+    core_terms:
+      - artificial intelligence
+      - generative ai
+      - large language model
+      - llm
+      - machine learning
+      - predictive analytics
+      - natural language processing
+      - nlp
+      - chatbot
+      - virtual assistant
+      - computer vision
+      - intelligent automation
+      - robotic process automation
+      - rpa
+      - document processing
+      - business intelligence
+      - data platform
+      - data warehouse
+      - data pipeline
+    supporting_terms:
+      - model training
+      - inference
+      - classification
+      - prediction
+      - training data
+      - dataset
+      - etl
+      - data lake
+      - dashboard
+      - data visualization
+      - anomaly detection
+      - optical character recognition
+      - ocr
+    umbrella_terms:
+      - data services
+      - automation
+      - professional services
+    exclusion_terms:
+      - data entry
+      - data entry services
+      - data center
+      - data cabling
+      - records retention
+      - data plan
+    deliverables:
+      - trained model
+      - model documentation
+      - data dictionary
+      - analytics dashboard
+      - data pipeline
+      - evaluation report
+    stem_map:
+      automation: [automate, automates, automated, automating]
+      analytics: [analytic, analysis]
+
+  N6:
+    label: "PCB & Electronics Engineering Services"
+    sheet: "N6 PCB & Electronics"
+    order: 6
+    # The criteria doc warns N6 code coverage is weak — the source document is
+    # keyword-only. Everything here is unverified and N6 leans on keywords.
+    codes:
+      tier_a: []
+      tier_b:
+        - {code: "32101500", title: "Printed circuit boards", source: candidate_requires_validation}
+        - {code: "32101600", title: "Circuit assemblies and radio frequency components", source: candidate_requires_validation}
+      tier_c:
+        - {code: "81101700", title: "Electrical and electronic engineering", source: candidate_requires_validation}
+        - {code: "23153100", title: "Electronic manufacturing machinery", source: candidate_requires_validation}
+    core_terms:
+      - pcb design
+      - printed circuit board
+      - circuit board
+      - pcb layout
+      - schematic capture
+      - schematic design
+      - electronics engineering
+      - electronic design
+      - board bring-up
+      - failure analysis
+      - reverse engineering
+      - prototyping
+      - firmware
+      - embedded system
+      - board repair
+      - component-level repair
+    supporting_terms:
+      - gerber
+      - solder
+      - soldering
+      - reflow
+      - bga
+      - smd
+      - smt
+      - through-hole
+      - bill of materials
+      - bom
+      - altium
+      - kicad
+      - eagle cad
+      - oscilloscope
+      - controller board
+      - vfd
+      - power supply board
+    umbrella_terms:
+      - engineering services
+      - technical services
+      - professional services
+    exclusion_terms:
+      - building electrical
+      - electrical contractor
+      - electrical contracting
+      - electrical wiring
+      - electrical panel upgrade
+      - electrical maintenance building
+      - licensed electrician
+    deliverables:
+      - gerber files
+      - prototype board
+      - bill of materials
+      - schematic drawings
+      - assembly drawings
+      - test report
+    stem_map:
+      repair: [repairs, repairing, repaired]
+      prototyping: [prototype, prototypes]

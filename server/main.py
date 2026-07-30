@@ -11,6 +11,7 @@ from app.scrapers.caleprocure.router import router as caleprocure_router
 from app.scrapers.emma.router import router as emma_router
 from app.scrapers.evalconfig.router import router as evalconfig_router
 from app.scrapers.myflorida.router import router as myflorida_router
+from app.scrapers.myflorida.sweep.router import router as myflorida_sweep_router
 from app.scrapers.naics.router import router as naics_router
 from app.scrapers.northdakota.router import router as northdakota_router
 from app.scrapers.ridemetro.router import router as ridemetro_router
@@ -47,6 +48,7 @@ app.add_middleware(
 )
 
 app.include_router(myflorida_router)
+app.include_router(myflorida_sweep_router)
 app.include_router(ridemetro_router)
 app.include_router(bidnet_router)
 app.include_router(wisconsin_router)

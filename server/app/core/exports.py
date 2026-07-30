@@ -31,12 +31,22 @@ DOC_PORTALS = {"myflorida", "bidnet", "northdakota"}
 # ZIP adds a folder to unpack for no gain. SAM downloads each bid's attachments
 # only to extract their text for the evaluator, then deletes them — the sheet is
 # the entire deliverable. These runs are archived and delivered as a bare .xlsx.
-EXCEL_ONLY_PORTALS = {"sam"}
+# The MyFlorida sweep is the same shape: it downloads each ad's attachments only
+# to extract their text for the classifier, then deletes them.
+EXCEL_ONLY_PORTALS = {"sam", "myflorida_sweep"}
 
 # Portals whose export module can rebuild the run's Excel from the DB via
 # `generate_excel(run_id, path)`. MyFlorida is absent on purpose: its workbook
 # is downloaded from the portal itself and merged on disk (run["excel_path"]).
-_GENERATOR_PORTALS = {"septa", "wisconsin", "ridemetro", "northdakota", "sam", "unison", "bidnet"}
+_GENERATOR_PORTALS = {
+    "septa", "wisconsin", "ridemetro", "northdakota", "sam", "unison", "bidnet",
+    "myflorida_sweep",
+}
+
+# Where a portal's export module lives, when it is not `app.scrapers.<key>`.
+# The MyFlorida sweep is a sub-package of the portal it belongs to, so its key
+# does not spell its import path.
+_EXPORT_MODULES = {"myflorida_sweep": "app.scrapers.myflorida.sweep.export"}
 
 
 def _excel_name(run: dict[str, Any]) -> str:
@@ -52,6 +62,7 @@ def _excel_name(run: dict[str, Any]) -> str:
         "ridemetro": f"RideMetro_Bids ({run.get('label') or run['run_id']})",
         "northdakota": f"NorthDakota_({search or 'all public solicitations'})",
         "bidnet": f"Bidnetdirect_({search or 'all solicitations'})",
+        "myflorida_sweep": f"MyFlorida_Sweep_({search or 'all statuses'})",
     }.get(scraper, f"{scraper}_{run['run_id']}")
     return sanitize_filename(label, max_length=150) + ".xlsx"
 
@@ -66,7 +77,9 @@ def excel_bytes(run: dict[str, Any]) -> tuple[bytes, str] | None:
     scraper = run.get("scraper")
     if scraper in _GENERATOR_PORTALS:
         try:
-            module = importlib.import_module(f"app.scrapers.{scraper}.export")
+            module = importlib.import_module(
+                _EXPORT_MODULES.get(scraper, f"app.scrapers.{scraper}.export")
+            )
             with tempfile.TemporaryDirectory() as tmp:
                 out = Path(tmp) / "export.xlsx"
                 module.generate_excel(run["run_id"], out)

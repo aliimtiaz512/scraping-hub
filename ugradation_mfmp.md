@@ -1,311 +1,367 @@
-# MFMP Upgrade — Proposal: Ad-Status Sweep + Niche Evaluation Wall
+# MFMP Upgrade — Proposal: Ad-Status Sweep + Niche Classification Engine
 
-**Revision 2** — updated after your review. Both blockers from revision 1 are resolved by the HTML you supplied, and your decisions are folded in.
+**Revision 3** — aligned to `MFMP_Niche_Classification_Criteria.md` v2.0.
 
 **Status:** proposal only. No code has been changed. Nothing is implemented until you give the go-ahead.
 
-**Scope guarantee:** the existing niche flow (commodity-code search and keyword search) is not modified. Every line of current behaviour in `server/app/scrapers/myflorida/scraper.py`, `router.py`, `ingest.py`, `workbook.py` and `commodity_codes.py` keeps working exactly as it does today. See [§10 Isolation guarantee](#10-isolation-guarantee).
+**Scope guarantee:** the existing niche flow (commodity-code search and keyword search) is not modified. Every line of current behaviour in `server/app/scrapers/myflorida/scraper.py`, `router.py`, `ingest.py`, `workbook.py` and `commodity_codes.py` keeps working exactly as it does today. See [§11 Isolation guarantee](#11-isolation-guarantee).
 
 ---
 
-## 1. What you asked for
+## 0. Read this first — three things block the build
 
-A second, independent way to run MyFlorida:
+| # | Item | Why it blocks |
+|---|---|---|
+| **1** | **Cross-listing contradicts your earlier instruction** | The criteria doc §5 puts a bid in its primary lane **and** every secondary lane. You told me: *"make sure the bid will come in only one niche sheet no duplicate need in it."* These cannot both be true. §1.1 below. |
+| **2** | **`mfmp_niches.yaml` does not exist** | The criteria doc calls it "single source of truth for code" and §9.2 forbids putting any lexicon, code, weight or threshold in Python. Every term list, code tier, weight and threshold lives in a file that is not in the repo. Nothing can be scored without it. §3. |
+| **3** | **The MFMP Commodity Code v20 Public workbook does not exist here** | §9.6 requires validating codes against it at startup, demoting unvalidated `candidate_requires_validation` codes to Tier C. Not in the repo. §4.3. |
+
+Everything else in this document is settled and ready to build.
+
+---
+
+## 1. What changed in this revision
+
+The criteria doc replaces my strawman scoring model wholesale. Three of your earlier decisions are **confirmed** by it, one is **contradicted**.
+
+| Your earlier decision | Criteria doc | Status |
+|---|---|---|
+| No Ollama / LLM | Deterministic scoring throughout | ✅ agree |
+| No PURSUE/REJECT | §0: "does not decide whether a bid is worth responding to" | ✅ agree |
+| No kill-words | §0: "No bid is rejected, filtered or dropped" | ✅ agree |
+| **One sheet per bid, no duplicates** | **§5: cross-listed into every secondary lane** | ❌ **conflict** |
+
+Superseded from revision 2: my `CONFIDENCE_THRESHOLD = 2.0` strawman, the `strong`/`weak` term shape, the Python `NICHES` dict, and five niches. The real model is C+T+S scoring to 100 with a threshold of 40, six niches, and YAML-driven configuration.
+
+### 1.1 The cross-listing conflict — I need your call
+
+Criteria doc §5:
+
+> The bid appears **once** in its primary niche lane, `role = OWNER`. It appears in each secondary lane as `role = CROSS-LISTED` … A website redesign with branding genuinely belongs in both N4 and N1.
+
+Your instruction to me: *"make sure the bid will come in only one niche sheet no duplicate need in it."*
+
+Three ways to resolve it:
+
+| Option | Behaviour | Trade-off |
+|---|---|---|
+| **A. Your instruction wins** | One row, primary lane only. `Secondary Niches` becomes a *column* recording what it would have been cross-listed to. | No duplicate rows. Someone working only the N1 sheet never sees the N4-primary website-redesign job that also needed branding. |
+| **B. The criteria doc wins** | OWNER row in primary, CROSS-LISTED row in each secondary lane. | Matches the spec exactly. The same ad appears on 2–3 sheets, which is what you said you didn't want. |
+| **C. Both, switchable** | Build option A's behaviour, with a `cross_listing: false` flag in the YAML that turns on B. | Slightly more code. Decide later with real output in front of you. |
+
+**My recommendation: C.** The disagreement is genuinely hard to settle in the abstract — it depends on whether your reviewers work per-lane or scan the whole workbook, which one real run will show you. C costs little and makes the decision reversible. If you want a straight answer instead: **A**, because you stated it directly and recently, and the `Secondary Niches` column preserves the information without duplicating rows.
+
+### 1.2 A related inconsistency inside the criteria doc
+
+§9.4 states the invariant:
+
+> `classified_count == sum(bids per niche lane) + count(OTHER)`
+
+That invariant **only holds if lanes count OWNER rows only**. With cross-listing on, a bid that is OWNER in N4 and CROSS-LISTED in N1 contributes 2 to `sum(bids per niche lane)` and 1 to `classified_count`, so the equality breaks on any run with a single cross-listed bid.
+
+So either the invariant means OWNER rows, or it contradicts §5. Worth settling when you answer §1.1, since the implementation asserts this invariant on every run.
+
+---
+
+## 2. What you asked for (unchanged)
 
 1. Log in → Advertisements → Advanced Search. *(identical to today)*
-2. Set **one** filter only: **Ad Status**, chosen from Preview / Open / Closed / Withdrawn. No commodity codes, no keyword, no ad type.
-3. Search, and take **all** returned records across **all pages**.
-4. Scrape the same fields, open each bid, download its documents. *(identical to today)*
-5. **New:** instead of keeping documents in folders, run them through an evaluation wall like SAM's — extract text from every document, then evaluate on **title + description + document text**.
-6. **New:** one Excel workbook, **one sheet per niche**, plus a sheet named **Other** for bids matching no niche.
+2. Set **one** filter: **Ad Status** — Preview / Open / Closed / Withdrawn.
+3. Search, take **all** records across **all pages**.
+4. Open each bid, download its documents.
+5. Extract document text; classify on commodity code + title + scope.
+6. One workbook, one sheet per niche, plus **Other**.
 
-### Your decisions, recorded
+Both revision-1 blockers stay resolved by the HTML you supplied — the `mat-paginator-navigation-next` button (§5.1) and `#mainSection` (§5.2).
 
-| Decision | Setting |
+---
+
+## 3. Configuration: `mfmp_niches.yaml`
+
+Criteria doc §9.2 is unambiguous:
+
+> **No lexicon, code, weight or threshold in Python.** All of it lives in `mfmp_niches.yaml`. Adding a seventh niche must be a YAML edit and nothing else.
+
+That is stricter than my revision-2 plan, which put a Python dict in `sweep/niches.py`. **It also means the point tables themselves are data** — the 45/25/30 weights, the 40/55/75 bands, and every row of the §3.1–3.3 scoring tables. The Python side becomes a loader plus a pure scoring function that reads its constants from the file.
+
+The file does not exist. To score anything, it needs to carry:
+
+**Per niche (N1–N6):**
+
+| Key | Feeds | Notes |
+|---|---|---|
+| `label`, `sheet`, `order` | routing, workbook | see §8.1 on sheet names |
+| `codes.tier_a` / `tier_b` / `tier_c` | C (45 / 34 / 22) | UNSPSC codes |
+| `codes[].source` | §9.6 validation | `candidate_requires_validation` demotes to Tier C if unvalidated |
+| `core_terms` | T (17, +4 for a second) and S | |
+| `supporting_terms` | S only | |
+| `umbrella_terms` | T (10 + `deep_read_required`) | |
+| `exclusion_terms` | suppression (§2.1) | cancel a match, never subtract |
+| `stem_map` | matching | |
+| `deliverables` | S (+6) | Gerber files, wireframes, press-ready PDF, media plan, … |
+
+**Global:**
+
+| Key | Feeds |
 |---|---|
-| Ollama / LLM in v1 | **No.** Deterministic scoring only. |
-| A bid on multiple sheets | **No.** Exactly one sheet per bid, no duplication. |
-| PURSUE / REJECT verdict | **Not wanted.** Classification only. |
-| Niche source | **Fresh niches from you.** Do *not* reuse `commodity_codes.py`. |
-| Kill-words | **None.** Every bid gets classified. |
+| `high_intent_modifiers` | T (+4) — `services`, `development`, `redesign`, `campaign`, `repair`, … |
+| `scoring.*` | every point value and cap in §3.1–3.3 |
+| `thresholds` | 40 match, 55 secondary, 20 secondary gap, 8 contested, 75/55/40 strength bands |
+| `routing.hard_primary_override` | N6 override vocabulary (§5.1) — `pcb`, `circuit board`, `schematic`, `gerber`, `solder`, `controller board`, `vfd`, `bga`, `smd`, … |
+| `tie_breaks` | §7 below |
+| `cross_listing` | §1.1 option C, if you take it |
+
+I can draft this file from the criteria doc's prose as a starting point for you to correct — the doc names enough terms to seed it. **Say if you want that**; otherwise I wait for yours.
 
 ---
 
-## 2. Both revision-1 blockers are resolved
+## 4. The scoring model, and what the arithmetic implies
 
-### 2.1 Pagination exists — the 100-record cap is not a cap
+`niche_score = C + T + S`, max 100, threshold 40. I worked through the number ranges; four consequences are worth knowing before the lexicons are written, because they change what the pipeline must get right.
 
-Revision 1 called the missing paginator the plan's biggest risk. You checked manually and found the control. From the HTML you sent:
+### 4.1 For uncoded ads, scope text is load-bearing — not optional
 
-```html
-<button mat-icon-button type="button"
-        class="mat-focus-indicator mat-tooltip-trigger mat-paginator-navigation-next
-               mat-icon-button mat-button-base"
-        aria-label="Next page">
-```
+The neutral-15 rule (no code published → C = 15) interacts with the threshold like this:
 
-That is a standard Angular Material paginator. **This removes the truncation problem entirely** — no date slicing, no ad-type looping, no accepting an incomplete workbook. A sweep can walk the full result set. Options A/B/C from revision 1 are withdrawn.
+| Situation | C | T | S | Total | Classified? |
+|---|---|---|---|---|---|
+| Uncoded, one core title term | 15 | 17 | 0 | **32** | ✗ below 40 |
+| Uncoded, one core term + modifier | 15 | 21 | 0 | **36** | ✗ below 40 |
+| Uncoded, perfect title, no scope | 15 | 25 | 0 | **40** | ✓ exactly at threshold |
+| Uncoded, one core term + one scope term | 15 | 17 | 8 | **40** | ✓ exactly at threshold |
 
-Two properties of Material's paginator the implementation leans on:
+An uncoded ad with a single core term in its title **does not classify on the title alone**. It needs scope evidence to cross 40.
 
-- **The next button carries `disabled` and the class `mat-button-disabled` on the last page.** That is the loop's terminating condition — no guessing.
-- **A sibling `.mat-paginator-range-label` normally reads `"1 – 100 of 4523"`.** If present, that gives a true total up front, which is far more reliable than the current spinner heuristic and lets the UI show real progress ("page 3 of 46"). You sent only the button, so I have not confirmed the label — Phase 0 checks it. The loop does not depend on it.
+This is the strongest possible argument for the `#mainSection` extraction and the attachment-text pipeline. If scope text were dropped to save runtime, every uncoded single-term ad would fall into Other, and the criteria doc notes uncoded ads are "a large share" of MFMP. **Recall depends on the document pipeline working.**
 
-**Selector plan** — anchored on `aria-label` and the paginator class, never on `_ngcontent-foe-c285`, which is a per-build Angular attribute that changes on every portal deploy:
+### 4.2 An uncoded ad can never be STRONG
 
-```python
-"paginator_next":  (By.CSS_SELECTOR, "button.mat-paginator-navigation-next"),
-"paginator_range": (By.CSS_SELECTOR, ".mat-paginator-range-label"),
-```
+Max uncoded score = 15 + 25 + 30 = **70**, and STRONG starts at 75. So no ad without a commodity code can ever be labelled STRONG.
 
-**Pattern to follow:** `server/app/scrapers/wisconsin/scraper.py:313-325` already does exactly this job against a comparable Angular/PeopleSoft grid — a range-indicator read, a `_go_next_page()`, a `MAX_PAGES` safety cap, and a stall detector that breaks when the range stops advancing. I'll mirror that structure rather than invent a new one. Nothing else in this codebase handles pagination, so this is the one prior art worth copying.
+That is consistent with §4's own definition — "Code and text agree" — so I read it as intentional rather than a defect. Flagging it because it means **match-strength distributions will look pessimistic** if MFMP ads are mostly uncoded: a large PROBABLE band and an empty-ish STRONG band would be the model working correctly, not a tuning failure. Worth knowing before you read the first run's output.
 
-#### The one new problem pagination introduces
+### 4.3 A Tier A code classifies a bid with zero text support
 
-Today's `process_bid` opens a bid and returns to the results list with `driver.back()` (`scraper.py:544`). It also finds each bid's link by visible text — `(By.LINK_TEXT, number)` at `scraper.py:517` — because the Number cell has **no href**, only a JS click handler (`scraper.py:508-510`).
+C = 45 alone clears the 40 threshold. An ad whose published code is Tier A for N3 lands in N3 even if its title and scope produce nothing.
 
-Material's paginator keeps its page index **in component memory, not in the URL**. So after opening a bid from page 4 and calling `back()`, the grid may well re-render at **page 1** — and every remaining bid on page 4 becomes unreachable by link text. Silently: the run would just skip them.
+The doc's design handles this well: 45 falls in the **POSSIBLE** band (40–54), so such a bid is explicitly marked as thin evidence rather than presented as a confident match. No change needed — noting it so the POSSIBLE band's population makes sense when you see it.
 
-Three ways to handle it, in the order I'd try them:
+The real exposure is that **45 of 100 points ride on code quality**, which makes §9.6's validation step and the missing v20 workbook (§0 item 3) more load-bearing than a startup check usually is.
 
-1. **Capture the detail URL and navigate directly.** `process_bid` already waits for `"/detail/" in current_url` (`scraper.py:520`), so a real addressable URL exists *once you are on the page*. If that URL is stable and reachable by direct `GET`, the whole problem dissolves: collect all rows across all pages first, then visit each bid by URL with no pagination dance at all. **This is the clean solution** — but it needs the detail route to be directly addressable, which Phase 0 verifies.
-2. **Page-at-a-time with position restore.** Process every bid on page *N*, then after each `back()` read the range label; if the grid reset, click Next until back at page *N*. Correct, but O(pages²) clicks on a large sweep.
-3. **Open each bid in a new browser tab.** Leaves the results grid untouched in the original tab, so no position is ever lost. Costs a tab lifecycle per bid and depends on the JS handler tolerating a middle-click / `window.open`.
+### 4.4 A miscoded ad is scored worse than an uncoded one — worth a decision
 
-**Recommendation: probe for 1, fall back to 2.** I'll design the flow so the bid-visiting step is swappable between the two without restructuring anything else.
+The C table treats three cases differently:
 
-#### Does Export cover all pages?
+| Published code | C |
+|---|---|
+| None at all | **15** (neutral) |
+| Tier A for a *different* niche, and this niche's text fires | **10** |
+| Unrelated to all six niches | **0** |
 
-`export_excel` (`scraper.py:576-593`) is the source of every metadata column in the final workbook — agency, ad type, dates, close date — because the results table itself carries only number and title. **Unknown: does the portal's Export button export the entire result set, or only the visible page?**
+So an ad tagged with, say, a janitorial code whose title reads "Website Redesign Services" scores C = 0 for N4 and needs T + S ≥ 40 — where the *same ad with no code at all* would start from 15.
 
-- If it exports everything → one export per run, as today.
-- If it exports per page → one export per page, merged. `workbook.merge_exports` already merges multiple exports de-duplicated by ad number (it does this for keyword passes today), so the machinery exists either way.
+The tension: the doc's own §3.1 justifies the neutral-15 rule by warning that "agencies classify similar work under different codes." A miscoded ad is precisely that failure mode, and the C = 0 row penalises it rather than treating it as absent information. The C = 10 row covers only codes that are Tier A *for another one of your six niches* — not codes outside your taxonomy entirely, which is the common miscoding case.
 
-Phase 0 answers this with one click.
+**Question for you:** should "unrelated to all six niches" score 15 (no information) instead of 0 (negative evidence)? I have not changed anything — this is your spec and your call. I'm flagging it because it will show up as unexplained Other-lane entries whose titles obviously belong to a niche, and it would be easy to misdiagnose that as a lexicon gap during tuning.
 
-### 2.2 The description — clean selector, confirmed
+### 4.5 Where do commodity codes actually come from?
 
-From the detail-page HTML you sent:
+C is the largest single signal, so its input source is the highest-risk unknown in the whole design. Two candidates, neither confirmed:
 
-```html
-<section _ngcontent-foe-c285="" id="mainSection" padding="">
-  <p><p>Single Source Award to: <strong>APPLE, INC.</strong></p> ... </p>
-</section>
-```
+1. **The portal's Excel export.** `ingest.py:40` already maps candidate headers `commoditycode / commoditycodes / commodity / nigp / unspsc` — **if the export contains such a column.** Unverified.
+2. **Regex over `#mainSection`.** Your sample description carries them in a readable block:
+   ```
+   Commodities:
+   43211500   Computers
+   43233004   Operating System Software
+   ```
+   An `\b\d{8}\b` scan over the description recovers these, plus the trailing title text for auditability.
 
-`#mainSection` is a stable element ID. **No new selector guesswork, and no dependency on the export carrying a description column.** Revision 1's fallback plan is dropped.
+**Plan: use the export column as primary, regex over the description as fallback, and record which source fired** in the `matched_codes` field so a systematic failure is visible rather than silent. If neither yields codes, 45 points of the model goes dark and everything runs through the neutral-15 path — survivable per §4.1, but it makes the lexicons carry the entire load.
 
-Implementation notes from that sample:
-
-- **Selector:** `(By.ID, "mainSection")`, read via `element.text`. The markup nests `<p>` inside `<p>`, which is invalid HTML — the browser re-parses and flattens it, so the live DOM tree does not match the source string. Reading rendered text sidesteps that entirely, and turns `&nbsp;` into ordinary spaces for free.
-- **Ignore `_ngcontent-foe-c285`.** Per-build Angular scoping attribute; it will change without warning.
-- **The description is richer than expected** — your sample carries the ad number, version, begin/end date-times, *and* the UNSPSC commodity codes with their titles (`43211500 Computers`, `43233004 Operating System Software`). Those commodity codes are a strong, structured classification signal, better than prose keyword matching. §6.3 uses them.
-- **Extraction is best-effort.** A missing `#mainSection` records a warning and the bid is evaluated on title plus documents, with the workbook's `Description` column blank so the gap is visible rather than silent.
-
-#### One observation, not a re-litigation
-
-You've decided against kill-words and I'm building it that way. Worth noting factually: the bid you sampled is a Single Source *Intent to Award* notice whose own text says `"THIS IS NOT A COMPETITIVE SOLICITATION OR REQUEST FOR BIDS."` A status sweep with no type filter will pull in a fair number of these — award notices, informational notices, public meeting notices — and they will be classified onto your niche sheets alongside genuine opportunities.
-
-That may be exactly what you want (visibility into who won what is useful intelligence). If it turns out to be noise later, the workbook's `Ad Type` column comes free from the portal export, so filtering or splitting on it is a small change at that point. **No action now.**
+Phase 0 answers this with one export and one bid.
 
 ---
 
-## 3. Where the new module lives
+## 5. Portal mechanics (unchanged from revision 2, condensed)
+
+### 5.1 Pagination
+
+```html
+<button class="… mat-paginator-navigation-next …" aria-label="Next page">
+```
+
+Standard Angular Material paginator. Loop until the next button carries `disabled` / `mat-button-disabled`. A sibling `.mat-paginator-range-label` normally reads `"1 – 100 of 4523"`, giving a true total and real progress reporting — unconfirmed, checked in Phase 0, not depended on.
+
+Selectors anchor on `aria-label` and the Material class, **never** `_ngcontent-foe-c285`, which changes on every portal deploy.
+
+**Prior art:** `server/app/scrapers/wisconsin/scraper.py:313-325` already does exactly this — range read, `_go_next_page()`, `MAX_PAGES` guard, and a stall detector that breaks when the range stops advancing. I'll mirror it rather than invent one. Nothing else in this codebase paginates.
+
+**The problem pagination introduces.** `process_bid` returns to the list with `driver.back()` (`scraper.py:544`) and finds bids by visible link text (`scraper.py:517`), because the Number cell has no href — only a JS handler (`scraper.py:508-510`). Material keeps its page index in component memory, not the URL, so returning from a bid opened on page 4 may re-render at page 1, making the rest of page 4 unreachable. Silently.
+
+Handling, in order of preference:
+
+1. **Capture the detail URL and navigate directly.** `process_bid` already waits on `"/detail/" in current_url`, so a real URL exists once you are there. If it is directly reachable, collect every row across every page first, then visit bids by URL — no pagination dance at all. Phase 0 verifies.
+2. **Page-at-a-time with position restore.** Process page *N*, and after each `back()` re-read the range label, clicking Next to restore position if it reset. Correct, O(pages²) clicks.
+3. **New tab per bid.** Leaves the grid untouched; costs a tab lifecycle per bid.
+
+The bid-visiting step is designed to be swappable between 1 and 2 without restructuring anything else.
+
+**Does Export cover all pages?** Unknown, and it is the source of every metadata column. If per-page, `workbook.merge_exports` already merges multiple exports de-duplicated by ad number. Phase 0 answers it with one click.
+
+### 5.2 Description
+
+`(By.ID, "mainSection")`, read via `element.text`.
+
+The markup nests `<p>` inside `<p>`, which is invalid HTML — the browser re-parses and flattens it, so the live DOM does not match the source string. Reading rendered text sidesteps that and turns `&nbsp;` into ordinary spaces. Best-effort: a missing `#mainSection` records a warning, leaves the `Description` column blank, and the bid is scored on title + documents with S computed from whatever text exists.
+
+---
+
+## 6. Module layout
 
 ```
 server/app/scrapers/myflorida/
-├── scraper.py          ← UNTOUCHED (niche flow)
-├── router.py           ← UNTOUCHED
-├── ingest.py           ← UNTOUCHED
-├── workbook.py         ← UNTOUCHED
-├── commodity_codes.py  ← UNTOUCHED
-└── sweep/              ← NEW — every file below is new
+├── scraper.py, router.py, ingest.py, workbook.py, commodity_codes.py   ← ALL UNTOUCHED
+└── sweep/                          ← NEW
     ├── __init__.py
-    ├── scraper.py      SweepScraper(MFMPScraper) — flow overrides + pagination
-    ├── niches.py       niche catalogue + criteria (YOUR input)
-    ├── evaluator.py    classification engine
-    ├── documents.py    download → extract text → delete
-    ├── workbook.py     multi-sheet writer
-    ├── models.py       mfmp_sweep_bids table
-    ├── export.py       DB persistence + workbook rebuild
-    └── router.py       /myflorida/sweep/* endpoints
+    ├── mfmp_niches.yaml            ← YOUR config; single source of truth (§3)
+    ├── config.py                   YAML loader + startup validation (§9.6)
+    ├── scraper.py                  SweepScraper(MFMPScraper) — overrides + pagination
+    ├── codes.py                    code extraction (export column → description regex)
+    ├── scoring.py                  C / T / S — pure, no constants of its own
+    ├── matching.py                 whole-word, phrase-aware, stem_map, exclusion suppression
+    ├── routing.py                  N6 override, argmax, secondary, contested, tie-breaks
+    ├── documents.py                download → extract text → delete
+    ├── workbook.py                 multi-sheet writer
+    ├── models.py                   mfmp_sweep_bids + mfmp_sweep_scores
+    ├── export.py                   DB persistence + workbook rebuild
+    └── router.py                   /myflorida/sweep/* endpoints
 ```
 
-The run's `scraper` key is **`myflorida_sweep`**, distinct from `myflorida`, keeping run history, downloads and the exports page cleanly separated — and letting the sweep opt into bare-Excel delivery (§8) without touching the niche flow's ZIP.
+Run key: **`myflorida_sweep`**, distinct from `myflorida`.
+
+`scoring.py` holding no constants is what makes §9.2 enforceable rather than aspirational — a weight in Python would be a review-catchable bug, not a style preference.
 
 ---
 
-## 4. Flow
+## 7. Tie-breaks (§6 of the criteria doc)
 
-| # | Step | Source |
+Most are mechanizable from term lists; two are not. Sorting them honestly matters, because a rule that reads as automatic but needs judgment will silently pick wrong.
+
+| Pair | Mechanizable? | How |
 |---|---|---|
-| 1 | Launch Chrome, per-run download staging | `BaseScraper.start_driver` — **reused as-is** |
-| 2 | Log in (3 retries for the stalling login page) | `MFMPScraper.login` — **reused as-is** |
-| 3 | Open Advertisements, wait out the async cards | `MFMPScraper.open_advertisements` — **reused as-is** |
-| 4 | Open Advanced Search, Max Results = 100 | **overridden** — parent's version minus the commodity accordion |
-| 5 | Select Ad Status only | `MFMPScraper.select_ad_status` — **reused as-is** |
-| 6 | Submit; detect results vs. empty | `MFMPScraper.submit_search` — **reused as-is** |
-| 7 | Read rows on the current page | `MFMPScraper.collect_bids` — **reused as-is** |
-| 8 | **Advance to the next page, repeat 7** | **new** — §2.1 |
-| 9 | Export metadata workbook (per run, or per page) | `MFMPScraper.export_excel` — **reused as-is** |
-| 10 | Per bid: open detail, read `#mainSection`, download documents | **overridden** |
-| 11 | Extract document text, then delete the files | **new** |
-| 12 | Evaluate → one niche | **new** |
-| 13 | Write the multi-sheet workbook | **new** |
-| 14 | Persist, archive, email | existing `archive_run` + `notify_scrape_completion` |
+| N1 vs N2 | ✅ | Two term lists: *assets* (logo, layout, template) vs *audience outcome* (reach, impressions, media buy, campaign management) |
+| N1 vs N3 | ✅ | Print-spec vocabulary — quantities, paper stock, trim size, binding, delivery locations. "Quantities dominant" = count of print-spec hits vs design hits |
+| N2 vs N3 | ✅ | Targeting/strategy terms vs print-and-mail quantity terms |
+| N1 vs N4 | ✅ | `deliverables` lists already separate *working system* from *mockups / wireframes / style guide only* |
+| N4 vs N5 | ⚠️ **partly** | Term lists resolve the ordinary case (models/training/inference/LLM/NLP → N5; CRUD/portal/forms/CMS → N4). **"AI-powered portal → N4 if the portal is the deliverable, N5 if the model is" needs semantic judgment no keyword list provides.** |
+| N4 vs N5 (BI) | ✅ | Fully deterministic — dashboard on existing data → N4 *unless* `43232314` or `80101508` is published → N5 |
+| N6 vs any | ✅ | §5.1 hard override, applied before argmax |
 
-**Step 4.** The parent expands the Commodity Codes accordion whenever the run isn't in keyword mode (`scraper.py:248-258`). The sweep wants neither, so it overrides the method — no parent edit.
+**Proposal for the N4/N5 deliverable-ambiguity case:** when both sides fire and neither dominates, do not guess — set `contested = true` and let the primary fall to the higher score. That is exactly what the `contested` flag exists for (§5), and it converts a silent wrong answer into a visible one. The alternative is a heuristic ("whichever noun is closer to the front of the title") that will be wrong often enough to erode trust in the whole lane.
 
-**Step 10.** Keeps the parent's navigation and download loop, adds the `#mainSection` read, and points downloads at a **temporary** per-bid folder under `_evaluation/` rather than a permanent `<ad number>_<title>` folder, since the files are deleted after extraction.
-
-**Max Results stays at 100.** With working pagination, 100/page simply means fewer page loads for the same coverage.
+The tie-break term lists belong in the YAML under `tie_breaks`, per §9.2.
 
 ---
 
-## 5. Text extraction
+## 8. The output workbook
 
-`server/app/scrapers/sam/engine/text_extractor.py` already does this job: `build_full_text(description, docs_folder)` walks a folder, extracts `.pdf` via PyMuPDF and `.docx` via python-docx (with old-binary-`.doc` detection), reads `.txt` directly, skips the rest, and returns one string with each file under a `=== filename ===` heading. It contains nothing SAM-specific.
+### 8.1 Sheet names — four of your six are illegal as written
 
-Two ways to consume it:
+Excel caps sheet names at **31 characters** and forbids `: \ / ? * [ ]`. Checking your six:
 
-- **Import it directly** from `sam/engine/` — zero changes, but MyFlorida now depends on SAM's package layout.
-- **Promote it to `app/core/text_extractor.py`** — a pure file move, SAM keeps working via a re-export.
+| ID | Niche name | Length | Legal? |
+|---|---|---|---|
+| N1 | Graphic Design & Creative Services | 34 | ✗ too long |
+| N2 | Digital Marketing, Advertising & Outreach | 41 | ✗ too long |
+| N3 | Printing & Print Production | 27 | ✓ |
+| N4 | Software, Web & UI/UX Development | 33 | ✗ too long **and contains `/`** |
+| N5 | AI, Data & Automation | 21 | ✓ |
+| N6 | PCB & Electronics Engineering Services | 38 | ✗ too long |
 
-**I recommend the promotion.** A second consumer is the moment shared infrastructure should stop living inside one portal's engine. It touches SAM's import line only, no logic. **Still awaiting your preference** — this is one of two open items in §12.
-
-After extraction the per-bid folder is deleted, matching SAM's pattern (`sam_scraper.py:643`).
-
----
-
-## 6. The evaluation wall
-
-### 6.1 A lesson from SAM worth carrying over
-
-SAM's evaluator classifies **title-primary**, and its source says why (`sam/engine/evaluator.py:832-838`):
-
-> The full document body is a 120K-char dump of FAR boilerplate (which mentions inspection, training, audit, food, R&D, etc. in standard clauses) and must NOT drive Rule B/C matching — doing so falsely re-classifies hardware bids.
-
-The same trap is here. Florida attachments carry standard terms mentioning printing, advertising, design and software in boilerplate. Weighting document text equally with the title would route a meaningful share of bids to the wrong sheet — and the failure is quiet, producing a plausible wrong answer rather than an error.
-
-### 6.2 Weighting
-
-| Source | Weight | Reason |
-|---|---|---|
-| **Title** | highest | states the actual requirement |
-| **Description** (`#mainSection`) | high | real scope, now reliably available |
-| **Commodity codes** in the description | high, and exact | structured, unambiguous — §6.3 |
-| **Document text** | lowest; only terms you mark "strong" | boilerplate-heavy; confirms, never decides alone |
-
-The description is weighted higher here than revision 1 assumed, because `#mainSection` turns out to be genuine scope prose rather than a stray summary field.
-
-### 6.3 Commodity codes as a first-class signal
-
-Your sample description embeds UNSPSC codes with titles:
+Proposed tabs — ID-prefixed so sheet order is self-evident and a reviewer can cite "N4" without ambiguity:
 
 ```
-43211500   Computers
-43233004   Operating System Software
+N1 Graphic Design      N4 Software & Web
+N2 Digital Marketing   N5 AI & Data
+N3 Printing            N6 PCB & Electronics       Other
 ```
 
-A regex over `#mainSection` for 8-digit codes gives an **exact** classification signal — no keyword ambiguity. If your criteria include commodity codes or prefixes per niche, a code hit can short-circuit scoring and assign the niche outright. If your criteria are keyword-only, this becomes a tie-breaker instead. Either way it's cheap and I'll build the extraction; how heavily it counts follows from your criteria.
+All ≤ 20 characters, no illegal characters. **Override these with your own names if you prefer** — they go in the YAML's `sheet` key.
 
-### 6.4 One sheet per bid
+### 8.2 Columns
 
-Per your decision, no duplication. Scoring picks the **single highest-scoring niche**; ties break by your declared niche order. A bid whose best score falls below a **confidence threshold** goes to **Other**.
+The criteria doc §7 defines a 15-field result object and explicitly stops there ("This spec does not define storage"), so the sheet layout is this plan's job. Per niche sheet:
 
-Runners-up are still recorded in an `Other Niches Considered` column — that keeps the routing auditable without duplicating rows, and it's the column that tells you whether the threshold is set right.
-
-### 6.5 Criteria format — what I need from you
-
-Strawman only; send your niches and criteria in whatever form is natural and I'll fit the structure to them.
-
-```python
-NICHES = {
-    "<key>": {
-        "label": "<full name>",
-        "sheet": "<sheet tab name>",        # ≤31 chars — Excel's hard limit
-        "order": 1,                          # sheet order, and tie-break priority
-        "strong": [...],                     # decisive phrases
-        "weak":   [...],                     # supporting terms
-        "exclude": [...],                    # phrases that veto this niche
-        "commodity_codes": [...],            # optional: exact codes or prefixes
-    },
-}
-OTHER_SHEET = "Other"
-CONFIDENCE_THRESHOLD = 2.0                   # tuned in Phase 5
-```
-
-The threshold is the most important knob and cannot be set honestly without one live run's output to look at.
-
----
-
-## 7. The output workbook
-
-One `.xlsx`, sheets in your declared order, `Other` last:
-
-```
-MyFlorida Sweep (open) [run_id].xlsx
-├── <Niche 1>
-├── <Niche 2>
-├── ...
-└── Other
-```
-
-Columns per sheet — the portal's export columns, plus:
-
-| Column | Meaning |
+| Group | Columns |
 |---|---|
-| Niche | this sheet's niche (redundant, but survives copy-paste) |
-| Match Score | the score that placed it here |
-| Matched Criteria | which terms fired, and from where (title / description / documents) |
-| Other Niches Considered | runners-up with scores |
-| Description | the `#mainSection` text (truncated for cell limits) |
-| Documents | filenames processed — the files themselves are gone |
-| Document Text | characters extracted; `0` flags a bid judged on title + description alone |
+| **Identity** (portal export) | Ad Number, Title, Agency, Ad Type, Status, Ad Date, Open Date, Close Date |
+| **This niche's verdict** | Role *(OWNER / CROSS-LISTED, if §1.1 keeps it)*, Match Strength, Score, C, T, S |
+| **Full picture** | N1…N6 Score (6 columns), Primary Niche, Secondary Niches |
+| **Explainability** | Matched Codes *(+ tier + source)*, Matched Keywords *(+ field)*, Deliverables Detected, Suppressed Terms, Flags |
+| **Provenance** | Description *(truncated)*, Documents, Document Text *(chars)* |
 
-`Document Text` matters: a scanned-image PDF yields nothing, and without this column a bid evaluated on a title is indistinguishable from one evaluated on 40 pages of scope.
+The **Other** sheet adds `Other Reason`, `Closest Niche`, `Closest Niche Score`.
 
-**Empty sheets** are still created with headers, so the workbook shape is stable run to run. Say if you'd rather omit them.
+Two deliberate choices:
+
+- **All six scores on every row.** Criteria doc §5.2 wants a threshold change replayable over history without re-fetching. Six columns on every row makes that a spreadsheet filter rather than a re-run.
+- **Per-niche C/T/S only for the sheet's own niche.** The full 6 × C/T/S breakdown is 18 columns and would drown the sheet; it goes to `mfmp_sweep_scores` in the DB, where replay queries actually want it.
+
+`Document Text` = characters extracted. `0` flags a bid judged without attachment evidence — a scanned-image PDF yields nothing, and without this column that is indistinguishable from a bid with 40 pages of scope.
+
+Excel's 32,767-character cell limit forces the Description truncation; the full text lives in the DB.
+
+**Empty sheets** are still written with headers, so the workbook shape is stable run to run.
 
 **Styling** follows SAM's convention (`sam/export.py:30-36`): navy header row, auto-fit widths, illegal control characters stripped.
 
 ---
 
-## 8. Delivery
+## 9. Tuning (criteria doc §8) — a feature this plan does not yet contain
 
-Documents are deleted after extraction, so a sweep run produces **exactly one file** — the same situation as SAM. `myflorida_sweep` joins `EXCEL_ONLY_PORTALS` in `app/core/exports.py`, and the run archives, downloads and emails as a bare `.xlsx` with no ZIP wrapper.
+§8 opens with: *"The lexicons will be wrong on day one. The feedback path is not optional."* It then requires:
 
-The niche flow keeps its ZIP; it still has real document folders to carry.
+1. Human "misclassified" marking, recording the terms that caused it.
+2. Human "promote out of Other", recording the terms that should have fired.
+3. A periodic report: per-niche precision/recall against a human-labelled set; top unmatched terms in promoted bids; top terms in misclassifications; codes seen in postings but absent from the YAML; score distribution in Other by `closest_niche`; codes on ads scoring high on N6 text.
+4. Periodic re-run of the **Closed** search to re-classify historical awards.
+
+That is a **review UI, a human-labels table, and a reporting job** — comparable in size to the classifier itself. My revision-2 plan had none of it, and I am not going to pretend a `Matched Keywords` column satisfies it.
+
+Item 4 is nearly free and aligns neatly: **Closed is one of your four Ad Status options**, so a recall test is just another sweep run with a different status.
+
+**Recommendation: build the classifier first (Phases 0–5), then decide on tuning as a separate piece of work** once you have seen real output and know whether the lexicons need heavy iteration. The DB schema will carry `mfmp_sweep_scores` from day one so no history is lost in the meantime — that is the one thing that would be expensive to retrofit.
+
+**Say if you'd rather have the tuning loop in scope from the start.** It roughly doubles the work.
 
 ---
 
-## 9. API and UI
+## 10. Delivery, API, UI
+
+**Delivery.** Documents are deleted after extraction, so a run produces exactly one file — same as SAM. `myflorida_sweep` joins `EXCEL_ONLY_PORTALS` in `app/core/exports.py`; the run archives, downloads and emails as a bare `.xlsx`. The niche flow keeps its ZIP.
 
 **API** — new router, existing one untouched:
 
 | Endpoint | Purpose |
 |---|---|
-| `GET /myflorida/sweep/niches` | niche catalogue for the UI |
+| `GET /myflorida/sweep/niches` | niche catalogue from the YAML, for the UI |
 | `POST /myflorida/sweep/scrape` | body `{ ad_statuses: ["open"] }`; `?live_preview=` supported |
 | `GET /myflorida/sweep/scrape/status/{run_id}` | poll |
 | `GET /myflorida/sweep/scrape/runs` | history |
 
-**Progress reporting.** With pagination the run has a real denominator. If `.mat-paginator-range-label` is present, `RunStatus` can show `"page 3 of 46 · 218 bids collected"` instead of a bare step name. Falls back to `"page 3"` if the label isn't there.
+**Progress.** With pagination there is a real denominator. If `.mat-paginator-range-label` exists, `RunStatus` shows `"page 3 of 46 · 218 bids collected"`; otherwise `"page 3"`.
 
-**UI placement** — I propose a **third mode inside the existing MyFlorida panel**, beside the current Codes / Keywords toggle: a "Full sweep" mode that hides the niche picker and shows the four Ad Status checkboxes. One console page, one mental model.
-
-The alternative is a separate sidebar tile (`portals.ts`), which is more discoverable but implies MyFlorida is two different sources. **Recommendation: third mode. Still awaiting your preference** — second of the two open items in §12.
+**UI placement.** A **third mode inside the existing MyFlorida panel**, beside Codes / Keywords: "Full sweep", hiding the niche picker and showing the four Ad Status checkboxes. One console page, one mental model. Alternative is a separate sidebar tile, more discoverable but implies MyFlorida is two sources. *Recommendation: third mode. Still awaiting your preference.*
 
 ---
 
-## 10. Isolation guarantee
+## 11. Isolation guarantee
 
-You asked twice not to disturb the existing logic. Concretely:
-
-- **`sweep/scraper.py` subclasses `MFMPScraper` and overrides three methods.** Subclassing adds behaviour without editing the parent, so the existing flow's code path is byte-identical.
-- **No shared mutable state.** Different run key, different DB table, different router, different workbook writer.
-- **The pagination code is new and lives only in the sweep.** The niche flow keeps its single-page assumption untouched — it never reaches 100 results anyway.
-- **One trade-off I'll keep flagging rather than bury:** subclassing means a future fix to `MFMPScraper.login` or `submit_search` affects both flows. Usually a feature — portal fixes land in both — but it is real coupling. Full isolation would mean copying ~300 lines of login and search handling, which then drifts. **I recommend subclassing.**
+- **`sweep/scraper.py` subclasses `MFMPScraper` and overrides three methods.** Subclassing adds behaviour without editing the parent, so the existing code path is byte-identical.
+- **No shared mutable state.** Different run key, different tables, different router, different workbook writer.
+- **Pagination lives only in the sweep.** The niche flow keeps its single-page assumption — it never reaches 100 results anyway.
+- **Trade-off I'll keep flagging rather than bury:** subclassing means a future fix to `MFMPScraper.login` or `submit_search` affects both flows. Usually a feature; still real coupling. Full isolation means copying ~300 lines that then drift. *Recommendation: subclass.*
 
 Pre-existing files that change at all:
 
@@ -313,7 +369,7 @@ Pre-existing files that change at all:
 |---|---|
 | `server/main.py` | one `include_router` line |
 | `server/app/core/exports.py` | add `"myflorida_sweep"` to `EXCEL_ONLY_PORTALS` |
-| `server/app/scrapers/sam/engine/text_extractor.py` | **only if** you pick the §5 promotion — a file move plus a re-export |
+| `server/app/scrapers/sam/engine/text_extractor.py` | **only if** you pick the §12 promotion — a file move plus a re-export |
 | `client/src/lib/runs.ts` | mirror the excel-only set |
 | `client/src/components/MyFloridaPanel.tsx` | the third-mode toggle |
 | `client/src/lib/api.ts` | new client functions |
@@ -322,55 +378,83 @@ Additive only. No existing behaviour altered.
 
 ---
 
-## 11. Build order
+## 12. Text extraction
+
+`server/app/scrapers/sam/engine/text_extractor.py` already does the job: `build_full_text(description, docs_folder)` walks a folder, extracts `.pdf` via PyMuPDF and `.docx` via python-docx (with old-binary-`.doc` detection), reads `.txt`, skips the rest, and returns one string with each file under a `=== filename ===` heading. Nothing in it is SAM-specific.
+
+Either **import it from `sam/engine/`** (zero changes, MyFlorida depends on SAM's layout) or **promote it to `app/core/text_extractor.py`** (pure file move, SAM keeps working via a re-export). *Recommendation: promote — a second consumer is when shared infrastructure should stop living inside one portal's engine.* Still awaiting your preference.
+
+Per-bid folders are deleted after extraction, matching `sam_scraper.py:643`.
+
+---
+
+## 13. Build order
+
+**Status as of revision 3 build:** phases 1–4 are implemented and verified offline.
+Phase 0 (the live probe) and phase 5 (tuning) both need portal access and are
+outstanding. Built on the recommended defaults from §15 — `cross_listing: false`,
+SAM's text extractor imported rather than promoted, third mode in the MyFlorida
+panel, optional bid cap present and defaulting to unlimited. Each is a one-line
+change if you decide differently.
 
 | Phase | Work | Output |
 |---|---|---|
-| **0** | **Probe run** — sweep by status, page through, export, open one bid. Answers: (a) is there a `.mat-paginator-range-label` with a total? (b) is the `/detail/` URL directly addressable (§2.1 option 1)? (c) does Export cover all pages or one? (d) how many records does an Open sweep actually return? | Findings note. **No production code.** |
-| 1 | `niches.py` from your criteria + `evaluator.py` + unit tests over hand-written samples | Classification testable with no browser |
-| 2 | `sweep/scraper.py` pagination loop + `#mainSection` read + `documents.py` | Text per bid, full coverage |
+| **0** | **Probe run** — sweep by status, page through, export, open one bid. Answers: (a) `.mat-paginator-range-label` present with a total? (b) is `/detail/` directly addressable (§5.1 option 1)? (c) does Export cover all pages or one? (d) **does the export carry a commodity-code column (§4.5)?** (e) how many records does an Open sweep return? | Findings note. **No production code.** |
+| **1** | `mfmp_niches.yaml` + loader + `matching.py` + `scoring.py` + `routing.py`, with unit tests over hand-written ads covering every C/T/S row, the N6 override, and each tie-break | Classifier testable with no browser and no portal |
+| 2 | `sweep/scraper.py` pagination + `#mainSection` + `codes.py` + `documents.py` | Full coverage, text and codes per bid |
 | 3 | `sweep/workbook.py` + `export.py` + `models.py` | The multi-sheet workbook |
 | 4 | Router, delivery wiring, UI mode | End-to-end |
-| 5 | Live run, threshold tuning against real output | Tuned |
+| 5 | Live run; tune lexicons and thresholds against real output | Tuned |
+| *(6)* | *Tuning loop per §9 — only if you scope it in* | Review UI, labels table, report |
 
-Phase 0 is cheap and answers four questions that would otherwise be discovered expensively in Phase 2.
+Phase 1 is testable in complete isolation from the portal, which is the main reason to keep the scoring functions pure and constant-free. Phase 0 stays cheap and answers five questions that are expensive to discover in Phase 2.
 
 ---
 
-## 12. Risks
+## 14. Risks
 
 | Risk | Severity | Handling |
 |---|---|---|
-| `back()` resets the paginator, silently skipping bids | **High** | §2.1 — probe for direct detail URLs; position-restore fallback. The one thing Phase 0 must not miss. |
-| Runtime — an unfiltered sweep parses documents for every ad; thousands of bids × several attachments is many hours | **High** | Now the dominant cost, since pagination lifted the 100 ceiling. Existing stop button works; I'd suggest an optional per-run bid cap for trial runs. **Tell me if you want one.** |
-| Document text swamps title signal, mis-routing bids | Medium | Title-primary weighting (§6.1); `Document Text` column exposes it |
+| **No commodity codes available from either source** | **High** | 45 of 100 points goes dark; everything runs the neutral-15 path and lexicons carry the load. §4.5 — Phase 0 (d) |
+| `back()` resets the paginator, silently skipping bids | **High** | §5.1 — probe for direct detail URLs; position-restore fallback |
+| Runtime — an unfiltered sweep parses documents for every ad | **High** | Now the dominant cost. Stop button works; suggest an optional per-run bid cap for trial runs |
+| Lexicons wrong on day one | **High**, expected | The criteria doc says so itself (§8). Phase 5, and §9 if you scope it in |
+| Miscoded ads penalised vs uncoded (§4.4) | Medium | Your decision — surfaces as unexplained Other entries |
+| Threshold 40 mis-set for real data | Medium | All six scores stored per bid, so replay needs no re-fetch |
+| N6's code list is unvalidated | Medium | Criteria doc flags it; §9.6 demotes to Tier C. N6 leans on keywords |
 | Export covers only the visible page | Low | `merge_exports` already handles multi-export merging |
 | Scanned PDFs yield no text | Low | Visible via `Document Text`; OCR out of scope |
-| Threshold set wrong → everything lands in Other | Low | Phase 5 tunes against real output |
-| Portal deploy changes Angular attributes | Low | Selectors anchored on IDs, `aria-label` and Material classes — never `_ngcontent-*` |
+| Portal deploy changes Angular attributes | Low | Selectors anchored on IDs, `aria-label`, Material classes — never `_ngcontent-*` |
 
 ---
 
-## 13. Still needed from you
+## 15. Still needed from you
 
 **Blocking:**
 
-1. **Your niche categories** — names, sheet tab names, order.
-2. **Your evaluation criteria** per niche — any format; I'll adapt the structure. Include commodity codes or prefixes if you have them (§6.3), they're the strongest signal available.
+1. **§1.1 — cross-listing.** One row per bid (your instruction), cross-listed rows (the spec), or switchable? *(recommend: switchable, defaulting to one row)*
+2. **§1.2 — does the §9.4 invariant count OWNER rows only?**
+3. **`mfmp_niches.yaml`.** Every lexicon, code tier, weight and threshold. *Offer: I can draft it from the criteria doc's prose for you to correct.*
+4. **The MFMP Commodity Code v20 Public workbook**, for the §9.6 startup validation.
 
-**Non-blocking preferences** (defaults noted; I'll proceed on them if you'd rather not decide):
+**Decisions on your own spec:**
 
-3. §5 — import SAM's text extractor, or promote it to `app/core/`? *(recommend: promote)*
-4. §9 — third mode in the MyFlorida panel, or a separate sidebar tile? *(recommend: third mode)*
-5. §12 — optional per-run bid cap for trial runs? *(recommend: yes, defaulting to unlimited)*
-6. §7 — keep empty niche sheets, or omit them? *(recommend: keep)*
+5. **§4.4** — should a code unrelated to all six niches score 15 (no information) rather than 0 (negative evidence)?
+6. **§8.1** — accept my proposed sheet tab names, or supply your own?
+7. **§9** — tuning loop in scope now, or after the classifier ships? *(recommend: after)*
+
+**Non-blocking preferences** (I'll proceed on the defaults):
+
+8. §12 — import SAM's text extractor, or promote it to `app/core/`? *(recommend: promote)*
+9. §10 — third mode in the MyFlorida panel, or separate sidebar tile? *(recommend: third mode)*
+10. Optional per-run bid cap for trial runs? *(recommend: yes, default unlimited)*
 
 Nothing gets written until you say go.
 
 ---
 
-## 14. Unrelated pre-flight note
+## 16. Unrelated pre-flight note
 
 `server/migrations/2026-07-28_add_sam_ollama_columns.sql` has still never been applied to your database — `sam_bids` is missing all three Ollama columns, so every SAM run fails its DB save and silently falls back to an in-memory sheet. That is why `sam_bids` has 0 rows.
 
-It does **not** affect MyFlorida: `mfmp_bids` does have its `matched_keyword` column, so the July 16 migration was applied. Noted only because the new `mfmp_sweep_bids` table will want the same "did the migration actually run" check.
+It does not affect MyFlorida: `mfmp_bids` has its `matched_keyword` column, so the July 16 migration was applied. Noted because the new sweep tables will want the same "did the migration actually run" check.

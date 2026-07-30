@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import CategorySelect from "@/components/CategorySelect";
+import MyFloridaSweep from "@/components/MyFloridaSweep";
 import ResultsTable from "@/components/ResultsTable";
 import RunStatusPanel from "@/components/RunStatus";
 import { ErrorBanner, LaunchBar, StartButton } from "@/components/ui";
@@ -11,20 +12,33 @@ import StopButton from "@/components/StopButton";
 import {
   getCategories,
   getRunStatus,
+  getSweepRunStatus,
   startMyFloridaScrape,
+  startMyFloridaSweep,
   type AdStatus,
+  type AdStatusOption,
   type AdType,
   type Category,
   type RunStatus,
   type SearchMode,
 } from "@/lib/api";
 
+/**
+ * The panel drives two independent flows. "codes" and "keywords" are the niche
+ * search, unchanged. "sweep" is the ad-status sweep, which shares the login and
+ * search navigation but runs on its own endpoint, its own run key
+ * (myflorida_sweep) and its own classifier — see app/scrapers/myflorida/sweep.
+ */
+type PanelMode = SearchMode | "sweep";
+
 const POLL_INTERVAL_MS = 3000;
 
 export default function MyFloridaPanel() {
   const [categories, setCategories] = useState<Category[]>([]);
   const [selected, setSelected] = useState("");
-  const [mode, setMode] = useState<SearchMode>("keywords");
+  const [mode, setMode] = useState<PanelMode>("keywords");
+  const [sweepStatuses, setSweepStatuses] = useState<AdStatusOption[]>(["open"]);
+  const [sweepMaxBids, setSweepMaxBids] = useState<number | null>(null);
   const [selectedCodes, setSelectedCodes] = useState<string[]>([]);
   const [selectedKeywords, setSelectedKeywords] = useState<string[]>([]);
   const [adStatuses, setAdStatuses] = useState<AdStatus[]>([]);
@@ -64,22 +78,32 @@ export default function MyFloridaPanel() {
   const handleStart = async (livePreview = false) => {
     setError(null);
     setStarting(true);
+    // The sweep polls its own endpoint; everything else is the niche flow's.
+    const isSweep = mode === "sweep";
+    const poll = isSweep
+      ? (id: string) => getSweepRunStatus(id)
+      : (id: string) => getRunStatus("myflorida", id);
     try {
-      const { run_id } = await startMyFloridaScrape({
-        category: selected,
-        mode,
-        codes: selectedCodes,
-        keywords: selectedKeywords,
-        adStatuses,
-        adTypes,
-        livePreview,
-      });
-      const status = await getRunStatus("myflorida", run_id);
-      setRun(status);
+      const { run_id } = isSweep
+        ? await startMyFloridaSweep({
+            adStatuses: sweepStatuses,
+            maxBids: sweepMaxBids,
+            livePreview,
+          })
+        : await startMyFloridaScrape({
+            category: selected,
+            mode,
+            codes: selectedCodes,
+            keywords: selectedKeywords,
+            adStatuses,
+            adTypes,
+            livePreview,
+          });
+      setRun(await poll(run_id));
       stopPolling();
       pollRef.current = setInterval(async () => {
         try {
-          const latest = await getRunStatus("myflorida", run_id);
+          const latest = await poll(run_id);
           setRun(latest);
           if (latest.status === "completed" || latest.status === "failed" || latest.status === "stopped") stopPolling();
         } catch {
@@ -95,12 +119,28 @@ export default function MyFloridaPanel() {
 
   const isRunning = run !== null && (run.status === "pending" || run.status === "running");
   // Nothing checked in the active mode means there is nothing to search for.
-  const nothingSelected = mode === "keywords" ? selectedKeywords.length === 0 : selectedCodes.length === 0;
+  const nothingSelected =
+    mode === "sweep"
+      ? sweepStatuses.length === 0
+      : mode === "keywords"
+        ? selectedKeywords.length === 0
+        : selectedCodes.length === 0;
 
   return (
     <div className="space-y-6">
       {error && <ErrorBanner message={error} />}
 
+      <ModeTabs mode={mode} disabled={isRunning} onChange={setMode} />
+
+      {mode === "sweep" ? (
+        <MyFloridaSweep
+          adStatuses={sweepStatuses}
+          maxBids={sweepMaxBids}
+          disabled={isRunning}
+          onStatusChange={setSweepStatuses}
+          onMaxBidsChange={setSweepMaxBids}
+        />
+      ) : (
       <CategorySelect
         categories={categories}
         selected={selected}
@@ -117,26 +157,24 @@ export default function MyFloridaPanel() {
         onAdStatusChange={setAdStatuses}
         onAdTypeChange={setAdTypes}
       />
+      )}
 
-      <LaunchBar
-        summary={
-          nothingSelected
-            ? `Select at least one ${mode === "keywords" ? "keyword" : "commodity code"} to run a search.`
-            : mode === "keywords"
-              ? `${selectedKeywords.length} ${selectedKeywords.length === 1 ? "search" : "searches"} · one per keyword`
-              : `${selectedCodes.length} ${selectedCodes.length === 1 ? "code" : "codes"} in a single search`
-        }
-      >
+      <LaunchBar summary={launchSummary(mode, nothingSelected, {
+        keywords: selectedKeywords.length,
+        codes: selectedCodes.length,
+        statuses: sweepStatuses.length,
+        maxBids: sweepMaxBids,
+      })}>
         <div className="flex items-center gap-2">
           <StopButton run={run} onError={setError} />
           <LiveMonitor run={run} portal="myflorida" />
           <StartButton
             onClick={() => handleStart()}
-            disabled={!selected || nothingSelected || starting || isRunning}
+            disabled={(mode !== "sweep" && !selected) || nothingSelected || starting || isRunning}
             running={isRunning}
             starting={starting}
           >
-            Start scrape
+            {mode === "sweep" ? "Start sweep" : "Start scrape"}
           </StartButton>
         </div>
       </LaunchBar>
@@ -145,4 +183,61 @@ export default function MyFloridaPanel() {
       {run && <ResultsTable bids={run.bids} />}
     </div>
   );
+}
+
+const MODE_TABS: { key: PanelMode; label: string; hint: string }[] = [
+  { key: "keywords", label: "Keywords", hint: "One search per niche keyword" },
+  { key: "codes", label: "Commodity codes", hint: "One search across the niche's codes" },
+  { key: "sweep", label: "Full sweep", hint: "Every ad of a status, classified into niches" },
+];
+
+/** Switches between the niche search and the ad-status sweep. */
+function ModeTabs({
+  mode,
+  disabled,
+  onChange,
+}: {
+  mode: PanelMode;
+  disabled?: boolean;
+  onChange: (next: PanelMode) => void;
+}) {
+  return (
+    <div className="flex flex-wrap gap-2">
+      {MODE_TABS.map((tab) => (
+        <button
+          key={tab.key}
+          type="button"
+          title={tab.hint}
+          disabled={disabled}
+          onClick={() => onChange(tab.key)}
+          aria-pressed={mode === tab.key}
+          className={`rounded-lg border px-3.5 py-2 text-sm transition disabled:cursor-not-allowed disabled:opacity-50 ${
+            mode === tab.key
+              ? "border-gold-400 bg-gold-50 font-medium text-gold-700"
+              : "border-ink-200 bg-white text-ink-600 hover:border-ink-300 hover:bg-ink-50 hover:text-ink-900"
+          }`}
+        >
+          {tab.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function launchSummary(
+  mode: PanelMode,
+  nothingSelected: boolean,
+  counts: { keywords: number; codes: number; statuses: number; maxBids: number | null },
+): string {
+  if (mode === "sweep") {
+    if (nothingSelected) return "Pick at least one ad status to run a sweep.";
+    const cap = counts.maxBids ? ` · capped at ${counts.maxBids} ads` : "";
+    return `${counts.statuses} ${counts.statuses === 1 ? "status" : "statuses"} · every ad classified into a niche${cap}`;
+  }
+  if (nothingSelected) {
+    return `Select at least one ${mode === "keywords" ? "keyword" : "commodity code"} to run a search.`;
+  }
+  return mode === "keywords"
+    ? `${counts.keywords} ${counts.keywords === 1 ? "search" : "searches"} · one per keyword`
+    : `${counts.codes} ${counts.codes === 1 ? "code" : "codes"} in a single search`;
 }

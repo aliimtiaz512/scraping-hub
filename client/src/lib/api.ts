@@ -445,6 +445,56 @@ export function getRunStatus(portal: Portal, runId: string): Promise<RunStatus> 
   return request(`/${portal}/scrape/status/${runId}`);
 }
 
+// -- MyFlorida ad-status sweep -----------------------------------------------
+// A second, independent way to run MyFlorida: no commodity codes and no
+// keyword, just an ad status, with every advertisement found classified into
+// one of six niches or Other. It lives under /myflorida/sweep rather than being
+// a portal of its own, so it needs its own helpers instead of the `Portal`-keyed
+// ones above.
+
+export type AdStatusOption = "preview" | "open" | "closed" | "withdrawn";
+
+export interface SweepNiche {
+  key: string;
+  label: string;
+  sheet: string;
+  order: number;
+  core_terms: number;
+  tier_a_codes: number;
+}
+
+export interface SweepNichesResponse {
+  version: string;
+  cross_listing: boolean;
+  thresholds: Record<string, unknown>;
+  niches: SweepNiche[];
+  other_sheet: string;
+  ad_statuses: AdStatusOption[];
+}
+
+export function getSweepNiches(): Promise<SweepNichesResponse> {
+  return request("/myflorida/sweep/niches");
+}
+
+export function startMyFloridaSweep({
+  adStatuses,
+  maxBids = null,
+  livePreview = false,
+}: {
+  adStatuses: AdStatusOption[];
+  maxBids?: number | null;
+  livePreview?: boolean;
+}): Promise<{ run_id: string; search: string; folder: string }> {
+  return request(`/myflorida/sweep/scrape${livePreviewQuery(livePreview)}`, {
+    method: "POST",
+    body: JSON.stringify({ ad_statuses: adStatuses, max_bids: maxBids }),
+  });
+}
+
+export function getSweepRunStatus(runId: string): Promise<RunStatus> {
+  return request(`/myflorida/sweep/scrape/status/${runId}`);
+}
+
 export function listRuns(portal: Portal): Promise<{ runs: RunStatus[] }> {
   return request(`/${portal}/scrape/runs`);
 }
