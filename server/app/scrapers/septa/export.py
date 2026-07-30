@@ -24,7 +24,12 @@ from app.scrapers.septa.models import EXCEL_COLUMNS, SeptaBid, SeptaRun
 logger = logging.getLogger(__name__)
 
 # Columns actually present on SeptaBid (used to filter a scraped record dict).
-_BID_FIELDS = {"requisition_number", "summary", "open_date", "close_date"}
+_BID_FIELDS = {
+    "requisition_number", "summary", "open_date", "close_date",
+    # Provenance from a niche run: which niche was searched, and which of its
+    # keywords/commodity codes surfaced this quote.
+    "niche", "matched_terms",
+}
 
 
 def _parse_dt(value: Any) -> datetime | None:

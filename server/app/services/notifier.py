@@ -119,6 +119,14 @@ def _attachment_for(run: dict) -> tuple[bytes, str, str] | None:
     """(bytes, filename, content_type) to attach: the full ZIP when it fits in
     an email, else just the cumulative Excel (the ZIP stays downloadable via
     the link). Falls back to a DB-regenerated Excel for runs with no archive."""
+    # Excel-only portals never attach a ZIP, even if an older run of theirs has
+    # one on disk from before the portal switched — same ordering as the
+    # download endpoint, so the mail and the button agree.
+    if run.get("scraper") in exports.EXCEL_ONLY_PORTALS:
+        payload = exports.excel_bytes(run)
+        if payload:
+            return (*payload, _XLSX_MIME)
+
     zip_path = run.get("zip_path")
     if zip_path and Path(zip_path).is_file():
         p = Path(zip_path)

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import CategorySelect from "@/components/CategorySelect";
 import MyFloridaSweep from "@/components/MyFloridaSweep";
+import MyFloridaSweepResults from "@/components/MyFloridaSweepResults";
 import ResultsTable from "@/components/ResultsTable";
 import RunStatusPanel from "@/components/RunStatus";
 import { ErrorBanner, LaunchBar, StartButton } from "@/components/ui";
@@ -15,6 +16,7 @@ import {
   getSweepRunStatus,
   startMyFloridaScrape,
   startMyFloridaSweep,
+  SWEEP_SCRAPER,
   type AdStatus,
   type AdStatusOption,
   type AdType,
@@ -180,7 +182,15 @@ export default function MyFloridaPanel() {
       </LaunchBar>
 
       {run && <RunStatusPanel run={run} />}
-      {run && <ResultsTable bids={run.bids} />}
+      {/* Keyed off the run, not the `mode` tab: the results stay on screen when
+          the user switches tabs, so the table has to match the run that
+          produced the rows rather than whatever is selected now. */}
+      {run &&
+        (run.scraper === SWEEP_SCRAPER ? (
+          <MyFloridaSweepResults bids={run.bids} />
+        ) : (
+          <ResultsTable bids={run.bids} />
+        ))}
     </div>
   );
 }

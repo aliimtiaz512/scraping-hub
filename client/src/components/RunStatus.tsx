@@ -34,7 +34,10 @@ const STEP_LABELS: Record<string, string> = {
   saving: "Saving to database",
   fetching_naics: "Fetching NAICS codes",
   scraping_results: "Scraping results grid",
-  packaging_results: "Packaging results into ZIP",
+  // Neutral wording: excel-only portals (see EXCEL_ONLY in lib/runs) package a
+  // bare .xlsx here, so naming ZIP made a finished SEPTA run look like it still
+  // produced one.
+  packaging_results: "Packaging results",
   saving_excel: "Saving the Excel report",
   done: "Done",
   failed: "Failed",

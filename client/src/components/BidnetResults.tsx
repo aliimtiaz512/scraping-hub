@@ -38,11 +38,11 @@ export default function BidnetResults({ bids }: { bids: BidResult[] }) {
           </td>
           <td className="whitespace-nowrap px-4 py-3 text-xs text-ink-600">{bid.solicitation_type ?? "—"}</td>
           <td className="tabular whitespace-nowrap px-4 py-3 text-xs text-ink-600">{bid.closing_date ?? "—"}</td>
-          <td className="tabular px-4 py-3 text-center text-ink-600">{bid.documents.length}</td>
+          <td className="tabular px-4 py-3 text-center text-ink-600">{bid.documents?.length ?? 0}</td>
           <td className="px-4 py-3">
             {bid.error ? (
               <DocStatus state="failed" title={bid.error} />
-            ) : bid.documents.length ? (
+            ) : bid.documents?.length ? (
               <DocStatus state="ok" />
             ) : (
               <DocStatus state="empty" />

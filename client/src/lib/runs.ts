@@ -132,9 +132,14 @@ const NO_DOWNLOAD = new Set(["naics", "caleprocure", "evalconfig"]);
 /**
  * Portals whose run output is only the spreadsheet, so the download is a bare
  * .xlsx with no ZIP around it. Mirrors EXCEL_ONLY_PORTALS in app/core/exports.py
- * — SAM discards each bid's attachments once their text has been evaluated.
+ * — SAM discards each bid's attachments once their text has been evaluated, and
+ * SEPTA downloads nothing at all (its grid is metadata only).
+ *
+ * Keep this in step with the Python set: it drives only the wording and the
+ * button label, so when it drifts the endpoint quietly serves a .xlsx while the
+ * whole UI still says ZIP.
  */
-const EXCEL_ONLY = new Set(["sam", "myflorida_sweep"]);
+const EXCEL_ONLY = new Set(["sam", "myflorida_sweep", "septa"]);
 
 /** True when this portal's runs produce something to download. */
 export function portalDownloadable(portal: string): boolean {

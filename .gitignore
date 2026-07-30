@@ -26,6 +26,12 @@ BidNet_Direct_Keyword_Reference.docx
 .idea/
 .claude/settings.local.json
 
+# sn-scriptsync (ServiceNow VS Code extension) — regenerated on every start
+agentrules/
+autocomplete/
+agentinstructions.md
+jsconfig.json
+
 # Caches
 .venv/
 .pytest_cache/

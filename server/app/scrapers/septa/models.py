@@ -54,6 +54,13 @@ class SeptaBid(Base):
     open_date: Mapped[str | None] = mapped_column(String(64))
     close_date: Mapped[str | None] = mapped_column(String(64))
 
+    # Provenance: which niche the run searched, and which of its terms actually
+    # surfaced this quote. A run searches every keyword and commodity code of a
+    # niche separately, so one requisition is often found by several of them —
+    # matched_terms holds all of them, comma-joined.
+    niche: Mapped[str | None] = mapped_column(String(64), index=True)
+    matched_terms: Mapped[str | None] = mapped_column(Text)
+
     # Complete original scraped record: {field -> value}.
     raw_data: Mapped[dict] = mapped_column(JSONB, default=dict)
 
@@ -66,4 +73,6 @@ EXCEL_COLUMNS: list[tuple[str, str]] = [
     ("summary", "Summary"),
     ("open_date", "Open Date"),
     ("close_date", "Close Date"),
+    ("niche", "Niche"),
+    ("matched_terms", "Matched Term(s)"),
 ]

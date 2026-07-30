@@ -86,10 +86,13 @@ export interface BidResult {
   remaining_time?: string;
   status?: string;
   detail_url?: string;
-  // SEPTA
+  // SEPTA (`niche` is shared with the MyFlorida sweep, declared below)
   requisition_number?: string;
   summary?: string;
   open_date?: string;
+  /** Which of the niche's keywords/commodity codes surfaced this quote —
+   *  comma-joined, since a search per term often finds the same one twice. */
+  matched_terms?: string;
   // SAM.gov
   notice_id?: string;
   department?: string;
@@ -109,15 +112,24 @@ export interface BidResult {
   buyer_description?: string;
   buyer?: string;
   end_date?: string;
-  // shared
-  documents: string[];
-  error: string | null;
+  // MyFlorida ad-status sweep: the classifier's verdict for this ad. The sweep
+  // reports rows itself rather than through the per-bid document crawl, so it
+  // carries these instead of `documents`/`error` — see MyFloridaSweepResults.
+  niche?: string;
+  score?: number;
+  strength?: string | null;
+  // shared, but only from the flows that download documents per bid — optional
+  // because the sweep does not.
+  documents?: string[];
+  error?: string | null;
   document_errors?: string[];
 }
 
 export interface RunStatus {
   run_id: string;
-  scraper?: Portal;
+  // The sweep runs under its own key rather than a `Portal` — see the sweep
+  // section below for why it isn't one.
+  scraper?: Portal | typeof SWEEP_SCRAPER;
   status: "pending" | "running" | "completed" | "failed" | "stopped";
   step: string;
   // MyFlorida-only
@@ -305,26 +317,46 @@ export function startNorthDakotaScrape(
 
 // -- SEPTA (vendor procurement portal) ---------------------------------------
 
+/** A niche owns the keywords and commodity codes a run searches, one per search.
+ *  Seeded server-side from app/scrapers/septa/niches.py. */
+export interface SeptaNiche {
+  key: string;
+  label: string;
+  /** Filename-safe form of the label. */
+  slug: string | null;
+  keywords: string[];
+  codes: string[];
+  keyword_count: number;
+  code_count: number;
+}
+
+export interface SeptaNicheCatalog {
+  niches: SeptaNiche[];
+}
+
+export function getSeptaNiches(): Promise<SeptaNicheCatalog> {
+  return request("/septa/niches");
+}
+
 export interface StartSeptaScrapeOptions {
-  // All optional and freely combinable; all blank = today's open quotes.
+  /** Catalog key. The scraper searches every keyword and commodity code this
+   *  niche owns, then merges the results into one deduplicated sheet. */
+  niche?: string;
+  /** Optional extra filter; narrows every one of the niche's searches. */
   dateFilter?: string;
-  keyword?: string;
-  commodityCode?: string;
   livePreview?: boolean;
 }
 
 export function startSeptaScrape({
+  niche = "",
   dateFilter = "",
-  keyword = "",
-  commodityCode = "",
   livePreview = false,
 }: StartSeptaScrapeOptions): Promise<{ run_id: string; search: string; folder: string }> {
   return request(`/septa/scrape${livePreviewQuery(livePreview)}`, {
     method: "POST",
     body: JSON.stringify({
+      niche: niche || null,
       date_filter: dateFilter || null,
-      keyword: keyword || null,
-      commodity_code: commodityCode || null,
     }),
   });
 }
@@ -451,6 +483,10 @@ export function getRunStatus(portal: Portal, runId: string): Promise<RunStatus> 
 // one of six niches or Other. It lives under /myflorida/sweep rather than being
 // a portal of its own, so it needs its own helpers instead of the `Portal`-keyed
 // ones above.
+
+/** The run key the sweep registers under — what `RunStatus.scraper` reports for
+ *  a sweep run, and the only way to tell one apart from a niche run. */
+export const SWEEP_SCRAPER = "myflorida_sweep";
 
 export type AdStatusOption = "preview" | "open" | "closed" | "withdrawn";
 

@@ -67,6 +67,11 @@ class Settings(BaseSettings):
     septa_username: str = ""
     septa_password: str = ""
     septa_login_url: str = "https://epsadmin.septa.org/vendor/login/"
+    # The portal splits searching across two pages: this form (keyword,
+    # commodity code, bid number, opens/closes date ranges) and a results list
+    # at /vendor/requisitions/list/ that carries no filter inputs at all. Every
+    # search lands on the list, so each new term has to come back here first.
+    septa_search_url: str = "https://epsadmin.septa.org/vendor/requisitions/search/"
 
     # Cal eProcure (California eProcurement / BidSync "BS3") — supplier login on
     # an ASP.NET page (#userid / #pwd), plain username+password (no SSO/MFA).

@@ -31,9 +31,9 @@ from app.core import run_manager
 from app.core.closing_filter import MIN_DAYS_UNTIL_CLOSE, days_until_close
 from app.core.exports import archive_run
 from app.services.notifier import notify_scrape_completion
-from app.core.base_scraper import BaseScraper
+from app.core.base_scraper import BaseScraper, StopRequested
 from app.core.filenames import sanitize_filename
-from app.scrapers.septa import export
+from app.scrapers.septa import export, niches
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +42,7 @@ LOGIN_FIELD_WAIT = 30       # per-field wait for the login form to render
 LOGIN_SETTLE_SLEEP = 2      # let ASP.NET/Bootstrap finish wiring the form
 LOGIN_REDIRECT_WAIT = 45    # postback + redirect can be slow
 NAVIGATION_SLEEP = 3
+SEARCH_FORM_WAIT = 20       # for the search form's keyword box to render
 SEARCH_RESULT_WAIT = 20
 DATE_FIELD_WAIT = 5
 NEXT_PAGE_WAIT = 10
@@ -59,7 +60,6 @@ OPEN_QUOTES_LINK_TEXTS = [
     "Quote Module", "Direct Quote Requests",
 ]
 OPEN_QUOTES_HREF_PATTERNS = ["openquote", "OpenQuote"]
-OPEN_QUOTES_PAGE_KEYWORDS = ["open quote", "open quotes"]
 MENU_PROCUREMENT_KEYWORDS = ["procurement", "quote", "bid", "tender"]
 
 # -- selectors (ported verbatim from the package config) ---------------------
@@ -149,8 +149,6 @@ SEL = {
         "//a[contains(@id, 'btnNext')]",
         "//a[contains(@id, 'Next')]",
     ],
-    "open_quotes_search_xpath": "//button[contains(text(), 'Search')]",
-    "open_quotes_date_placeholder_xpath": "//input[contains(@placeholder, 'Date')]",
 }
 
 
@@ -161,15 +159,26 @@ class SeptaScraper(BaseScraper):
         date_filter: str | None = None,
         keyword: str | None = None,
         commodity_code: str | None = None,
+        niche: str | None = None,
     ):
         super().__init__(run_id)
         self.date_filter = (date_filter or "").strip() or None
         self.keyword = (keyword or "").strip() or None
         self.commodity_code = (commodity_code or "").strip() or None
+        # When set, the run searches every keyword and commodity code this niche
+        # owns instead of the single keyword/commodity above.
+        self.niche = (niche or "").strip() or None
+        self.niche_label: str | None = None
         self.excel_path: Path | None = None
         # Full in-memory copy of every scraped row — the Excel fallback source if
         # the DB is unavailable.
         self._records: list[dict[str, Any]] = []
+        # requisition number -> its record in _records. Run-level (not per-page)
+        # so a quote surfaced by several of a niche's terms is stored once, with
+        # every term that found it recorded on it.
+        self._seen: dict[str, dict[str, Any]] = {}
+        # Rows mirrored to the live run state for the UI table.
+        self._preview: list[dict[str, Any]] = []
         # Close-date filter tallies (see MIN_DAYS_UNTIL_CLOSE): quotes dropped for
         # closing too soon, and quotes kept despite an unreadable close date.
         self._skipped_closing_soon = 0
@@ -267,16 +276,31 @@ class SeptaScraper(BaseScraper):
             return
 
         detail = " ".join(messages)
-        self.screenshot("login_locked")
-        if "lock" in detail.lower():
+        lowered = detail.lower()
+        # "You have N more attempts before your account is locked" also contains
+        # "locked", so the countdown warning has to be recognised FIRST or every
+        # warning would be misread as a hard lock and abort the run.
+        if "more attempts" in lowered:
+            logger.warning("[run %s] SEPTA lockout warning (%s): %s",
+                           self.run_id, when, detail)
+            return
+        if "lock" in lowered:
+            self.screenshot("login_locked")
             raise WebDriverException(
                 f"SEPTA account is locked ({when}) — wait for the lockout to expire "
                 f"before running again; retrying now restarts the 60-minute window. "
                 f"Portal said: {detail}"
             )
-        # "N more attempts" — a warning, not yet a lock. Surface it loudly.
-        logger.warning("[run %s] SEPTA lockout warning (%s): %s",
+        logger.warning("[run %s] SEPTA login banner (%s): %s",
                        self.run_id, when, detail)
+
+    def login(self) -> None:
+        """Sign in to the SEPTA vendor portal.
+
+        Called by ``run()``. This must stay a method in its own right — it was
+        once folded into ``_abort_if_locked``, which meant ``run()`` never had a
+        ``login`` to call at all and every run died before typing a character.
+        """
         self.set_step("logging_in")
         logger.info("[run %s] navigating to %s", self.run_id, settings.septa_login_url)
         self.driver.get(settings.septa_login_url)
@@ -402,6 +426,15 @@ class SeptaScraper(BaseScraper):
     def navigate_to_open_quotes(self) -> None:
         self.set_step("opening_open_quotes")
 
+        # The direct URL is the reliable route — the link-text/href heuristics
+        # below never matched this portal's actual "Search Open Quotes" anchor.
+        # They stay as a fallback in case the URL ever moves.
+        if self._open_search_form():
+            logger.info("[run %s] reached Open Quotes search form", self.run_id)
+            return
+        logger.warning("[run %s] search form URL didn't work — trying link navigation",
+                       self.run_id)
+
         attempts = []
         for text in OPEN_QUOTES_LINK_TEXTS:
             attempts.append(lambda t=text: self._click_by_xpath(f"//a[contains(text(), '{t}')]"))
@@ -462,13 +495,14 @@ class SeptaScraper(BaseScraper):
         return False
 
     def _is_on_open_quotes_page(self) -> bool:
+        """True only when the *filter form* is actually present.
+
+        Deliberately not a page-text check: the results list says "Open Quotes"
+        too (it links back with "Search Open Quotes"), so matching on wording
+        reported success while sitting on a page with no inputs to type into.
+        """
         try:
-            page_text = self.driver.page_source.lower()
-            if any(kw in page_text for kw in OPEN_QUOTES_PAGE_KEYWORDS):
-                return True
-            if self.driver.find_elements(By.XPATH, SEL["open_quotes_search_xpath"]):
-                return True
-            if self.driver.find_elements(By.XPATH, SEL["open_quotes_date_placeholder_xpath"]):
+            if self._visible_field(SEL["keyword_xpath"]) is not None:
                 return True
         except WebDriverException:
             pass
@@ -476,45 +510,138 @@ class SeptaScraper(BaseScraper):
 
     # -- date filter + search ----------------------------------------------
 
-    def apply_filters(self) -> None:
-        """Apply whichever of the three Open Quotes filters the user supplied —
-        open date, keyword, commodity code — then search.
+    def _resolve_date(self, force_today_when_empty: bool) -> str | None:
+        """The open-date value to type, in the portal's MM/DD/YYYY form.
 
-        All three are optional and freely combinable. When none is provided the
-        date defaults to today, preserving the original date-only behaviour; when
-        a keyword and/or commodity is provided without a date, no date is forced
-        so the search isn't silently narrowed to today.
+        An explicit date always wins. Otherwise today is used only when the run
+        has no other filter at all — a niche run must not be silently narrowed
+        to today, or every one of its searches would return almost nothing.
         """
-        self.set_step("applying_filters")
-        any_filter = bool(self.date_filter or self.keyword or self.commodity_code)
-
-        # -- open date (explicit, or today's default when nothing else is set) --
-        target: str | None = None
         if self.date_filter:
             try:
-                target = datetime.strptime(self.date_filter, "%Y-%m-%d").strftime("%m/%d/%Y")
+                return datetime.strptime(self.date_filter, "%Y-%m-%d").strftime("%m/%d/%Y")
             except ValueError:
                 logger.warning("[run %s] bad date %r; defaulting to today", self.run_id, self.date_filter)
                 run_manager.add_warning(self.run_id, f"could not parse date '{self.date_filter}'; used today")
-                target = datetime.now().strftime("%m/%d/%Y")
-        elif not any_filter:
-            target = datetime.now().strftime("%m/%d/%Y")
+                return datetime.now().strftime("%m/%d/%Y")
+        return datetime.now().strftime("%m/%d/%Y") if force_today_when_empty else None
 
-        if target is not None:
-            logger.info("[run %s] applying date filter %s", self.run_id, target)
-            self._set_date_field(target)
+    def _visible_field(self, xpath: str):
+        """The first visible input matching `xpath`, freshly located.
 
-        # -- keyword + commodity code -------------------------------------------
-        if self.keyword:
-            logger.info("[run %s] applying keyword filter %r", self.run_id, self.keyword)
-            if not self._set_text_field(SEL["keyword_xpath"], self.keyword):
-                run_manager.add_warning(self.run_id, f"could not enter keyword '{self.keyword}'")
-        if self.commodity_code:
-            logger.info("[run %s] applying commodity code filter %r", self.run_id, self.commodity_code)
-            if not self._set_text_field(SEL["commodity_xpath"], self.commodity_code):
-                run_manager.add_warning(self.run_id, f"could not enter commodity code '{self.commodity_code}'")
+        Always re-locate before touching a filter box: each search is an ASP.NET
+        postback that re-renders the panel, so any element reference held from
+        before the postback is stale.
+        """
+        for field in self.driver.find_elements(By.XPATH, xpath):
+            try:
+                if field.is_displayed():
+                    return field
+            except WebDriverException:
+                continue
+        return None
 
-        self.set_step("searching")
+    def _open_search_form(self) -> bool:
+        """Load the Open Quotes search form and wait for its keyword box.
+
+        Straight to the known URL rather than hunting for a link: a search sends
+        the browser to /vendor/requisitions/list/, which has no filter inputs and
+        no link the old text patterns matched ("Search Open Quotes", not "View
+        Open Quotes"), so link-hunting silently left us on the results page and
+        every term after the first failed to type.
+        """
+        try:
+            self.driver.get(settings.septa_search_url)
+        except WebDriverException:
+            logger.warning("[run %s] could not load the search form URL", self.run_id, exc_info=True)
+            return False
+        return self._find(By.XPATH, SEL["keyword_xpath"], SEARCH_FORM_WAIT) is not None
+
+    def _ensure_filter_form(self) -> None:
+        """Make sure the Open Quotes filter form is usable before a search.
+
+        Each search leaves the browser on the results list, which carries no
+        filter inputs — so this reloads the form for all but the first term.
+        """
+        if self._visible_field(SEL["keyword_xpath"]) is not None:
+            return
+        if not self._open_search_form():
+            raise WebDriverException(
+                "SEPTA: could not get back to the Open Quotes search form "
+                f"({settings.septa_search_url})."
+            )
+
+    def _fill_filter(self, xpath: str, value: str, label: str) -> bool:
+        """Set a filter box to `value`, verifying the value actually landed.
+
+        A bare clear+send_keys silently no-ops when the input has just been
+        re-rendered by a search postback — the same way the login password box
+        does, which is what `_fill_field` (verify, then force the value through
+        the DOM and fire input/change) was written to solve. Route the filter
+        boxes through it too, and on failure re-navigate to a clean Open Quotes
+        page and try once more, so one bad postback costs a retry rather than
+        the term.
+        """
+        for attempt in (1, 2):
+            field = self._visible_field(xpath)
+            if field is not None and self._fill_field(field, value):
+                return True
+            if attempt == 1:
+                logger.warning(
+                    "[run %s] %s did not take (attempt 1) — reloading the search form and retrying",
+                    self.run_id, label,
+                )
+                self._open_search_form()
+        return False
+
+    def _clear_filters(self) -> None:
+        """Blank the keyword and commodity boxes between searches.
+
+        Without this the next search inherits the previous term (the portal keeps
+        filled inputs across a postback) and every result after the first would
+        be filtered by an unintended keyword.
+        """
+        for xpath in (SEL["keyword_xpath"], SEL["commodity_xpath"]):
+            field = self._visible_field(xpath)
+            if field is None:
+                continue
+            try:
+                field.clear()
+                # A postback-stale box can ignore clear() exactly as it ignores
+                # send_keys; force it empty so no term leaks into the next search.
+                if (field.get_attribute("value") or ""):
+                    self._fill_field(field, "")
+            except WebDriverException:
+                continue
+
+    def _run_search(
+        self,
+        keyword: str | None = None,
+        commodity_code: str | None = None,
+        date_target: str | None = None,
+    ) -> None:
+        """Fill the Open Quotes filters and hit Search.
+
+        One call = one search. Only the arguments given are typed; everything
+        else is cleared first, so searches never contaminate each other.
+        """
+        self._ensure_filter_form()
+        self._clear_filters()
+
+        if keyword and not self._fill_filter(SEL["keyword_xpath"], keyword, f"keyword '{keyword}'"):
+            run_manager.add_warning(self.run_id, f"could not enter keyword '{keyword}'")
+            raise WebDriverException(f"SEPTA: could not type keyword '{keyword}' into the search box.")
+        if commodity_code and not self._fill_filter(
+            SEL["commodity_xpath"], commodity_code, f"commodity code '{commodity_code}'"
+        ):
+            run_manager.add_warning(self.run_id, f"could not enter commodity code '{commodity_code}'")
+            raise WebDriverException(
+                f"SEPTA: could not type commodity code '{commodity_code}' into the search box."
+            )
+        # Date last: a re-navigation inside the retries above would have wiped it.
+        if date_target is not None and not self._set_date_field(date_target):
+            run_manager.add_warning(self.run_id, f"could not enter open date '{date_target}'")
+
         search_btn = self._find(By.XPATH, SEL["search_btn_xpath"], DATE_FIELD_WAIT)
         if not search_btn:
             raise WebDriverException("SEPTA: could not find the Open Quotes search button.")
@@ -527,35 +654,111 @@ class SeptaScraper(BaseScraper):
         except TimeoutException:
             logger.warning("[run %s] timeout waiting for the results table", self.run_id)
 
-    def _set_date_field(self, target: str) -> None:
-        """Fill the open-date field, falling back to any visible date-ish input."""
-        for field in self.driver.find_elements(By.XPATH, SEL["date_input_xpath"]):
+    def apply_filters(self) -> None:
+        """Single-search mode: the run's own date/keyword/commodity, one search.
+
+        This is the pre-niche behaviour, kept for ad-hoc API runs that pass a
+        bare keyword or commodity code instead of a niche.
+        """
+        self.set_step("applying_filters")
+        any_filter = bool(self.date_filter or self.keyword or self.commodity_code)
+        date_target = self._resolve_date(force_today_when_empty=not any_filter)
+
+        self.set_step("searching")
+        self._run_search(
+            keyword=self.keyword,
+            commodity_code=self.commodity_code,
+            date_target=date_target,
+        )
+        self.scrape_all_pages()
+
+    def run_niche_searches(self) -> None:
+        """Niche mode: one search per keyword, then one per commodity code.
+
+        Terms are never concatenated — the portal returns far more for a single
+        term than for a combined query, and this matches how BidNet already
+        searches its keyword catalog. Results from every search accumulate into
+        one deduplicated set (see `_record_quotes`), so a requisition found by
+        several terms appears once with all of them listed.
+
+        A term that fails is logged and skipped: one bad search must not cost
+        the run its other nineteen.
+        """
+        terms = niches.niche_terms(self.niche)
+        if terms is None:
+            raise WebDriverException(
+                f"SEPTA niche '{self.niche}' is not in the catalog — check "
+                "server/app/scrapers/septa/niches.py."
+            )
+        self.niche_label, keywords, codes = terms
+        if not keywords and not codes:
+            raise WebDriverException(
+                f"SEPTA niche '{self.niche_label}' has no keywords or commodity codes "
+                "configured — nothing to search."
+            )
+
+        # A niche run is already narrow; only narrow it by date if the user
+        # explicitly asked for one.
+        date_target = self._resolve_date(force_today_when_empty=False)
+
+        searches: list[tuple[str, str]] = (
+            [("keyword", term) for term in keywords] + [("commodity", code) for code in codes]
+        )
+        total = len(searches)
+        logger.info(
+            "[run %s] niche %r: %s keyword(s) + %s code(s) = %s searches",
+            self.run_id, self.niche_label, len(keywords), len(codes), total,
+        )
+        run_manager.update_run(
+            self.run_id,
+            niche=self.niche,
+            niche_label=self.niche_label,
+            searches_total=total,
+        )
+
+        for index, (kind, term) in enumerate(searches, start=1):
+            self.raise_if_stopped()
+            self.set_step(f"searching {kind} {index}/{total}: {term}")
             try:
-                if field.is_displayed():
-                    field.clear()
-                    field.send_keys(target)
-                    return
-            except WebDriverException:
-                continue
-        for inp in self.driver.find_elements(By.TAG_NAME, "input"):
-            try:
-                if inp.is_displayed() and inp.get_attribute("type") in ("text", "date"):
-                    id_ = (inp.get_attribute("id") or "").lower()
-                    name_ = (inp.get_attribute("name") or "").lower()
-                    if "date" in id_ or "date" in name_:
-                        inp.clear()
-                        inp.send_keys(target)
-                        return
-            except WebDriverException:
+                self._run_search(
+                    keyword=term if kind == "keyword" else None,
+                    commodity_code=term if kind == "commodity" else None,
+                    date_target=date_target,
+                )
+                found = self.scrape_all_pages(matched_term=term)
+            except StopRequested:
+                raise
+            except (TimeoutException, WebDriverException) as exc:
+                logger.warning("[run %s] search failed for %s %r: %s",
+                               self.run_id, kind, term, exc.__class__.__name__)
+                run_manager.add_error(self.run_id, f"search failed for {kind} '{term}'")
+                self.screenshot(f"search_{term}")
                 continue
 
-    def _set_text_field(self, xpath: str, value: str) -> bool:
-        """Type `value` into the first visible input matching `xpath`."""
-        for field in self.driver.find_elements(By.XPATH, xpath):
+            logger.info(
+                "[run %s] [%s/%s] %s %r -> %s new (run total %s)",
+                self.run_id, index, total, kind, term, found, len(self._records),
+            )
+            run_manager.update_run(self.run_id, searches_done=index)
+
+    def _set_date_field(self, target: str) -> bool:
+        """Fill the open-date field, falling back to any visible date-ish input.
+
+        Uses the same verified fill as the keyword/commodity boxes — this input
+        sits on the same postback-rendered panel and swallows send_keys the same
+        way.
+        """
+        field = self._visible_field(SEL["date_input_xpath"])
+        if field is not None and self._fill_field(field, target):
+            return True
+
+        for inp in self.driver.find_elements(By.TAG_NAME, "input"):
             try:
-                if field.is_displayed():
-                    field.clear()
-                    field.send_keys(value)
+                if not (inp.is_displayed() and inp.get_attribute("type") in ("text", "date")):
+                    continue
+                id_ = (inp.get_attribute("id") or "").lower()
+                name_ = (inp.get_attribute("name") or "").lower()
+                if ("date" in id_ or "date" in name_) and self._fill_field(inp, target):
                     return True
             except WebDriverException:
                 continue
@@ -629,11 +832,56 @@ class SeptaScraper(BaseScraper):
                 continue
         return False
 
-    def scrape_all_pages(self) -> None:
+    def _record_quote(self, rec: dict[str, str], matched_term: str | None) -> bool:
+        """Add one scraped row to the run, or merge it into what's already there.
+
+        Returns True only when the quote is new to the run. Deduplication is
+        run-level, so the same requisition surfacing under several of a niche's
+        terms is stored once — `matched_terms` then lists every term that found
+        it, which is what the Excel's "Matched Term(s)" column shows.
+        """
+        key = rec.get("requisition_number")
+        existing = self._seen.get(key) if key else None
+        if existing is not None:
+            if matched_term and matched_term not in existing["_terms"]:
+                existing["_terms"].append(matched_term)
+                existing["matched_terms"] = ", ".join(existing["_terms"])
+            return False
+
+        # Keep only quotes with at least MIN_DAYS_UNTIL_CLOSE days left. An
+        # unreadable close date can't be proven to fail, so it's kept (and
+        # tallied); a date we can read that's too near is dropped.
+        days_left = days_until_close(rec.get("close_date"))
+        if days_left is None:
+            self._kept_unreadable_close += 1
+        elif days_left < MIN_DAYS_UNTIL_CLOSE:
+            self._skipped_closing_soon += 1
+            return False
+
+        record: dict[str, Any] = {
+            **rec,
+            "niche": self.niche_label or self.niche,
+            "matched_terms": matched_term or "",
+            # Working list behind matched_terms; stripped before persistence.
+            "_terms": [matched_term] if matched_term else [],
+        }
+        self._records.append(record)
+        if key:
+            self._seen[key] = record
+        if len(self._preview) < PREVIEW_LIMIT:
+            self._preview.append({**record, "documents": [], "error": None})
+        return True
+
+    def scrape_all_pages(self, matched_term: str | None = None) -> int:
+        """Page through the current result grid, storing every new quote.
+
+        `matched_term` is the keyword or commodity code whose search produced
+        this grid, recorded on each quote as provenance. Returns how many quotes
+        were new to the run — searches after the first often return mostly
+        repeats, and that count is what makes the log readable.
+        """
         self.set_step("scraping_results")
-        preview: list[dict[str, Any]] = []
-        seen: set[str] = set()
-        scraped = 0
+        new_count = 0
         page_num = 1
         last_signature: list[str] | None = None
 
@@ -652,31 +900,14 @@ class SeptaScraper(BaseScraper):
             last_signature = signature
 
             for rec in quotes:
-                key = rec.get("requisition_number")
-                if key and key in seen:
-                    continue
-                if key:
-                    seen.add(key)
+                if self._record_quote(rec, matched_term):
+                    new_count += 1
 
-                # Keep only quotes with at least MIN_DAYS_UNTIL_CLOSE days left.
-                # An unreadable close date can't be proven to fail, so it's kept
-                # (and tallied); a date we can read that's too near is dropped.
-                days_left = days_until_close(rec.get("close_date"))
-                if days_left is None:
-                    self._kept_unreadable_close += 1
-                elif days_left < MIN_DAYS_UNTIL_CLOSE:
-                    self._skipped_closing_soon += 1
-                    continue
-
-                self._records.append(rec)
-                scraped += 1
-                if len(preview) < PREVIEW_LIMIT:
-                    preview.append({**rec, "documents": [], "error": None})
-
+            total = len(self._records)
             run_manager.update_run(
-                self.run_id, bids_found=scraped, bids_processed=scraped, bids=list(preview)
+                self.run_id, bids_found=total, bids_processed=total, bids=list(self._preview)
             )
-            logger.info("[run %s] page %s scraped (total %s)", self.run_id, page_num, scraped)
+            logger.info("[run %s] page %s scraped (run total %s)", self.run_id, page_num, total)
 
             if not self._click_next_page():
                 break
@@ -685,6 +916,7 @@ class SeptaScraper(BaseScraper):
 
         if page_num > MAX_PAGES:
             run_manager.add_error(self.run_id, f"stopped at page cap ({MAX_PAGES})")
+        return new_count
 
     # -- orchestration ------------------------------------------------------
 
@@ -695,8 +927,18 @@ class SeptaScraper(BaseScraper):
             self.start_driver()
             self.login()
             self.navigate_to_open_quotes()
-            self.apply_filters()
-            self.scrape_all_pages()
+            if self.niche:
+                # Niche mode: one search per keyword and per commodity code,
+                # merged into a single deduplicated set.
+                self.run_niche_searches()
+            else:
+                # Ad-hoc mode: the run's own single keyword/commodity/date.
+                self.apply_filters()
+
+            # The working provenance list is an implementation detail of the
+            # dedup — drop it before the records reach the DB or the Excel.
+            for record in self._records:
+                record.pop("_terms", None)
 
             # Surface the close-date filter's effect so the smaller count is never
             # a mystery: how many quotes were dropped for closing too soon, how
@@ -741,6 +983,7 @@ class SeptaScraper(BaseScraper):
                 # never overwrite each other.
                 criteria = ", ".join(
                     part for part in (
+                        f"niche={self.niche_label or self.niche}" if self.niche else "",
                         f"keyword={self.keyword}" if self.keyword else "",
                         f"daterange={self.date_filter}" if self.date_filter else "",
                         f"commoditycodes={self.commodity_code}" if self.commodity_code else "",
@@ -760,8 +1003,9 @@ class SeptaScraper(BaseScraper):
                     logger.exception("[run %s] Excel generation failed", self.run_id)
                     run_manager.add_error(self.run_id, "excel generation failed (see logs)")
 
-            # Package the run into one archive ZIP (cumulative Excel + any
-            # files) and delete the workspace — nothing stays on local disk.
+            # Persist the sheet into the archive and delete the workspace. SEPTA
+            # is an EXCEL_ONLY portal — its whole deliverable is the spreadsheet,
+            # so this writes a bare .xlsx rather than wrapping it in a ZIP.
             self.set_step("packaging_results")
             archive_run(self.run_id)
 
@@ -794,5 +1038,6 @@ def execute_run(
     date_filter: str | None = None,
     keyword: str | None = None,
     commodity_code: str | None = None,
+    niche: str | None = None,
 ) -> None:
-    SeptaScraper(run_id, date_filter, keyword, commodity_code).run()
+    SeptaScraper(run_id, date_filter, keyword, commodity_code, niche).run()

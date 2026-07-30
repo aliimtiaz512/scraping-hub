@@ -62,6 +62,14 @@ def download_run(run_id: str):
     if run.get("status") != "completed":
         raise HTTPException(status_code=409, detail="Run has not completed — nothing to download yet.")
 
+    # Portals whose only output is the spreadsheet serve it unwrapped — there is
+    # nothing else a ZIP would carry. Checked BEFORE zip_path so a run archived
+    # while the portal still packaged ZIPs is delivered as a bare sheet too;
+    # otherwise every run made before the switch would keep downloading as a ZIP
+    # forever, which reads as "the change didn't work".
+    if run.get("scraper") in exports.EXCEL_ONLY_PORTALS:
+        return _excel_response(run)
+
     # The normal path: the archive ZIP packaged at completion.
     zip_path = run.get("zip_path")
     if zip_path and Path(zip_path).is_file():
@@ -70,11 +78,6 @@ def download_run(run_id: str):
             filename=Path(zip_path).name,
             media_type="application/zip",
         )
-
-    # Portals whose only output is the spreadsheet serve it unwrapped — there is
-    # nothing else a ZIP would carry.
-    if run.get("scraper") in exports.EXCEL_ONLY_PORTALS:
-        return _excel_response(run)
 
     # Legacy fallbacks below: runs made before the archive existed (their files
     # may still sit in data/documents), or a run whose packaging failed.

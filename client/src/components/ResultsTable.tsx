@@ -22,7 +22,7 @@ export default function ResultsTable({ bids }: { bids: BidResult[] }) {
           <td className="max-w-md truncate px-4 py-3 text-ink-700" title={bid.title}>
             {bid.title}
           </td>
-          <td className="tabular px-4 py-3 text-center text-ink-600">{bid.documents.length}</td>
+          <td className="tabular px-4 py-3 text-center text-ink-600">{bid.documents?.length ?? 0}</td>
           <td className="px-4 py-3">
             {bid.error ? (
               <DocStatus state="failed" title={bid.error} />

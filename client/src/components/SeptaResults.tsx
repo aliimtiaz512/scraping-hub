@@ -14,6 +14,7 @@ export default function SeptaResults({ bids }: { bids: BidResult[] }) {
         { label: "Summary" },
         { label: "Open Date" },
         { label: "Close Date" },
+        { label: "Matched Term(s)" },
       ]}
     >
       {bids.map((bid, i) => (
@@ -26,6 +27,10 @@ export default function SeptaResults({ bids }: { bids: BidResult[] }) {
           </td>
           <td className="tabular whitespace-nowrap px-4 py-3 text-xs text-ink-600">{bid.open_date || "—"}</td>
           <td className="tabular whitespace-nowrap px-4 py-3 text-xs text-ink-600">{bid.close_date || "—"}</td>
+          {/* A quote found by several of the niche's terms lists all of them. */}
+          <td className="max-w-xs truncate px-4 py-3 text-xs text-ink-600" title={bid.matched_terms ?? ""}>
+            {bid.matched_terms || "—"}
+          </td>
         </tr>
       ))}
     </DataTable>
