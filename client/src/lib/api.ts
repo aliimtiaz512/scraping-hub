@@ -112,18 +112,12 @@ export interface BidResult {
   buyer_description?: string;
   buyer?: string;
   end_date?: string;
-<<<<<<< Updated upstream
   // MyFlorida ad-status sweep: the classifier's verdict for this ad. The sweep
   // reports rows itself rather than through the per-bid document crawl, so it
   // carries these instead of `documents`/`error` — see MyFloridaSweepResults.
   niche?: string;
   score?: number;
   strength?: string | null;
-  // shared, but only from the flows that download documents per bid — optional
-  // because the sweep does not.
-  documents?: string[];
-  error?: string | null;
-=======
   // EMMA (eMaryland Marketplace Advantage) — reuses shared solicitation_type/status/close_date/title
   emma_id?: string;
   bpm_code?: string;
@@ -134,10 +128,10 @@ export interface BidResult {
   award_status?: string;
   procurement_officer?: string;
   matched_filters?: string;
-  // shared
-  documents: string[];
-  error: string | null;
->>>>>>> Stashed changes
+  // shared, but only from the flows that download documents per bid — optional
+  // because the sweep does not.
+  documents?: string[];
+  error?: string | null;
   document_errors?: string[];
 }
 

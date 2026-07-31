@@ -32,7 +32,7 @@ from selenium.webdriver.support import expected_conditions as EC
 
 from app.config import settings
 from app.core import run_manager
-from app.core.base_scraper import BaseScraper
+from app.core.base_scraper import BaseScraper, StopRequested
 from app.core.closing_filter import MIN_DAYS_UNTIL_CLOSE, days_until_close
 from app.core.exports import archive_run
 from app.core.filenames import sanitize_filename
@@ -85,6 +85,9 @@ DOC_GRID_ID = "body_x_tabc_rfp_ext_prxrfp_ext_x_prxDoc_x_grid_grd"
 DOC_ROW_CSS = f"#{DOC_GRID_ID} tbody tr[data-id]"
 DOC_LINK_CSS = f"#{DOC_GRID_ID} a[href*='/fil/download/']"
 DOC_GRID_WAIT = 20        # seconds to wait for the documents grid to populate
+# Recycle the browser proactively every N solicitations during the document
+# crawl, so a long headless session doesn't grow until Chrome is OOM-killed.
+RECYCLE_EVERY = 75
 
 MAX_PAGES = 200       # pagination safety guard
 PREVIEW_LIMIT = 100   # rows mirrored to the live run state for the UI table
@@ -552,30 +555,96 @@ class EmmaScraper(BaseScraper):
     def download_all_documents(self) -> None:
         """Open each kept solicitation's detail page and download its documents
         into a per-bid folder under the run folder. Updates each record's
-        `documents` list and the run's documents_downloaded total. Best-effort per
-        solicitation: one failing detail page never aborts the run."""
+        `documents` list and the run's documents_downloaded total.
+
+        Resilient to the browser dying mid-crawl: this is a long session (one
+        detail page per solicitation, hundreds of downloads), and headless Chrome
+        can be OOM-killed or crash. Rather than spinning through every remaining
+        solicitation logging instant "invalid session id" failures, a dead session
+        is detected and the browser is restarted + re-logged-in once, then the
+        same solicitation is retried; if the restart itself fails, the document
+        phase stops cleanly and the run keeps everything gathered so far. The
+        browser is also recycled proactively every RECYCLE_EVERY solicitations to
+        keep the session from growing unbounded in the first place.
+        """
         self.set_step("downloading_documents")
         total = 0
+        since_recycle = 0
         for index, rec in enumerate(self._records, start=1):
             self.raise_if_stopped()  # a long doc crawl must respond to Stop
             url = rec.get("detail_url")
             if not url:
                 continue
+
+            # Proactively recycle the browser so a very long crawl doesn't grow
+            # the session until Chrome is killed.
+            if since_recycle >= RECYCLE_EVERY:
+                logger.info("[run %s] recycling browser after %s solicitations", self.run_id, since_recycle)
+                if self._restart_browser():
+                    since_recycle = 0
+                else:
+                    run_manager.add_error(
+                        self.run_id, "could not restart the browser during document download; "
+                        "stored everything gathered so far",
+                    )
+                    break
+
             code = rec.get("bpm_code") or rec.get("emma_id") or f"bid{index}"
             self.set_step(f"downloading_documents:{code}")
             try:
                 names = self._download_solicitation_docs(url, rec)
-            except WebDriverException as exc:
-                logger.info("[run %s] docs failed for %s: %s", self.run_id, code, exc.__class__.__name__)
-                rec.setdefault("document_errors", []).append(str(exc)[:200])
-                names = []
+            except StopRequested:
+                raise  # user Stop — let it unwind, never treat it as a doc failure
+            except Exception as exc:  # noqa: BLE001 — classify before deciding
+                if self._is_dead_session_error(exc):
+                    # The browser process is gone. Restart + re-login once, then
+                    # retry this solicitation; if recovery fails, stop the phase.
+                    logger.warning("[run %s] browser session lost at %s — restarting", self.run_id, code)
+                    if not self._restart_browser():
+                        run_manager.add_error(
+                            self.run_id, "browser session was lost during document download and "
+                            "could not be restarted; stored everything gathered so far",
+                        )
+                        break
+                    since_recycle = 0
+                    try:
+                        names = self._download_solicitation_docs(url, rec)
+                    except StopRequested:
+                        raise
+                    except Exception as exc2:  # noqa: BLE001
+                        if self._is_dead_session_error(exc2):
+                            run_manager.add_error(
+                                self.run_id, "browser session kept dropping during document "
+                                "download; stored everything gathered so far",
+                            )
+                            break
+                        rec.setdefault("document_errors", []).append(str(exc2)[:200])
+                        names = []
+                else:
+                    logger.info("[run %s] docs failed for %s: %s", self.run_id, code, exc.__class__.__name__)
+                    rec.setdefault("document_errors", []).append(str(exc)[:200])
+                    names = []
             rec["documents"] = names
             total += len(names)
+            since_recycle += 1
             run_manager.update_run(self.run_id, documents_downloaded=total)
             logger.info("[run %s] %s: %s document(s) (running total %s)",
                         self.run_id, code, len(names), total)
         logger.info("[run %s] downloaded %s documents across %s solicitations",
                     self.run_id, total, len(self._records))
+
+    def _restart_browser(self) -> bool:
+        """Tear down and relaunch the browser, then re-login. Returns True on
+        success. Used to recover from (or pre-empt) a dead session mid-crawl."""
+        try:
+            self.stop_driver()
+            time.sleep(1)
+            self.start_driver()
+            self.login()
+            return True
+        except Exception:  # noqa: BLE001 — a failed restart just ends the doc phase
+            logger.exception("[run %s] browser restart failed", self.run_id)
+            return False
 
     def _download_solicitation_docs(self, url: str, rec: dict[str, Any]) -> list[str]:
         """Download every file in one solicitation's RFx Documents grid.

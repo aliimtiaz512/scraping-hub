@@ -46,7 +46,10 @@
       "Bash(.venv/bin/python -c \"from app.scrapers.emma import scraper; print\\('emma scraper imports OK; has download_all_documents:', hasattr\\(scraper.EmmaScraper,'download_all_documents'\\)\\)\")",
       "Bash(.venv/bin/python -c \"import main; print\\('full server imports OK'\\)\")",
       "Bash(git -C .. status --short)",
-      "Bash(curl -s --max-time 6 http://localhost:8000/)"
+      "Bash(curl -s --max-time 6 http://localhost:8000/)",
+      "Bash(grep -rlE *)",
+      "Bash(.venv/bin/python -c \"import main; from app.scrapers.emma import scraper; print\\('OK; recycle:', scraper.RECYCLE_EVERY, '| _restart_browser:', hasattr\\(scraper.EmmaScraper,'_restart_browser'\\)\\)\")",
+      "Bash(cd \"/home/akif-aziz/Public/Head office scrappers/scraping-hub\" && echo \"=== live: in-progress run folders in the temp workspace ===\" && ls -d \"/tmp/scraping-hub-runs/\"*EMMA* 2>/dev/null | head; echo \"  \\(per-bid folders inside a run, if any\\):\"; find /tmp/scraping-hub-runs -path '*EMMA*' -name '*.pdf' -o -path '*EMMA*' -name '*.doc*' 2>/dev/null | head -5; echo && echo \"=== finished-run archives \\(the deliverable ZIPs\\) ===\" && ls -lah data/archives/ 2>/dev/null | grep -iE \"emma|\\\\.zip\" | tail -10 || echo \"\\(no archives dir / no EMMA zips yet\\)\")"
     ],
     "additionalDirectories": [
       "/home/akif-aziz/Public/Head office scrappers/scraping-hub/client/.next"
