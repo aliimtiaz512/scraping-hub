@@ -29,8 +29,13 @@ from app.core.filenames import sanitize_filename
 
 logger = logging.getLogger(__name__)
 
-WAIT_TIMEOUT = 30
-DOWNLOAD_TIMEOUT = 120
+# Default element wait. Generous because these portals are slow under load and
+# a scraper that gives up early loses a whole search pass; callers that need a
+# tighter bound (a probe that expects to fail) pass their own.
+WAIT_TIMEOUT = 60
+# A single document. Public bid packages routinely include multi-hundred-MB
+# drawing sets, which take minutes on a slow portal.
+DOWNLOAD_TIMEOUT = 300
 
 # Chrome network errors that are worth retrying: a transient DNS/socket failure
 # rather than a real "this page is wrong" problem. DNS is the common one — a

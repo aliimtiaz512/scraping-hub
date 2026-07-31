@@ -121,6 +121,9 @@ export function runTarget(run: RunStatus): string {
   if (run.scraper === "unison") return run.filter_by?.trim() || "All buyer requests";
   if (run.scraper === "naics") return "NAICS reference refresh";
 
+  // BidNet: one niche per run — the niche is what the run was for, not the
+  // keyword it happened to be on when the history was written.
+  if (run.scraper === "bidnet" && run.niche_label) return run.niche_label;
   if (run.keywords?.length) return run.keywords.join(", ");
   if (run.keyword) return run.keyword;
   return "—";

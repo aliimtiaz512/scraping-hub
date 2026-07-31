@@ -156,6 +156,13 @@ export interface RunStatus {
   award_notice?: boolean;
   // Unison-only.
   filter_by?: string | null;
+  // BidNet-only: which niche the run is searching, and how many keywords it
+  // owns. `keyword`/`keyword_progress` track the one being searched now.
+  niche_label?: string;
+  keyword_count?: number;
+  /** Keywords the portal reported zero bids for — skipped without waiting on
+   *  results that were never coming. */
+  keywords_without_results?: string[];
   // BidNet-only: the sidebar filters this run was launched with, and a one-line
   // rendering of them for the status panel.
   filters?: BidnetFilters;
@@ -355,30 +362,41 @@ export function refreshBidnetFilterOptions(livePreview = false): Promise<{ run_i
   return request(`/bidnet/filters/refresh${livePreviewQuery(livePreview)}`, { method: "POST" });
 }
 
-/** BidNet's own limits on its search box, so the UI can enforce them as you type. */
-export interface BidnetKeywordLimits {
-  max_keywords: number;
-  max_keyword_length: number;
+/** A BidNet business sector. Its keywords live server-side and are never sent
+ *  to the client — a run selects a niche and the backend resolves the terms. */
+export interface BidnetNiche {
+  key: string;
+  label: string;
+  /** Filename-safe form of the label, used in the run folder name. */
+  slug: string | null;
+  /** How many keywords the niche searches, one search each. */
+  keyword_count: number;
 }
 
-export function getBidnetKeywordLimits(): Promise<BidnetKeywordLimits> {
-  return request("/bidnet/keyword-limits");
+export function getBidnetNiches(): Promise<{ niches: BidnetNiche[] }> {
+  return request("/bidnet/niches");
 }
 
 /**
- * Start a run. Each keyword is typed into the portal's search box and searched
- * on its own, and may be a whole boolean expression — the box supports `AND`,
- * `OR` and parenthesised grouping. An empty list falls back to the server-side
- * keyword catalog.
+ * Start a run over one niche. The backend looks up that niche's keywords and
+ * searches each separately in a single session — never combined into one
+ * boolean query, which would return only the bids matching every term.
  */
 export function startBidnetScrape(
-  keywords: string[],
+  niche: string,
   filters: BidnetFilters = {},
   livePreview = false,
-): Promise<{ run_id: string; keywords: string[]; folder: string; filters: BidnetFilters }> {
+): Promise<{
+  run_id: string;
+  niche: string;
+  niche_label: string;
+  keyword_count: number;
+  folder: string;
+  filters: BidnetFilters;
+}> {
   return request(`/bidnet/scrape${livePreviewQuery(livePreview)}`, {
     method: "POST",
-    body: JSON.stringify({ keywords, filters }),
+    body: JSON.stringify({ niche, filters }),
   });
 }
 

@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import BidnetFilters from "@/components/BidnetFilters";
-import BidnetKeywords, { keywordProblem, parseKeywords } from "@/components/BidnetKeywords";
+import BidnetNicheSelect from "@/components/BidnetNicheSelect";
 import BidnetResults from "@/components/BidnetResults";
 import RunStatusPanel, { stepLabel } from "@/components/RunStatus";
 import { ErrorBanner, LaunchBar, StartButton } from "@/components/ui";
@@ -11,13 +11,13 @@ import LiveMonitor from "@/components/LiveMonitor";
 import StopButton from "@/components/StopButton";
 import {
   getBidnetFilters,
-  getBidnetKeywordLimits,
+  getBidnetNiches,
   getRunStatus,
   refreshBidnetFilterOptions,
   startBidnetScrape,
   type BidnetFilterCatalog,
   type BidnetFilters as Filters,
-  type BidnetKeywordLimits,
+  type BidnetNiche,
   type RunStatus,
 } from "@/lib/api";
 
@@ -25,8 +25,8 @@ const POLL_INTERVAL_MS = 3000;
 
 export default function BidnetPanel() {
   const [catalog, setCatalog] = useState<BidnetFilterCatalog | null>(null);
-  const [limits, setLimits] = useState<BidnetKeywordLimits | null>(null);
-  const [keywordText, setKeywordText] = useState("");
+  const [niches, setNiches] = useState<BidnetNiche[]>([]);
+  const [selectedNiche, setSelectedNiche] = useState("");
   const [filters, setFilters] = useState<Filters>({});
   const [run, setRun] = useState<RunStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -53,9 +53,11 @@ export default function BidnetPanel() {
 
   useEffect(() => {
     void loadCatalog();
-    // Limits are advisory (the server enforces them too), so a failure here
-    // just leaves the UI on its built-in defaults rather than erroring.
-    getBidnetKeywordLimits().then(setLimits).catch(() => {});
+    getBidnetNiches()
+      .then((data) => setNiches(data.niches))
+      .catch((e: Error) =>
+        setError(`Could not load niches — is the API running? (${e.message})`),
+      );
   }, [loadCatalog]);
 
   const stopPolling = useCallback(() => {
@@ -99,7 +101,7 @@ export default function BidnetPanel() {
     setError(null);
     setStarting(true);
     try {
-      const { run_id } = await startBidnetScrape(parseKeywords(keywordText), filters, livePreview);
+      const { run_id } = await startBidnetScrape(selectedNiche, filters, livePreview);
       setRun(await getRunStatus("bidnet", run_id));
       poll(pollRef, run_id, setRun);
     } catch (e) {
@@ -126,9 +128,14 @@ export default function BidnetPanel() {
   // Purchasing Group is the one filter that can be emptied into a search that
   // matches nothing — BidNet treats "no group" as "no results".
   const noPurchasingGroup = filters.purchasing_groups?.length === 0;
+  const niche = niches.find((n) => n.key === selectedNiche) ?? null;
   const blocked =
-    (noPurchasingGroup && "Select at least one purchasing group — BidNet returns nothing without one.") ||
-    keywordProblem(keywordText, limits);
+    (niches.length === 0 &&
+      "No niches configured — add them to server/app/scrapers/bidnet/niches.py and restart the API.") ||
+    (!selectedNiche && "Select a niche to search.") ||
+    (noPurchasingGroup &&
+      "Select at least one purchasing group — BidNet returns nothing without one.") ||
+    null;
 
   return (
     <div className="space-y-6">
@@ -136,11 +143,11 @@ export default function BidnetPanel() {
 
       {refreshRun && <RefreshNotice run={refreshRun} />}
 
-      <BidnetKeywords
-        value={keywordText}
-        limits={limits}
+      <BidnetNicheSelect
+        niches={niches}
+        selected={selectedNiche}
         disabled={isRunning}
-        onChange={setKeywordText}
+        onSelect={setSelectedNiche}
       />
 
       {catalog && (
@@ -154,7 +161,7 @@ export default function BidnetPanel() {
         />
       )}
 
-      <LaunchBar summary={blocked ?? launchSummary(keywordText, filters, catalog)}>
+      <LaunchBar summary={blocked ?? launchSummary(niche, filters, catalog)}>
         <div className="flex items-center gap-2">
           <StopButton run={run} onError={setError} />
           <LiveMonitor run={run} portal="bidnet" />
@@ -204,7 +211,7 @@ function RefreshNotice({ run }: { run: RunStatus }) {
 }
 
 function launchSummary(
-  keywordText: string,
+  niche: BidnetNiche | null,
   filters: Filters,
   catalog: BidnetFilterCatalog | null,
 ): string {
@@ -223,11 +230,9 @@ function launchSummary(
     if (filters[name]) active.push(name === "published_date" ? "Published Date" : "Closing Date");
   }
 
-  const count = parseKeywords(keywordText).length;
-  const searches =
-    count === 0
-      ? "The server's keyword catalog"
-      : `${count} ${count === 1 ? "search" : "searches"}, one per keyword`;
-  const base = `${searches} · ${status?.label ?? "Open Solicitations"}`;
+  const count = niche?.keyword_count ?? 0;
+  const base =
+    `${count} ${count === 1 ? "search" : "searches"}, one per keyword · ` +
+    `${status?.label ?? "Open Solicitations"}`;
   return active.length === 0 ? `${base} · no other filters.` : `${base} · ${active.join(", ")}.`;
 }

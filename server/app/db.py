@@ -23,6 +23,7 @@ def init_db() -> None:
     from app.scrapers.myflorida.sweep import models as _myflorida_sweep_models  # noqa: F401
     from app.scrapers.ridemetro import models as _ridemetro_models  # noqa: F401
     from app.scrapers.bidnet import models as _bidnet_models  # noqa: F401
+    from app.scrapers.bidnet import niche_models as _bidnet_niche_models  # noqa: F401
     from app.scrapers.wisconsin import models as _wisconsin_models  # noqa: F401
     from app.scrapers.northdakota import models as _northdakota_models  # noqa: F401
     from app.scrapers.septa import models as _septa_models  # noqa: F401
@@ -40,6 +41,12 @@ def init_db() -> None:
     from app.scrapers.septa.niches import seed_niches
 
     seed_niches()
+
+    # Same for the BidNet niche catalog: a run selects one niche and the
+    # scraper resolves its keywords from these tables.
+    from app.scrapers.bidnet.niches import seed_niches as seed_bidnet_niches
+
+    seed_bidnet_niches()
 
 
 def get_session() -> Iterator[Session]:

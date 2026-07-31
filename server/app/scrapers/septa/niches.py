@@ -6,7 +6,7 @@ This file is the **source of truth**. `seed_niches()` runs at startup (from
 the dropdown and what the scraper queries to resolve a run's search terms.
 
 To change the catalog: edit `NICHES` below and restart the API. There is no
-admin UI by design — same approach as `app/scrapers/bidnet/keywords.py`.
+admin UI by design — same approach as `app/scrapers/bidnet/niches.py`.
 
 Shape of an entry
 -----------------

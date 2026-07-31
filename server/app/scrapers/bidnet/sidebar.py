@@ -55,8 +55,8 @@ logger = logging.getLogger(__name__)
 
 # The portal reloads the results list on every filter postback; these are how
 # long we give it and how long we let the DOM settle before reading it back.
-POSTBACK_TIMEOUT = 30
-SETTLE_SECONDS = 2
+POSTBACK_TIMEOUT = 60
+SETTLE_SECONDS = 3
 
 # Results-table row — present once a postback has re-rendered the list. A search
 # that legitimately matches nothing has no rows, so waits on it are best-effort.

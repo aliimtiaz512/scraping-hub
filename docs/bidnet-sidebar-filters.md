@@ -1,25 +1,30 @@
-# BidNet Direct — dynamic sidebar filters
+# BidNet Direct — niche-driven sequential search + sidebar filters
 
-How the frontend's filter choices reach BidNet Direct's search sidebar.
+How a niche's keywords are searched one at a time, and how the frontend's
+filter choices reach BidNet Direct's search sidebar.
 
-**Unchanged:** the login flow (`BidnetScraper.login`) and the keyword search
-(`BidnetScraper.search`) are untouched. Filters are applied *after* a keyword's
-search has run, narrowing that search's own result set.
+**Unchanged:** the login flow (`BidnetScraper.login`) and the mechanics of a
+single keyword search (`BidnetScraper.search` — type into the box, click the
+button) are untouched. What changed is *what* gets searched (a niche's keywords,
+from the database, one at a time) and *where the output lands* (one folder, one
+spreadsheet). Filters are applied after each keyword's search has run, narrowing
+that search's own result set.
 
 ## Where each piece lives
 
 | Layer | File |
 | --- | --- |
+| Niche catalog (keywords, DB-backed) | `server/app/scrapers/bidnet/niches.py`, `niche_models.py` |
 | Filter catalog, request model, validation | `server/app/scrapers/bidnet/filters.py` |
 | Selenium driver for the sidebar | `server/app/scrapers/bidnet/sidebar.py` |
 | Option discovery ("View All" harvest) | `server/app/scrapers/bidnet/discovery.py` |
 | Scrape wiring | `server/app/scrapers/bidnet/scraper.py` |
 | Endpoints | `server/app/scrapers/bidnet/router.py` |
-| UI | `client/src/components/BidnetKeywords.tsx`, `BidnetFilters.tsx`, `BidnetPanel.tsx` |
+| UI | `client/src/components/BidnetNicheSelect.tsx`, `BidnetFilters.tsx`, `BidnetPanel.tsx` |
 
-The console is two cards: **Search keywords** (the textarea) and **Filters** —
-Status always visible, every other panel a collapsed row showing its current
-selection, one open at a time.
+The console is two cards: **Niche** (a single dropdown) and **Filters** — Status
+always visible, every other panel a collapsed row showing its current selection,
+one open at a time.
 
 ## 1. Element targeting
 
@@ -138,52 +143,118 @@ Purchasing Group are **not** partial:
 ## 2. Backend workflow
 
 ```
-POST /bidnet/scrape  { keywords: [...], filters: { status, locations, …, closing_date } }
+POST /bidnet/scrape  { niche: "ai_analytics", filters: { status, locations, …, closing_date } }
   → filters.validate_request()          reject unknown ids / incomplete dates (400)
-  → clean_keywords() / validate_keywords()   strip, de-dup, check the box's limits (400)
-                                        an empty list falls back to the server catalog
-  → run_manager.create_run(filters=…)   the run records exactly what was asked for
-  → BidnetScraper(run_id, keywords, filters)
+  → niches.get_niche / keywords_for     resolve the niche's keywords from the DB (400 if unknown/empty)
+  → run_manager.create_run(...)         the run records the niche and its filters
+  → BidnetScraper(run_id, keywords, filters, niche_label)
 
-login()                                 UNCHANGED
-for each niche+tier group:
-  for each keyword:
-    search(keyword)                     UNCHANGED — types into #solicitationSingleBoxSearch,
-                                        clicks #topSearchButton
-    filter_member_agency()              UNCHANGED
-    apply_sidebar_filters()             ← NEW: SidebarDriver.apply(filters)
-    collect_links()                     paginate the now-filtered result set
-  process_bid(link, group_folder)       unchanged
+login()                                 once per run
+for each keyword of the niche:          SEQUENTIAL — one keyword, one search
+    ensure_logged_in()                  re-login if the session expired mid-run
+    search(keyword)                     types into #solicitationSingleBoxSearch,
+                                        clicks #topSearchButton, waits for jQuery idle
+    result_count() == 0 ? -> continue   FAST-FAIL: skip the keyword entirely
+    filter_member_agency()
+    apply_sidebar_filters()             ← SidebarDriver.apply(filters)
+    collect_links()                     paginate, accumulating links
+for each DISTINCT link:                 deduplicated across every keyword
+    process_bid(link, run_folder)       scrape fields + download documents
+_write_master_excel()                   one spreadsheet for the whole run
 ```
 
-### Keywords
+### Niches and keywords
 
-Typed in the console, one per line, and sent as a list. Each is typed into the
-portal's own search box and searched on its own — never concatenated — so one
-line is one full search + pagination pass:
+A run searches **one niche**. Its keywords live in `bidnet_niche_keywords`,
+seeded at API startup from `NICHES` in `app/scrapers/bidnet/niches.py` (the
+source of truth — edit there and restart). `GET /bidnet/niches` returns only
+`{key, label, slug, keyword_count}`: the terms never reach the browser, and the
+scrape request carries a niche key, nothing else.
+
+**One keyword, one search.** The client's taxonomy guide supplies "copy-paste
+search strings" like
+`("graphic design" OR "ADA compliant") AND ("annual report" OR "signage")`.
+Those are deliberately **not** used — a combined boolean query only returns
+solicitations matching every AND-group, a fraction of what the terms find
+individually. The strings are decomposed into their component terms and searched
+one at a time in the same session, then merged.
+
+Multi-word terms are stored quoted (`"graphic design"`) so BidNet matches the
+phrase; the search box's own help documents `AND`, `OR` and parentheses, and the
+guide quotes every phrase. A quoted phrase is still one search term.
+
+The guide's NIGP/UNSPSC codes are recorded in each niche's `notes` for
+traceability but are **not** searched: the keyword box is full-text, and BidNet's
+NIGP sidebar filter keys off internal ids (`112450`), not published class-item
+numbers (`965-46`).
+
+### Output
+
+One project folder per run — `Bidnetdirect <niche-slug> (<timestamp>)` — holding
+a per-bid subfolder of documents for every solicitation, and one master
+spreadsheet at its root. There is no per-keyword or per-tier split: a run is a
+single niche.
+
+The master sheet is named with `core.exports.excel_name`, the same name the
+packaging step gives its DB-regenerated copy, so `build_zip` recognises it as
+already present and the ZIP ships **exactly one** spreadsheet — the database's
+version when Postgres is reachable, the scraper's on-disk one when it is not.
+One row per solicitation, with every keyword that surfaced it comma-joined in
+`Matched Keyword`.
+
+### Zero-result fast-fail
+
+A niche's keywords routinely match nothing on a given day — in one live sample,
+three of four did. Before this check, an empty search cost a grouping click plus
+a **60-second** element wait for rows that were never coming, and then logged a
+misleading "search failed" error.
+
+The portal answers the question directly. Each result-group tab carries its own
+count:
 
 ```html
-<textarea id="solicitationSingleBoxSearch" name="keywords" maxlength="1000" …>
-<button id="topSearchButton" class="topSearch …" title="Search">
+<div class="searchContentGroupContainer" search-content-group-id="2085061601">
+  <span class="solicitationCount">1,848</span> … Member Agency Bids
 ```
 
-A line may be a whole boolean expression: the box's help tooltip documents
-capitalised `AND` / `OR` and parenthesised grouping
-(`(Construction AND Demolition) OR (Construction AND Electrical)`), and the text
-is passed through verbatim — nothing parses or splits it. Two limits are enforced
-before a run starts, both surfaced by `GET /bidnet/keyword-limits`:
+`result_count()` reads `.solicitationCount` from the Member Agency group — 0 when
+nothing matched. A zero sends the loop straight to the next keyword: no grouping
+click, no sidebar filters, no pagination, no row waits.
 
-* **1000 characters per keyword** — the textarea's own `maxlength`. Over that,
-  the browser would silently truncate, quietly searching something other than
-  what was asked.
-* **100 keywords per run** — a guard against a paste turning one click into a
-  multi-hour run.
+Two DOM facts make the naive checks wrong, both established by inspecting the
+live portal:
 
-Keywords that are not in the server-side catalog land in the `Bidnetdirect_Custom`
-folder (`group_keywords`), so typed searches are foldered together.
+1. **The "No results match your criteria." row is always in the DOM.** It is a
+   template row; only the `visible` class distinguishes the states
+   (`mets-table-row-empty visible` vs `mets-table-row-empty`). Testing for the
+   element's *existence* reports every search as empty. Counting `.visible` ones
+   page-wide is no good either — other tables on the page contribute their own
+   (2 for a results-rich search, 3 for an empty one).
+2. **The count is stale until the search's AJAX lands.** Measured immediately
+   after `search()` returns, a keyword with 524 hits still showed the *previous*
+   search's `1,848` with `jQuery.active == 1`, settling ~0.5s later. Reading
+   early gives a confidently wrong answer, so `_await_ajax_idle()` waits for
+   `jQuery.active == 0` first — which also replaced a blind 5-second sleep in
+   `search()`.
 
-Filters are re-applied per keyword because each search re-renders the panels — the
-previous keyword's selection does not carry over.
+An unreadable count returns `None` and the keyword is processed normally:
+skipping one we could not read would silently lose bids, so the check fails open.
+
+Skipped keywords are collected on the run as `keywords_without_results`, with a
+warning naming them; a niche where *every* keyword misses sets `no_results`.
+
+### Timeouts
+
+A niche of ~20 keywords is a long sequential run, so the waits are generous
+(`scraper.py`): `ELEMENT_TIMEOUT` 60s, `DETAIL_TIMEOUT` 45s, `PAGINATION_TIMEOUT`
+30s, `DOC_DOWNLOAD_TIMEOUT` 90s, `SEARCH_SETTLE_SECONDS` 5s; shared
+`WAIT_TIMEOUT` 30→60s and `DOWNLOAD_TIMEOUT` 120→300s in `base_scraper.py`;
+`POSTBACK_TIMEOUT` 30→60s in `sidebar.py`.
+
+Timeouts alone are not enough: BidNet expires the session partway through a long
+run, which surfaces as a redirect to the login page rather than as a timeout.
+`ensure_logged_in()` checks for the post-login menu before every keyword and
+signs in again if it has gone, recording a note on the run.
 
 ### How a selection becomes a form submission
 

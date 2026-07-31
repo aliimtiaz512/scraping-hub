@@ -51,7 +51,7 @@ _GENERATOR_PORTALS = {
 _EXPORT_MODULES = {"myflorida_sweep": "app.scrapers.myflorida.sweep.export"}
 
 
-def _excel_name(run: dict[str, Any]) -> str:
+def excel_name(run: dict[str, Any]) -> str:
     """Download filename for a regenerated sheet, following each portal's
     existing naming convention (criteria in the name, no timestamps)."""
     scraper = run.get("scraper") or "results"
@@ -86,7 +86,7 @@ def excel_bytes(run: dict[str, Any]) -> tuple[bytes, str] | None:
             with tempfile.TemporaryDirectory() as tmp:
                 out = Path(tmp) / "export.xlsx"
                 module.generate_excel(run["run_id"], out)
-                return out.read_bytes(), _excel_name(run)
+                return out.read_bytes(), excel_name(run)
         except Exception:  # noqa: BLE001 — fall back to any on-disk copy
             logger.exception("[run %s] on-demand Excel generation failed", run.get("run_id"))
 
@@ -126,17 +126,12 @@ def build_zip(run: dict[str, Any], out_path: Path) -> str:
     scraper = run.get("scraper")
     folder = Path(run.get("folder") or "")
     with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as zf:
-        if scraper == "bidnet":
-            # BidNet's run folder is the shared per-day bucket; only this run's
-            # group folders belong in its ZIP. Older runs recorded no groups —
-            # for those the day bucket is the closest thing to the run's output.
-            groups = [Path(g) for g in run.get("group_folders") or []]
-            if not groups and folder.is_dir():
-                groups = [folder]
-            for group in groups:
-                if group.is_dir():
-                    _add_tree(zf, group, group.name if group != folder else "")
-        elif folder.is_dir():
+        # Legacy BidNet runs foldered results per niche+tier group inside a
+        # shared per-day bucket, so only this run's groups belonged in its ZIP.
+        # A run is now one niche in its own timestamped folder, and `folder` is
+        # exactly the run's output — the generic walk below covers both, since
+        # old runs' group folders sit under the bucket it points at.
+        if folder.is_dir():
             _add_tree(zf, folder)
 
         payload = excel_bytes(run)

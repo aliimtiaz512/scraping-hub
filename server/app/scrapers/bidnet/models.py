@@ -54,7 +54,12 @@ class BidnetBid(Base):
     question_acceptance_deadline: Mapped[str | None] = mapped_column(String(64))
     closing_date: Mapped[str | None] = mapped_column(String(64))
     documents_count: Mapped[str | None] = mapped_column(String(32))
+    # Every keyword of the run's niche that surfaced this solicitation, comma-
+    # joined — the niche is searched one keyword at a time and the same bid is
+    # often found by several.
     matched_keyword: Mapped[str | None] = mapped_column(Text)
+    # Which niche the run searched (a run is always exactly one).
+    niche: Mapped[str | None] = mapped_column(String(64), index=True)
 
     # Complete original scraped record: {field -> value}. Preserved so nothing is
     # lost even when the portal's fields differ from what we mapped.
@@ -66,6 +71,7 @@ class BidnetBid(Base):
 # Column order for the generated Excel, mapped to friendly headers (matches the
 # original on-demand export).
 EXCEL_COLUMNS: list[tuple[str, str]] = [
+    ("niche", "Niche"),
     ("reference_number", "Reference Number"),
     ("solicitation_number", "Solicitation Number"),
     ("solicitation_type", "Solicitation Type"),

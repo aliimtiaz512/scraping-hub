@@ -13,16 +13,9 @@ from app.config import settings
 from app.core import run_manager
 from app.core.filenames import timestamp
 from app.db import get_session
-from app.scrapers.bidnet import export, filters
+from app.scrapers.bidnet import export, filters, niches as niche_catalog
 from app.scrapers.bidnet.discovery import execute_discovery
 from app.scrapers.bidnet.filters import SidebarFilterRequest
-from app.scrapers.bidnet.keywords import (
-    MAX_KEYWORDS,
-    MAX_KEYWORD_LENGTH,
-    catalog_terms,
-    clean_keywords,
-    validate_keywords,
-)
 from app.scrapers.bidnet.models import EXCEL_COLUMNS, BidnetBid
 from app.scrapers.bidnet.scraper import execute_run
 
@@ -32,14 +25,12 @@ router = APIRouter(prefix="/bidnet", tags=["bidnet"])
 class ScrapeRequest(BaseModel):
     """What a run searches, and how it is narrowed.
 
-    `keywords` are typed in the frontend and go into the portal's search box one
-    at a time — each is a separate search, and each may be a whole boolean
-    expression (`Construction AND Demolition`, `(A AND B) OR (A AND C)`), which
-    the box supports. Leaving them empty falls back to the server-side catalog in
-    `keywords.py`.
+    `niche` is a catalog key from `GET /bidnet/niches`. Its keywords live in the
+    database and are resolved server-side — the client never sends search terms,
+    and never sees them.
     """
 
-    keywords: list[str] = Field(default_factory=list)
+    niche: str
     filters: SidebarFilterRequest = Field(default_factory=SidebarFilterRequest)
 
 
@@ -71,66 +62,97 @@ def refresh_filters(background_tasks: BackgroundTasks, live_preview: bool = Fals
     return {"run_id": run["run_id"]}
 
 
-@router.get("/keyword-limits")
-def keyword_limits() -> dict:
-    """The portal's own search-box limits, so the UI can enforce them as you type."""
-    return {"max_keywords": MAX_KEYWORDS, "max_keyword_length": MAX_KEYWORD_LENGTH}
+@router.get("/niches")
+def list_niches(session: Session = Depends(get_session)) -> dict:
+    """The niche dropdown: key, label and how many keywords each one searches.
+
+    Seeded from app/scrapers/bidnet/niches.py at startup. The keywords
+    themselves are deliberately **not** returned — a niche is the only search
+    input the frontend has, and the terms stay server-side.
+    """
+    try:
+        rows = niche_catalog.list_niches(session)
+    except OperationalError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Database unavailable — check DATABASE_URL in server/.env",
+        ) from exc
+    return {
+        "niches": [
+            {
+                "key": niche.key,
+                "label": niche.label,
+                "slug": niche.slug,
+                "keyword_count": len(niche.keywords),
+            }
+            for niche in rows
+        ]
+    }
 
 
 @router.post("/scrape")
 def start_scrape(
+    request: ScrapeRequest,
     background_tasks: BackgroundTasks,
-    request: ScrapeRequest | None = None,
     live_preview: bool = False,
+    session: Session = Depends(get_session),
 ) -> dict:
-    # Sidebar filters are optional: an omitted body means the portal's own
+    # Sidebar filters are optional: an omitted `filters` means the portal's own
     # defaults (Open Solicitations, every purchasing group, nothing else set).
-    # Checked before the keywords so a bad request is reported as such rather
-    # than being masked by an unrelated server-side configuration error.
-    body = request or ScrapeRequest()
-    problems = filters.validate_request(body.filters)
+    problems = filters.validate_request(request.filters)
     if problems:
         raise HTTPException(status_code=400, detail="; ".join(problems))
 
-    # Keywords typed in the frontend win; an empty list falls back to the
-    # server-side catalog, so an automated caller can still run the curated set.
-    keywords = clean_keywords(body.keywords) or clean_keywords(catalog_terms())
-    problems = validate_keywords(keywords)
-    if problems:
-        raise HTTPException(status_code=400, detail="; ".join(problems))
+    try:
+        niche = niche_catalog.get_niche(session, request.niche)
+        keywords = niche_catalog.keywords_for(session, request.niche) if niche else []
+    except OperationalError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Database unavailable — check DATABASE_URL in server/.env",
+        ) from exc
+    if niche is None:
+        raise HTTPException(status_code=400, detail=f"Unknown niche: {request.niche}")
     if not keywords:
         raise HTTPException(
             status_code=400,
             detail=(
-                "no keywords to search — enter at least one in the console, or add "
-                "them to NICHES in app/scrapers/bidnet/keywords.py"
+                f"niche '{niche.label}' has no keywords — add them to NICHES in "
+                "app/scrapers/bidnet/niches.py and restart the API"
             ),
         )
 
-    sidebar = body.filters
+    sidebar = request.filters
     label = timestamp()  # e.g. 2026-07-08 14-30-05
-    # Per-run workspace parent (its name becomes the run's ZIP name), inside
-    # which results are foldered per niche+tier (Bidnetdirect_AI-ML_core, ...) —
-    # the scraper builds those, keeping niches separated. Timestamped so
-    # concurrent runs never share a workspace.
-    folder = run_manager.make_run_folder(f"Bidnetdirect ({label})")
+    # One workspace per run (its name becomes the run's ZIP name), holding every
+    # keyword's results together: a run is a single niche, so there is nothing
+    # to separate. Timestamped so concurrent runs never share a workspace.
+    folder = run_manager.make_run_folder(f"Bidnetdirect {niche.slug or niche.key} ({label})")
     run = run_manager.create_run(
         "bidnet",
         folder,
         {
             "label": label,
-            "keyword": ", ".join(keywords),
-            "keywords": keywords,
+            "niche": niche.key,
+            "niche_label": niche.label,
+            # Names the run's spreadsheet (see core.exports.excel_name).
+            "search": niche.label,
+            # The keyword currently being searched; seeded with the first so the
+            # status panel has something to show before the browser is up.
+            "keyword": keywords[0],
+            "keyword_count": len(keywords),
             "excel_exported": False,
             "live_preview": live_preview,
             "filters": sidebar.model_dump(exclude_none=True),
             "filters_summary": sidebar.summary(),
         },
     )
-    background_tasks.add_task(execute_run, run["run_id"], keywords, sidebar)
+    background_tasks.add_task(execute_run, run["run_id"], niche.key, sidebar)
     return {
         "run_id": run["run_id"],
-        "keywords": keywords,
+        "niche": niche.key,
+        "niche_label": niche.label,
+        "keyword_count": len(keywords),
         "folder": run["folder"],
         "filters": sidebar.model_dump(exclude_none=True),
     }

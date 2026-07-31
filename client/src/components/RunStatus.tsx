@@ -64,7 +64,12 @@ function runSubtitle(run: RunStatusData): string {
     return `${run.category_label} · “${run.keyword}”${progress}`;
   }
   if (run.category_label) return run.category_label;
-  if (run.scraper === "bidnet") return run.keyword ? `“${run.keyword}”` : "BidNet Direct";
+  // BidNet runs one niche, working through its keywords one at a time.
+  if (run.scraper === "bidnet") {
+    if (!run.niche_label) return run.keyword ? `“${run.keyword}”` : "BidNet Direct";
+    const progress = run.keyword_progress ? ` ${run.keyword_progress}` : "";
+    return run.keyword ? `${run.niche_label} · ${run.keyword}${progress}` : run.niche_label;
+  }
   if (run.scraper === "ridemetro") return "RideMetro";
   if (run.scraper === "myflorida") return "MyFlorida";
   if (run.scraper === "northdakota") return run.search && run.search !== "all public solicitations" ? run.search : "North Dakota";
