@@ -24,6 +24,9 @@ const STEP_LABELS: Record<string, string> = {
   generating_excel: "Generating Excel from database",
   // BidNet
   filtering_member_agency: "Filtering to Member Agency Bids",
+  applying_filters: "Applying sidebar filters",
+  opening_search: "Opening the solicitation search",
+  harvesting_filter_options: "Reading BidNet's filter options",
   opening_bid: "Opening solicitation",
   // North Dakota
   awaiting_manual_login: "Waiting for you to solve the CAPTCHA in the browser…",

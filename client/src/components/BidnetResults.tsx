@@ -19,13 +19,19 @@ export default function BidnetResults({ bids }: { bids: BidResult[] }) {
         { label: "Status" },
       ]}
     >
+      {/* The index is part of the key because a reference number is neither
+          present nor unique: the scraper stores "" for a field it could not read
+          off the detail page, and the same solicitation is listed once per
+          niche+tier group that surfaced it. `||` rather than `??` throughout for
+          the same reason — an unread field is "", which `??` would let through
+          as a blank cell. */}
       {bids.map((bid, i) => (
-        <tr key={bid.reference_number ?? i} className="transition hover:bg-ink-50">
+        <tr key={`${bid.reference_number || "row"}-${i}`} className="transition hover:bg-ink-50">
           <td className="whitespace-nowrap px-4 py-3 font-mono text-xs font-medium text-ink-900">
-            {bid.reference_number ?? "—"}
+            {bid.reference_number || "—"}
           </td>
           <td className="max-w-xs truncate px-4 py-3 text-ink-700" title={bid.title ?? ""}>
-            {bid.title ?? "—"}
+            {bid.title || "—"}
           </td>
           <td className="px-4 py-3">
             {bid.matched_keyword ? (
@@ -36,8 +42,8 @@ export default function BidnetResults({ bids }: { bids: BidResult[] }) {
               <span className="text-ink-400">—</span>
             )}
           </td>
-          <td className="whitespace-nowrap px-4 py-3 text-xs text-ink-600">{bid.solicitation_type ?? "—"}</td>
-          <td className="tabular whitespace-nowrap px-4 py-3 text-xs text-ink-600">{bid.closing_date ?? "—"}</td>
+          <td className="whitespace-nowrap px-4 py-3 text-xs text-ink-600">{bid.solicitation_type || "—"}</td>
+          <td className="tabular whitespace-nowrap px-4 py-3 text-xs text-ink-600">{bid.closing_date || "—"}</td>
           <td className="tabular px-4 py-3 text-center text-ink-600">{bid.documents?.length ?? 0}</td>
           <td className="px-4 py-3">
             {bid.error ? (

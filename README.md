@@ -14,10 +14,14 @@ results.
   commodity-code category, filters by ad status/type, downloads each bid's
   documents, and downloads the portal's own Excel export which it ingests into
   the DB and merges into one workbook. See `plan.md`.
-- **BidNet Direct** — logs in, searches a **curated keyword catalog** (grouped
-  into niche + tier, one keyword per query), filters to "Member Agency Bids",
-  paginates the results, opens each solicitation to scrape its fields and
-  download every document into a per-niche folder, and persists to the DB. See
+- **BidNet Direct** — logs in, searches the **keywords typed in the console**
+  (one per query; `AND`/`OR`/parentheses supported — falling back to the curated
+  server catalog when none are given), filters to "Member Agency Bids",
+  applies the **sidebar filters** chosen in the frontend (status, NIGP category,
+  organization, location, purchasing group, published/closing date, solicitation
+  type, general requirements — see `docs/bidnet-sidebar-filters.md`), paginates
+  the results, opens each solicitation to scrape its fields and download every
+  document into a per-niche folder, and persists to the DB. See
   `plan_bidnet-direct.md`.
 - **North Dakota** (ND Buys / Ivalua) — supplier login via ND OAuth (Azure AD
   B2C). The sign-in carries a reCAPTCHA, so **manual-login mode** opens a visible
@@ -112,7 +116,7 @@ Cross-cutting and portal-specific extras:
 
 - **Downloads:** `GET /runs/{run_id}/download` — the run's archive ZIP
 - **MyFlorida:** `GET /myflorida/categories`
-- **BidNet:** `GET /bidnet/keywords` (curated catalog), `GET /bidnet/export` (Excel of all stored bids)
+- **BidNet:** `GET /bidnet/keywords` (curated catalog), `GET /bidnet/filters` (sidebar filter catalog), `POST /bidnet/filters/refresh` (re-harvest the full option lists), `GET /bidnet/export` (Excel of all stored bids)
 - **SAM:** `POST /sam/evaluate` (score a bid), `POST /sam/scrape/stop/{run_id}`, `GET /sam/screenshot/{run_id}`
 - **NAICS:** `GET /naics` (list), `GET /naics/search`
 - **Eval-config:** `GET /eval-config`, and `POST` / `DELETE` on `/eval-config/kill-words`, `/eval-config/excluded-services`, `/eval-config/allowed-services`

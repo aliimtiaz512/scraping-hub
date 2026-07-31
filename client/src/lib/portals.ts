@@ -85,8 +85,8 @@ export const PORTALS: PortalMeta[] = [
     host: "bidnetdirect.com",
     tagline: "Member agency solicitations",
     description:
-      "Search BidNet Direct one keyword at a time, filter to Member Agency Bids, and download the documents attached to every solicitation found.",
-    outputs: ["Curated keyword catalog", "Document downloads", "Excel export"],
+      "Search BidNet Direct one keyword at a time, narrow the results with the portal's own sidebar filters, and download the documents attached to every solicitation found.",
+    outputs: ["Keyword search", "Sidebar filters", "Document downloads", "Excel export"],
     icon: "network",
     accent: {
       tile: "bg-emerald-50 text-emerald-600 ring-emerald-100",

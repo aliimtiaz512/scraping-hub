@@ -3,10 +3,15 @@
 This is a faithful Selenium port of the original Playwright scraper
 (backend/scraper.py): same flow, same selectors, same per-bid folder layout.
 
-Flow: login -> keyword search -> "Member Agency Bids" filter -> paginate the
-results table collecting solicitation links -> for each solicitation open its
-detail page, scrape the fields, and download every document into a per-bid
-folder -> persist to the DB -> generate a per-run Excel at the documents root.
+Flow: login -> keyword search -> "Member Agency Bids" filter -> apply the
+frontend's sidebar filters -> paginate the results table collecting solicitation
+links -> for each solicitation open its detail page, scrape the fields, and
+download every document into a per-bid folder -> persist to the DB -> generate a
+per-run Excel at the documents root.
+
+Login and the keyword search are deliberately untouched by the sidebar-filter
+work: filters are applied *after* a keyword's search has run, narrowing that
+search's own result set (see `apply_sidebar_filters` and `sidebar.py`).
 """
 
 import logging
@@ -27,7 +32,9 @@ from app.core import run_manager
 from app.core.base_scraper import BaseScraper
 from app.core.closing_filter import MIN_DAYS_UNTIL_CLOSE, days_until_close
 from app.scrapers.bidnet import export
+from app.scrapers.bidnet.filters import SidebarFilterRequest
 from app.scrapers.bidnet.keywords import group_keywords
+from app.scrapers.bidnet.sidebar import SidebarDriver
 from app.core.exports import archive_run
 from app.services.notifier import notify_scrape_completion
 
@@ -55,9 +62,24 @@ def _safe_title(title: str) -> str:
 
 
 class BidnetScraper(BaseScraper):
-    def __init__(self, run_id: str, keywords: list[str]):
+    def __init__(
+        self,
+        run_id: str,
+        keywords: list[str],
+        filters: SidebarFilterRequest | None = None,
+    ):
         super().__init__(run_id)
         self.keywords = keywords
+        # The sidebar filter state chosen in the frontend. Defaults to the
+        # portal's own defaults (Open Solicitations, every purchasing group, no
+        # other constraint), so an omitted request scrapes exactly what the
+        # pre-filter scraper did.
+        self.filters = filters or SidebarFilterRequest()
+        self._sidebar_report: dict | None = None
+        # Sidebar problems already reported. The filters are re-applied for every
+        # keyword, so a persistent one (an option the portal stopped offering)
+        # would otherwise be logged once per search.
+        self._sidebar_notes: set[str] = set()
         # The run folder the router created is the date bucket
         # (<documents>/Bidnetdirect_<date>); results are foldered per niche+tier
         # inside it (Bidnetdirect_AI-ML_core, ...), each a self-contained
@@ -176,6 +198,36 @@ class BidnetScraper(BaseScraper):
         self.driver.find_element(By.CSS_SELECTOR, "div[search-content-group-id='2085061601']").click()
         time.sleep(4)
         self.wait().until(EC.presence_of_element_located((By.CSS_SELECTOR, "table tbody tr.mets-table-row")))
+
+    def apply_sidebar_filters(self) -> None:
+        """Narrow the current results page with the frontend's sidebar choices.
+
+        Runs after the keyword search and the Member Agency grouping, so it
+        filters that keyword's own result set — the search itself is untouched.
+        A panel the portal did not render is reported into the run's errors and
+        skipped: a partially-filtered run returns a superset of what was asked
+        for, which is still usable, whereas aborting returns nothing.
+        """
+        self.set_step("applying_filters")
+        report = SidebarDriver(self.driver, note=self._note_sidebar).apply(self.filters)
+        # Report once per run — the filters are identical for every keyword, so
+        # logging each pass would just be noise.
+        if self._sidebar_report is None:
+            self._sidebar_report = report
+            run_manager.update_run(
+                self.run_id,
+                filters=self.filters.model_dump(exclude_none=True),
+                filters_summary=self.filters.summary(),
+                filters_applied=report,
+            )
+            logger.info("[run %s] sidebar filters applied: %s", self.run_id, report)
+
+    def _note_sidebar(self, message: str) -> None:
+        """Record a sidebar problem once per run, however many keywords hit it."""
+        if message in self._sidebar_notes:
+            return
+        self._sidebar_notes.add(message)
+        run_manager.add_error(self.run_id, message)
 
     def collect_links(self) -> list[str]:
         """Walk every results page, collecting solicitation detail links."""
@@ -474,6 +526,10 @@ class BidnetScraper(BaseScraper):
                     try:
                         self.search(keyword)
                         self.filter_member_agency()
+                        # Sidebar filters are re-applied per keyword: each search
+                        # re-renders the panels, so the previous keyword's
+                        # selection does not carry over.
+                        self.apply_sidebar_filters()
                         links = self.collect_links()
                     except (TimeoutException, WebDriverException) as exc:
                         run_manager.add_error(self.run_id, f"search failed for '{keyword}': {exc.__class__.__name__}")
@@ -586,5 +642,9 @@ class BidnetScraper(BaseScraper):
             logger.exception("[run %s] save_run failed", self.run_id)
 
 
-def execute_run(run_id: str, keywords: list[str]) -> None:
-    BidnetScraper(run_id, keywords).run()
+def execute_run(
+    run_id: str,
+    keywords: list[str],
+    filters: SidebarFilterRequest | None = None,
+) -> None:
+    BidnetScraper(run_id, keywords, filters).run()

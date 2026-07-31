@@ -33,28 +33,6 @@ export interface CategoriesResponse {
   search_modes: SearchMode[];
 }
 
-export type KeywordTier = "core" | "extended";
-
-export interface BidnetKeyword {
-  term: string;
-  notes: string;
-}
-
-// A niche (AI/ML, Web Scraping, UI/UX) with its two tiers. Results are foldered
-// per niche+tier, so the selection UI mirrors this shape.
-export interface BidnetNiche {
-  key: string;
-  label: string;
-  /** Used in the produced folder names, e.g. "AI-ML" -> Bidnetdirect_AI-ML_core. */
-  slug: string;
-  core: BidnetKeyword[];
-  extended: BidnetKeyword[];
-}
-
-export interface BidnetCatalog {
-  niches: BidnetNiche[];
-}
-
 export interface BidResult {
   // MyFlorida
   number?: string;
@@ -178,6 +156,12 @@ export interface RunStatus {
   award_notice?: boolean;
   // Unison-only.
   filter_by?: string | null;
+  // BidNet-only: the sidebar filters this run was launched with, and a one-line
+  // rendering of them for the status panel.
+  filters?: BidnetFilters;
+  filters_summary?: string;
+  // BidNet filter-option discovery runs: how many options each panel yielded.
+  filter_option_counts?: Record<string, number>;
   // Cal eProcure / EMMA: login-milestone diagnostics. `login_ok` is true once
   // the run has signed in and confirmed the session; `landing_*` describe the
   // page it ended on (the supplier homepage, or EMMA's Public Solicitations).
@@ -284,17 +268,117 @@ export function startRideMetroScrape(livePreview = false): Promise<{ run_id: str
 
 // -- BidNet Direct -----------------------------------------------------------
 
-export function getBidnetKeywords(): Promise<BidnetCatalog> {
-  return request("/bidnet/keywords");
+/** One selectable value in a sidebar filter panel. `value` is the portal's own
+ *  `data-filter-item-value`, which is what the scraper writes back to it. */
+export interface BidnetFilterOption {
+  value: string;
+  label: string;
 }
 
+/** A checkbox-list panel in BidNet's search sidebar. */
+export interface BidnetFilterSection {
+  /** Request field name — `locations`, `nigp_categories`, … */
+  name: BidnetListFilterName;
+  label: string;
+  /** The portal's internal section key (`regionId`), shown for traceability. */
+  section_key: string;
+  /** Purchasing Group arrives fully selected; the user unselects from it. */
+  default_all: boolean;
+  /** True while the list is still only the ~12 options the sidebar renders
+   *  inline — a refresh pass fills in the rest from "View All". */
+  partial: boolean;
+  options: BidnetFilterOption[];
+}
+
+export type BidnetListFilterName =
+  | "nigp_categories"
+  | "organizations"
+  | "locations"
+  | "purchasing_groups"
+  | "solicitation_types"
+  | "general_requirements";
+
+export type BidnetDateFilterName = "published_date" | "closing_date";
+
+/** A date panel: a set of mutually exclusive modes plus the "within" periods. */
+export interface BidnetDateSection {
+  name: BidnetDateFilterName;
+  label: string;
+  types: BidnetFilterOption[];
+  within_options: BidnetFilterOption[];
+}
+
+export interface BidnetFilterCatalog {
+  status: { options: BidnetFilterOption[]; default: string };
+  sections: BidnetFilterSection[];
+  dates: BidnetDateSection[];
+  /** When the full option lists were last harvested from the portal; null while
+   *  only the seeded catalog is available. */
+  discovered_at: string | null;
+}
+
+/** One date panel's setting. Dates are mm/dd/yyyy, matching the portal's own
+ *  datepicker format. */
+export interface BidnetDateFilter {
+  type: string;
+  within?: string;
+  day?: string;
+  range_start?: string;
+  range_end?: string;
+}
+
+/**
+ * The sidebar state a run is launched with. Every list is optional and an empty
+ * one means "leave that panel alone" — except `purchasing_groups`, where the
+ * portal starts with all 52 ticked, so omitting it keeps them all and sending a
+ * list narrows to it.
+ */
+export interface BidnetFilters {
+  status?: string;
+  nigp_categories?: string[];
+  organizations?: string[];
+  locations?: string[];
+  purchasing_groups?: string[];
+  solicitation_types?: string[];
+  general_requirements?: string[];
+  published_date?: BidnetDateFilter | null;
+  closing_date?: BidnetDateFilter | null;
+}
+
+export function getBidnetFilters(): Promise<BidnetFilterCatalog> {
+  return request("/bidnet/filters");
+}
+
+/** Kick off the browser pass that harvests every option from the portal's
+ *  "View All" dialogs. Poll it like any other run. */
+export function refreshBidnetFilterOptions(livePreview = false): Promise<{ run_id: string }> {
+  return request(`/bidnet/filters/refresh${livePreviewQuery(livePreview)}`, { method: "POST" });
+}
+
+/** BidNet's own limits on its search box, so the UI can enforce them as you type. */
+export interface BidnetKeywordLimits {
+  max_keywords: number;
+  max_keyword_length: number;
+}
+
+export function getBidnetKeywordLimits(): Promise<BidnetKeywordLimits> {
+  return request("/bidnet/keyword-limits");
+}
+
+/**
+ * Start a run. Each keyword is typed into the portal's search box and searched
+ * on its own, and may be a whole boolean expression — the box supports `AND`,
+ * `OR` and parenthesised grouping. An empty list falls back to the server-side
+ * keyword catalog.
+ */
 export function startBidnetScrape(
   keywords: string[],
+  filters: BidnetFilters = {},
   livePreview = false,
-): Promise<{ run_id: string; keywords: string[]; folder: string }> {
+): Promise<{ run_id: string; keywords: string[]; folder: string; filters: BidnetFilters }> {
   return request(`/bidnet/scrape${livePreviewQuery(livePreview)}`, {
     method: "POST",
-    body: JSON.stringify({ keywords }),
+    body: JSON.stringify({ keywords, filters }),
   });
 }
 
