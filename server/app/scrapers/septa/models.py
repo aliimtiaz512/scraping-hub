@@ -68,11 +68,14 @@ class SeptaBid(Base):
 
 
 # Column order for the generated Excel, mapped to friendly headers.
+#
+# `niche` and `matched_terms` are deliberately absent: a run no longer searches
+# per-term, so there is no niche to record and nothing for a term to have
+# matched. The columns remain on the table (nullable, unwritten) so quotes
+# scraped under the old per-term searches stay readable.
 EXCEL_COLUMNS: list[tuple[str, str]] = [
     ("requisition_number", "Requisition Number"),
     ("summary", "Summary"),
     ("open_date", "Open Date"),
     ("close_date", "Close Date"),
-    ("niche", "Niche"),
-    ("matched_terms", "Matched Term(s)"),
 ]

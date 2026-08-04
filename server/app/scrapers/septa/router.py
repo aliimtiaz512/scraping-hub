@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from app.core import run_manager
 from app.core.filenames import timestamp
 from app.db import get_session
-from app.scrapers.septa import niches as niche_catalog
+from app.scrapers.septa.filters import BadDate, OpenDateRange
 from app.scrapers.septa.models import EXCEL_COLUMNS, SeptaBid
 from app.scrapers.septa.scraper import execute_run
 
@@ -15,87 +15,36 @@ router = APIRouter(prefix="/septa", tags=["septa"])
 
 
 class ScrapeRequest(BaseModel):
-    # `niche` is what the UI sends: the scraper then searches every keyword and
-    # every commodity code that niche owns, one search per term, and merges the
-    # results into a single deduplicated sheet.
-    #
-    # The three single-term filters below predate niches and are still accepted
-    # so an ad-hoc one-off search is possible via the API. They combine freely
-    # with a niche (a date narrows every one of the niche's searches); a request
-    # with none of them means today's open quotes, the portal's own default.
-    #   niche          — catalog key from GET /septa/niches
-    #   date_filter    — YYYY-MM-DD "opens on" date
-    #   keyword        — free-text keyword search
-    #   commodity_code — SEPTA commodity code
-    niche: str | None = None
-    date_filter: str | None = None
-    keyword: str | None = None
-    commodity_code: str | None = None
+    """What a run searches — an optional Open Date Range, and nothing else.
 
-
-@router.get("/niches")
-def list_niches(session: Session = Depends(get_session)) -> dict:
-    """The niche catalog that drives the UI dropdown.
-
-    Seeded from app/scrapers/septa/niches.py at startup. Each entry carries its
-    full term list plus the counts the panel shows ("12 keywords, 8 codes").
+    Both ends are optional and there is no default. A request with neither
+    fetches every open quote the portal is showing; that is the normal case.
+    Keyword, commodity-code and niche searching have been removed.
+      date_from — "opens from" date, YYYY-MM-DD
+      date_to   — "opens to" date, YYYY-MM-DD
     """
-    try:
-        rows = niche_catalog.list_niches(session)
-    except OperationalError as exc:
-        raise HTTPException(
-            status_code=503,
-            detail="Database unavailable — check DATABASE_URL in server/.env",
-        ) from exc
 
-    return {
-        "niches": [
-            {
-                "key": niche.key,
-                "label": niche.label,
-                "slug": niche.slug,
-                "keywords": [k.term for k in sorted(niche.keywords, key=lambda k: (k.sort_order, k.id))],
-                "codes": [c.code for c in sorted(niche.codes, key=lambda c: (c.sort_order, c.id))],
-                "keyword_count": len(niche.keywords),
-                "code_count": len(niche.codes),
-            }
-            for niche in rows
-        ]
-    }
+    date_from: str | None = None
+    date_to: str | None = None
 
 
 @router.post("/scrape")
 def start_scrape(request: ScrapeRequest, background_tasks: BackgroundTasks, live_preview: bool = False) -> dict:
-    niche = (request.niche or "").strip() or None
-    date_filter = (request.date_filter or "").strip() or None
-    keyword = (request.keyword or "").strip() or None
-    commodity_code = (request.commodity_code or "").strip() or None
+    dates = OpenDateRange(start=request.date_from, end=request.date_to)
 
-    # Validate the niche before the run exists, so a bad key is an immediate 400
-    # rather than a run that starts a browser and then fails.
-    niche_label = None
-    if niche:
-        terms = niche_catalog.niche_terms(niche)
-        if terms is None:
-            raise HTTPException(status_code=400, detail=f"Unknown SEPTA niche: {niche}")
-        niche_label, keywords, codes = terms
-        if not keywords and not codes:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"Niche '{niche_label}' has no keywords or commodity codes configured — "
-                    "add them to server/app/scrapers/septa/niches.py and restart."
-                ),
-            )
+    # Reject an unparseable date here rather than in the worker: a 400 is an
+    # immediate, correctable answer, whereas the scraper would start a browser,
+    # warn, and quietly search everything instead of the range that was asked
+    # for — which looks like the filter being ignored.
+    try:
+        dates.portal_values()
+    except BadDate as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{exc} — use YYYY-MM-DD, e.g. 2026-08-05.",
+        ) from exc
 
-    search = ", ".join(
-        part for part in (
-            f"niche={niche_label}" if niche_label else "",
-            f"date={date_filter}" if date_filter else "",
-            f"keyword={keyword}" if keyword else "",
-            f"commodity={commodity_code}" if commodity_code else "",
-        ) if part
-    ) or "today's open quotes"
+    search = dates.summary()
 
     label = timestamp()  # e.g. 2026-07-20 14-30-05
     # Per-run workspace folder. Timestamped so concurrent runs never share a
@@ -108,18 +57,13 @@ def start_scrape(request: ScrapeRequest, background_tasks: BackgroundTasks, live
         {
             "label": label,
             "search": search,
-            "niche": niche,
-            "niche_label": niche_label,
-            "date_filter": date_filter,
-            "keyword": keyword,
-            "commodity_code": commodity_code,
+            "date_from": dates.start,
+            "date_to": dates.end,
             "excel_exported": False,
             "live_preview": live_preview,
         },
     )
-    background_tasks.add_task(
-        execute_run, run["run_id"], date_filter, keyword, commodity_code, niche
-    )
+    background_tasks.add_task(execute_run, run["run_id"], dates.start, dates.end)
     return {"run_id": run["run_id"], "search": search, "folder": run["folder"]}
 
 

@@ -435,46 +435,26 @@ export function startNorthDakotaScrape(
 
 // -- SEPTA (vendor procurement portal) ---------------------------------------
 
-/** A niche owns the keywords and commodity codes a run searches, one per search.
- *  Seeded server-side from app/scrapers/septa/niches.py. */
-export interface SeptaNiche {
-  key: string;
-  label: string;
-  /** Filename-safe form of the label. */
-  slug: string | null;
-  keywords: string[];
-  codes: string[];
-  keyword_count: number;
-  code_count: number;
-}
-
-export interface SeptaNicheCatalog {
-  niches: SeptaNiche[];
-}
-
-export function getSeptaNiches(): Promise<SeptaNicheCatalog> {
-  return request("/septa/niches");
-}
-
 export interface StartSeptaScrapeOptions {
-  /** Catalog key. The scraper searches every keyword and commodity code this
-   *  niche owns, then merges the results into one deduplicated sheet. */
-  niche?: string;
-  /** Optional extra filter; narrows every one of the niche's searches. */
-  dateFilter?: string;
+  /** Open Date Range "from", YYYY-MM-DD. Optional. */
+  dateFrom?: string;
+  /** Open Date Range "to", YYYY-MM-DD. Optional. */
+  dateTo?: string;
   livePreview?: boolean;
 }
 
+/** Start a SEPTA run. Both dates are optional and there is no default —
+ *  sending neither fetches every open quote, which is the normal case. */
 export function startSeptaScrape({
-  niche = "",
-  dateFilter = "",
+  dateFrom = "",
+  dateTo = "",
   livePreview = false,
-}: StartSeptaScrapeOptions): Promise<{ run_id: string; search: string; folder: string }> {
+}: StartSeptaScrapeOptions = {}): Promise<{ run_id: string; search: string; folder: string }> {
   return request(`/septa/scrape${livePreviewQuery(livePreview)}`, {
     method: "POST",
     body: JSON.stringify({
-      niche: niche || null,
-      date_filter: dateFilter || null,
+      date_from: dateFrom || null,
+      date_to: dateTo || null,
     }),
   });
 }

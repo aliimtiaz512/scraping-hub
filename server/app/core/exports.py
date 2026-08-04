@@ -66,7 +66,7 @@ def excel_name(run: dict[str, Any]) -> str:
             run["niche_label"], run.get("niche") or "", run.get("niche_slug")
         )
     label = {
-        "septa": f"Septa_({search or 'today open quotes'})",
+        "septa": f"Septa_({search or 'all open quotes'})",
         "wisconsin": f"Wisconsin_({search or 'all current solicitations'})",
         "sam": f"SAM_({search or 'all active solicitations'})",
         "unison": f"Unison_({(run.get('filter_by') or 'all requests').strip()})",

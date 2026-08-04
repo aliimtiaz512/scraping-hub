@@ -27,7 +27,6 @@ def init_db() -> None:
     from app.scrapers.wisconsin import models as _wisconsin_models  # noqa: F401
     from app.scrapers.northdakota import models as _northdakota_models  # noqa: F401
     from app.scrapers.septa import models as _septa_models  # noqa: F401
-    from app.scrapers.septa import niche_models as _septa_niche_models  # noqa: F401
     from app.scrapers.evalconfig import models as _evalconfig_models  # noqa: F401
     from app.scrapers.sam import models as _sam_models  # noqa: F401
     from app.scrapers.unison import models as _unison_models  # noqa: F401
@@ -35,15 +34,12 @@ def init_db() -> None:
 
     Base.metadata.create_all(bind=engine)
 
-    # Materialise the SEPTA niche catalog (keywords + commodity codes) from its
-    # source file into the tables the API and scraper read. Best-effort: a bad
-    # catalog must not stop the API from starting.
-    from app.scrapers.septa.niches import seed_niches
+    # SEPTA has no niche catalog any more: a run fetches the whole Open Quotes
+    # grid and filters it locally, so there are no per-term searches to seed.
+    # Its septa_niches* tables are left in place for any historical rows.
 
-    seed_niches()
-
-    # Same for the BidNet niche catalog: a run selects one niche and the
-    # scraper resolves its keywords from these tables.
+    # The BidNet niche catalog still drives its runs: one niche is selected and
+    # the scraper resolves its keywords from these tables.
     from app.scrapers.bidnet.niches import seed_niches as seed_bidnet_niches
 
     seed_bidnet_niches()
