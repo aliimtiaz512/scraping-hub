@@ -13,7 +13,7 @@ from app.config import settings
 from app.core import run_manager
 from app.core.filenames import timestamp
 from app.db import get_session
-from app.scrapers.bidnet import export, filters, niches as niche_catalog
+from app.scrapers.bidnet import export, filters, niches as niche_catalog, storage
 from app.scrapers.bidnet.discovery import execute_discovery
 from app.scrapers.bidnet.filters import SidebarFilterRequest
 from app.scrapers.bidnet.models import EXCEL_COLUMNS, BidnetBid
@@ -124,10 +124,11 @@ def start_scrape(
 
     sidebar = request.filters
     label = timestamp()  # e.g. 2026-07-08 14-30-05
-    # One workspace per run (its name becomes the run's ZIP name), holding every
-    # keyword's results together: a run is a single niche, so there is nothing
-    # to separate. Timestamped so concurrent runs never share a workspace.
-    folder = run_manager.make_run_folder(f"Bidnetdirect {niche.slug or niche.key} ({label})")
+    # The run writes into its niche's folder inside the day's session root, so a
+    # day's niches collect side by side and the archive can bundle all of them.
+    # Re-running a niche reuses its folder rather than making a second one.
+    root = storage.session_root()
+    folder = storage.niche_folder(root, niche.label, niche.key, niche.slug)
     run = run_manager.create_run(
         "bidnet",
         folder,
@@ -135,6 +136,12 @@ def start_scrape(
             "label": label,
             "niche": niche.key,
             "niche_label": niche.label,
+            "niche_slug": niche.slug,
+            # The day's bundle this run belongs to. `archive_run` zips this
+            # whole root, not just `folder`, so the download holds every niche
+            # run so far — see app/scrapers/bidnet/storage.py.
+            "session_root": str(root),
+            "niche_folder": str(folder),
             # Names the run's spreadsheet (see core.exports.excel_name).
             "search": niche.label,
             # The keyword currently being searched; seeded with the first so the
@@ -154,6 +161,7 @@ def start_scrape(
         "niche_label": niche.label,
         "keyword_count": len(keywords),
         "folder": run["folder"],
+        "session_root": run["session_root"],
         "filters": sidebar.model_dump(exclude_none=True),
     }
 

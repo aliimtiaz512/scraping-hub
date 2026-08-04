@@ -243,6 +243,43 @@ skipping one we could not read would silently lose bids, so the check fails open
 Skipped keywords are collected on the run as `keywords_without_results`, with a
 warning naming them; a niche where *every* keyword misses sets `no_results`.
 
+### Zero data loss
+
+Every solicitation the run opens reaches the spreadsheet. Each record carries a
+`Status`:
+
+| Status | Meaning |
+| --- | --- |
+| `OK` | every expected field was read |
+| `PARTIAL_DATA` | some fields read, but reference number or title missing |
+| `EXTRACTION_FAILED` | the detail page yielded nothing at all |
+
+A page that renders nothing is **reloaded once** before being flagged — a single
+slow load is the usual cause. Anything not `OK` is logged with its URL, added to
+the run's errors, and exported with a `Detail URL` column so it can be chased by
+hand. The console shows a "Not readable" / "Partial" badge on those rows.
+
+This closes a real data-loss path. `generate_excel_from_records` used to skip any
+record without a reference number, while its caller logged `len(records)` — the
+*unfiltered* count. A run that scraped 12 bids logged "wrote 12 bids" into a file
+holding 10, and the two dropped were exactly the ones worth seeing. The writer
+now writes every record and returns its true count, which the caller logs and
+cross-checks, raising a run error if the two ever disagree.
+
+`save_bids` keeps blank-reference records too (the unique constraint is on
+`(run_id, reference_number)` and Postgres treats NULLs as distinct). A genuine
+duplicate reference is still collapsed, but logged with the reference rather than
+skipped in silence.
+
+Every run prints a reconciliation line before anything is saved:
+
+```
+[SUMMARY] run <id> | Scraped: 19 | Fully extracted: 10 | Failed/Fallback: 2 |
+          Final Export Count: 12 | Skipped (closing soon): 7
+```
+
+with an explicit `MISMATCH` error if collected − skipped ≠ exported.
+
 ### Timeouts
 
 A niche of ~20 keywords is a long sequential run, so the waits are generous

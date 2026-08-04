@@ -27,16 +27,15 @@ nothing to split apart.
 """
 
 import logging
-import shutil
 import time
-import urllib.request
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+import requests
 from selenium.common.exceptions import TimeoutException, WebDriverException
 from selenium.webdriver.common.by import By
-from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 
@@ -44,11 +43,12 @@ from app.config import settings
 from app.core import run_manager
 from app.core.base_scraper import BaseScraper, StopRequested
 from app.core.closing_filter import MIN_DAYS_UNTIL_CLOSE, days_until_close
+from app.core.filenames import sanitize_filename
 from app.db import SessionLocal
-from app.scrapers.bidnet import export, niches
+from app.scrapers.bidnet import documents, export, niches, storage
 from app.scrapers.bidnet.filters import SidebarFilterRequest
 from app.scrapers.bidnet.sidebar import SidebarDriver
-from app.core.exports import archive_run, excel_name
+from app.core.exports import archive_run
 from app.services.notifier import notify_scrape_completion
 
 logger = logging.getLogger(__name__)
@@ -63,8 +63,10 @@ BASE_URL = "https://www.bidnetdirect.com"
 ELEMENT_TIMEOUT = 60       # search box, results table, detail-page fields
 PAGINATION_TIMEOUT = 30    # next page of results — absent rows can be a real end-of-list
 DETAIL_TIMEOUT = 45        # solicitation detail page and its documents tab
-DOC_DOWNLOAD_TIMEOUT = 90  # per-document; a missing download falls back to a direct fetch
-SEARCH_SETTLE_SECONDS = 5  # after switching result group / opening the documents tab
+SEARCH_SETTLE_SECONDS = 5  # after switching result group / paging results
+# Attachment detection and download live in `documents.py`, which waits on the
+# documents tab's lazily-rendered links rather than sleeping a fixed interval,
+# and fetches the files over HTTP instead of clicking them one at a time.
 MAX_PAGES = 100  # pagination safety guard, same as the original
 
 # The result-group tab the scraper scrapes ("Member Agency Bids"). Its header
@@ -82,6 +84,50 @@ RESULTS_ROW = "table tbody tr.mets-table-row"
 # it does, the tab still shows the *previous* keyword's number, so reading early
 # gives a confidently wrong answer rather than a slow one.
 AJAX_IDLE_TIMEOUT = 30
+
+# How complete a scraped record is. Every bid the run opens is kept and exported
+# under one of these, so a solicitation is never silently absent from the output.
+STATUS_OK = "OK"                              # every expected field was read
+STATUS_PARTIAL = "PARTIAL_DATA"               # some fields read, key ones missing
+STATUS_FAILED = "EXTRACTION_FAILED"           # detail page yielded nothing at all
+# The portal never served the bid: it redirected to a "required acknowledgement"
+# page that has to be Accepted first. Distinct from EXTRACTION_FAILED because
+# nothing is broken — the bid is gated, and no amount of retrying opens it.
+STATUS_ACK_REQUIRED = "ACKNOWLEDGEMENT_REQUIRED"
+RECORD_STATUSES = (STATUS_OK, STATUS_PARTIAL, STATUS_FAILED, STATUS_ACK_REQUIRED)
+
+# The acknowledgement interstitial. Requesting a gated solicitation redirects to
+# `/private/supplier/solicitations/<id>/req-ack`, which asks the vendor to
+# Accept or Decline something — an attestation ("Company must be based in the
+# United States of America"), or confirmation that an addendum was read.
+#
+# It defeats a naive detail scrape twice over: the page *does* contain
+# `.mets-field` elements (the acknowledgement's own), so waiting for that
+# selector succeeds, and every solicitation label is simply absent, so all
+# fields come back "" and the record used to be filed as EXTRACTION_FAILED —
+# then retried, onto the identical wall.
+ACK_URL_MARKER = "/req-ack"
+ACK_ACCEPT_BUTTON = "#requiredAcknowledgementConfirmPage"
+ACK_DECLINE_BUTTON = "#requiredAcknowledgementDeclinePage"
+ACK_NAME = ".acknowledgementName"
+ACK_MESSAGE = ".noWidthAcknowledgementMessage"
+# The Accept button is a jQuery `commandButton` of type="submit" inside
+# `<form name="solicitationForm" method="POST">`, which carries a `_csrf`
+# hidden input. So it must be *clicked* — posting the form by hand, or
+# navigating anywhere, loses the token and the acknowledgement is not recorded.
+ACK_FORM = "form[name='solicitationForm']"
+# The cookie banner renders over the dialog's button bar on a fresh session and
+# will swallow the click ("element click intercepted"), which reads as a failed
+# acceptance. Dismissed once before the first Accept.
+COOKIE_ACCEPT_BUTTON = "#cookieBannerAcceptBtn"
+# A solicitation can stack several acknowledgements — accepting one lands on the
+# next rather than on the bid. Bounded so a page that never clears cannot spin.
+MAX_ACK_ACCEPTS = 5
+
+# Fields that must be present for a record to count as fully scraped. A record
+# missing these is still exported — flagged, with its detail URL — rather than
+# dropped, because a bid we failed to read is exactly the one worth chasing.
+REQUIRED_FIELDS = ("reference_number", "title")
 
 # Fields scraped from each solicitation detail page: db column -> visible label.
 DETAIL_FIELDS: dict[str, str] = {
@@ -123,13 +169,19 @@ class BidnetScraper(BaseScraper):
         # keyword, so a persistent one (an option the portal stopped offering)
         # would otherwise be logged once per search.
         self._sidebar_notes: set[str] = set()
-        # The single project folder for this whole run: every keyword's bids and
-        # documents land here in per-bid subfolders, with the master Excel at the
-        # root. A run is one niche, so there is nothing to split apart.
+        # This run's niche folder inside the day's session root, and the
+        # `documents/` folder within it that every bid's attachments land in
+        # (per-bid subfolders — see storage.py). The spreadsheet sits beside
+        # `documents/`, at the root of the niche folder.
         run = run_manager.get_run(run_id) or {}
-        folder = run.get("folder") or str(settings.work_root / "Bidnetdirect")
-        self.document_folder = Path(folder)
-        self.document_folder.mkdir(parents=True, exist_ok=True)
+        folder = run.get("folder") or str(
+            storage.niche_folder(storage.session_root(), self.niche_label)
+        )
+        self.niche_folder = Path(folder)
+        self.niche_folder.mkdir(parents=True, exist_ok=True)
+        self.document_folder = storage.documents_folder(self.niche_folder)
+        self.niche_key = run.get("niche") or ""
+        self.niche_slug = run.get("niche_slug")
         # Keywords the portal reported zero bids for — skipped without waiting
         # on rows that were never coming, and surfaced on the run so a niche
         # whose terms all miss is obvious rather than silent.
@@ -139,11 +191,36 @@ class BidnetScraper(BaseScraper):
         # and those kept despite an unreadable Closing Date.
         self._skipped_closing_soon = 0
         self._kept_unreadable_close = 0
+        # Document tallies for the run summary: how many attachments were
+        # detected across every bid, how many actually landed on disk, and how
+        # many bids had a tab badge that disagreed with the links found. A run
+        # where detected and downloaded diverge is the signal that documents are
+        # being lost, which the old code could not report at all.
+        self._documents_detected = 0
+        self._documents_downloaded = 0
+        self._documents_failed = 0
+        self._documents_duplicates = 0
+        self._doc_count_mismatches = 0
+        # Solicitations the portal gated behind a required acknowledgement.
+        # Collected so the run can list exactly which bids need a human Accept
+        # rather than burying them among genuine extraction failures.
+        self._acknowledgement_required: list[dict[str, str]] = []
+        # Acknowledgements this run accepted on the account's behalf. Recorded
+        # and reported because each one is a submission the issuing agency can
+        # see — a run should never accept things without saying which.
+        self._accepted_acknowledgements: list[dict[str, str]] = []
+        # One pooled HTTP session for the whole run, cookies refreshed per bid.
+        self._session: requests.Session | None = None
 
     # -- helpers ------------------------------------------------------------
 
-    def _extract_field(self, field_name: str) -> str:
-        """Read a .mets-field body paragraph whose field contains the label."""
+    def _extract_field(self, field_name: str, link: str = "") -> str:
+        """Read a .mets-field body paragraph whose field contains the label.
+
+        Returns "" when the field is absent, logged with the solicitation it
+        belongs to — a bare "failed to extract Title" says nothing about which
+        bid is short a title.
+        """
         xpath = (
             f"//div[contains(@class,'mets-field')][contains(., \"{field_name}\")]"
             f"//div[contains(@class,'mets-field-body')]//p"
@@ -151,7 +228,11 @@ class BidnetScraper(BaseScraper):
         try:
             return self.driver.find_element(By.XPATH, xpath).text
         except WebDriverException as exc:
-            logger.info("[run %s] failed to extract %s: %s", self.run_id, field_name, exc.__class__.__name__)
+            logger.info(
+                "[run %s] field %r not on the page (%s)%s",
+                self.run_id, field_name, exc.__class__.__name__,
+                f" for {link}" if link else "",
+            )
             return ""
 
     def _guard_not_blocked(self) -> None:
@@ -431,15 +512,46 @@ class BidnetScraper(BaseScraper):
         already deduplicated by link, so a bid found by several of the niche's
         keywords is never opened twice."""
         self.set_step("opening_bid")
-        self.driver.get(link)
-        try:
-            self.wait(DETAIL_TIMEOUT).until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, ".mets-field"))
-            )
-        except TimeoutException:
-            pass
+        record = self._scrape_detail(link)
 
-        record: dict[str, Any] = {key: self._extract_field(label).strip() for key, label in DETAIL_FIELDS.items()}
+        # Checked before the retry: a gated bid is not a failed read, and
+        # reloading only lands on the same acknowledgement page again — which is
+        # exactly how one blocked solicitation used to cost three page loads and
+        # still be filed as EXTRACTION_FAILED.
+        gate = self._acknowledgement_gate()
+        if gate:
+            if settings.bidnet_auto_accept_acknowledgements:
+                accepted, gate = self._clear_acknowledgements(link)
+                if gate is None:
+                    # Through the wall — carry on with the bid we just read.
+                    record = accepted or record
+            if gate is not None:
+                return self._gated_record(link, gate)
+
+        # A detail page that renders nothing used to be indistinguishable from a
+        # solicitation with no data: every field came back "" and the blank
+        # record flowed on as if it were real. Retry once — a single slow load is
+        # the common cause — then flag whatever we end up with.
+        if not any(record.values()):
+            logger.warning(
+                "[run %s] no fields could be read from %s — reloading once", self.run_id, link
+            )
+            record = self._scrape_detail(link)
+            gate = self._acknowledgement_gate()
+            if gate:
+                return self._gated_record(link, gate)
+
+        record["detail_url"] = link
+        record["status"] = self._classify(record)
+        if record["status"] != STATUS_OK:
+            missing = [f for f in DETAIL_FIELDS if not record.get(f)]
+            message = (
+                f"{record['status']} for {link} — could not read: {', '.join(missing)}"
+            )
+            logger.warning("[run %s] %s", self.run_id, message)
+            run_manager.add_error(self.run_id, message)
+            record["error"] = message
+
         reference_number = record.get("reference_number") or ""
         title = record.get("title") or ""
 
@@ -456,119 +568,310 @@ class BidnetScraper(BaseScraper):
             self._skipped_closing_soon += 1
             return None
 
-        documents_count = self._document_count()
-        record["documents_count"] = documents_count
-
-        downloaded: list[str] = []
-        if documents_count != "0":
-            downloaded, _ = self._download_documents(reference_number, title, dest_folder)
-        record["documents"] = downloaded
+        # Detection is never gated on the tab's count badge: an unreadable badge
+        # used to be recorded as "0 documents" and the bid's attachments were
+        # then never looked for at all. We always open the documents tab and
+        # wait for the attachment anchors themselves; the badge is only a
+        # cross-check to log against.
+        outcome = self._collect_documents(reference_number, title, dest_folder, link)
+        record["documents_count"] = str(outcome.distinct)
+        record["documents"] = outcome.saved
+        record["documents_downloaded"] = outcome.downloaded
+        if outcome.failed:
+            record["documents_failed"] = outcome.failed
         return record
 
-    def _document_count(self) -> str:
+    def _scrape_detail(self, link: str) -> dict[str, Any]:
+        """Load a solicitation's detail page and read its fields.
+
+        A load timeout is logged with the link rather than swallowed: it is the
+        one signal that the fields about to come back empty are a failure and not
+        an empty solicitation.
+        """
+        self.driver.get(link)
         try:
-            tab = self.wait(DETAIL_TIMEOUT).until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, "#docs-itemsAbstractTab a"))
+            self.wait(DETAIL_TIMEOUT).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, ".mets-field"))
             )
-            count = tab.find_element(By.CSS_SELECTOR, ".tabCount").text
-            return count.strip() or "0"
-        except WebDriverException as exc:
-            logger.info("[run %s] doc count unavailable: %s", self.run_id, exc.__class__.__name__)
-            return "0"
+        except TimeoutException:
+            logger.warning(
+                "[run %s] detail page did not render within %ss: %s",
+                self.run_id, DETAIL_TIMEOUT, link,
+            )
+        return {key: self._extract_field(label, link).strip() for key, label in DETAIL_FIELDS.items()}
 
-    def _download_documents(
-        self, reference_number: str, title: str, dest_folder: Path
-    ) -> tuple[list[str], Path | None]:
-        """Download every document into a per-bid subfolder of `dest_folder`.
-        Returns (saved filenames, the bid subfolder) — the folder is returned so a
-        later group can copy the same files instead of re-downloading."""
-        saved: list[str] = []
+    def _gated_record(self, link: str, gate: dict[str, str]) -> dict[str, Any]:
+        """A record for a bid the portal will not show until it is acknowledged.
+
+        Exported like any other row — flagged, with its detail URL and what the
+        portal is asking — because a bid we are *eligible for but blocked on* is
+        one worth chasing by hand, not one to drop. Its title falls back to the
+        heading the acknowledgement page still shows, so the row is
+        identifiable in the spreadsheet rather than a URL and seven blanks.
+        """
+        ask = gate.get("name") or "a required acknowledgement"
+        message = (
+            f"{STATUS_ACK_REQUIRED} for {link} — the portal requires "
+            f"\"{ask}\" to be accepted before this bid can be read"
+        )
+        logger.warning("[run %s] %s", self.run_id, message)
+        run_manager.add_warning(self.run_id, message)
+        self._acknowledgement_required.append({"url": link, "name": ask})
+
+        record: dict[str, Any] = {key: "" for key in DETAIL_FIELDS}
+        record["title"] = self._page_heading() or ask
+        record["detail_url"] = link
+        record["status"] = STATUS_ACK_REQUIRED
+        record["error"] = message
+        record["acknowledgement"] = {k: v for k, v in gate.items() if v}
+        # Documents sit behind the same wall — nothing to count or fetch.
+        record["documents_count"] = "0"
+        record["documents"] = []
+        record["documents_downloaded"] = 0
+        return record
+
+    def _page_heading(self) -> str:
+        """The solicitation heading the acknowledgement page still renders."""
         try:
-            self.driver.find_element(By.CSS_SELECTOR, "#docs-itemsAbstractTab a").click()
-            time.sleep(SEARCH_SETTLE_SECONDS)
-        except WebDriverException as exc:
-            logger.info("[run %s] could not open docs tab for %s: %s", self.run_id, reference_number, exc.__class__.__name__)
-            return saved, None
+            for element in self.driver.find_elements(By.CSS_SELECTOR, "h1, h2"):
+                text = (element.text or "").strip()
+                if text:
+                    return text
+        except WebDriverException:
+            pass
+        return ""
 
-        bid_folder = dest_folder / f"{reference_number} - {_safe_title(title)}"
-        bid_folder.mkdir(parents=True, exist_ok=True)
+    def _acknowledgement_gate(self) -> dict[str, str] | None:
+        """The acknowledgement blocking the current page, or None.
 
-        buttons = self._download_buttons()
-        logger.info("[run %s] %s download buttons for %s", self.run_id, len(buttons), reference_number)
-        for index, button in enumerate(buttons):
-            name = self._download_one(button, bid_folder, index)
-            if name:
-                saved.append(name)
-        return saved, bid_folder
-
-    def _download_buttons(self) -> list:
-        found: list = []
-        css = (
-            "table tbody tr a[title*='Download'], "
-            "table tbody tr a[title*='download'], "
-            "table tbody tr a[href*='download']"
-        )
-        elements = self.driver.find_elements(By.CSS_SELECTOR, css)
-        elements += self.driver.find_elements(
-            By.XPATH, "//table//tbody//tr//a[contains(., 'Download')]"
-        )
-        for el in elements:
-            if el not in found:
-                found.append(el)
-        return found
-
-    def _download_one(self, button, bid_folder: Path, index: int) -> str | None:
-        """Click a download link and move the resulting file into the bid folder.
-
-        Falls back to a direct authenticated fetch of the href if the click does
-        not produce a download (e.g. it opened an acknowledgement modal).
+        Keyed on the `/req-ack` redirect plus the Accept button, so an ordinary
+        detail page that merely mentions the word is never mistaken for one.
+        Returns what the portal is asking, so the run can say *why* a bid could
+        not be read instead of just that it could not.
         """
         try:
-            self.scroll_into_view(button)
-            button.click()
-            downloaded = self.wait_for_download(timeout=DOC_DOWNLOAD_TIMEOUT)
-            target = self._move_into(downloaded, bid_folder, downloaded.name)
-            logger.info("[run %s] downloaded %s", self.run_id, target.name)
-            return target.name
-        except (TimeoutException, WebDriverException) as exc:
-            logger.info("[run %s] click download %s failed (%s); trying fallback", self.run_id, index, exc.__class__.__name__)
-            try:
-                self.driver.switch_to.active_element.send_keys(Keys.ESCAPE)
-            except WebDriverException:
-                pass
-            return self._fallback_download(button, bid_folder, index)
-
-    def _fallback_download(self, button, bid_folder: Path, index: int) -> str | None:
-        try:
-            href = button.get_attribute("href")
+            url = self.driver.current_url or ""
+            has_button = bool(self.driver.find_elements(By.CSS_SELECTOR, ACK_ACCEPT_BUTTON))
         except WebDriverException:
-            href = None
-        if not href or href.startswith("javascript"):
-            logger.info("[run %s] no fallback href for document %s", self.run_id, index)
+            return None
+        if ACK_URL_MARKER not in url and not has_button:
             return None
 
-        href = self._abs_url(href)
-        cookies = "; ".join(f"{c['name']}={c['value']}" for c in self.driver.get_cookies())
-        request = urllib.request.Request(href, headers={"Cookie": cookies, "User-Agent": "Mozilla/5.0"})
+        def text(selector: str) -> str:
+            try:
+                found = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                return found[0].text.strip() if found else ""
+            except WebDriverException:
+                return ""
+
+        return {
+            "url": url,
+            "name": text(ACK_NAME),
+            "message": text(ACK_MESSAGE),
+        }
+
+    def _dismiss_cookie_banner(self) -> None:
+        """Close the cookie banner if it is up.
+
+        It renders over the acknowledgement dialog's button bar on a fresh
+        session, so the Accept click lands on the banner instead and the
+        acknowledgement is silently never submitted.
+        """
         try:
-            with urllib.request.urlopen(request, timeout=60) as response:
-                body = response.read()
-                disposition = response.headers.get("Content-Disposition", "")
-                filename = f"document_{index}.pdf"
-                if "filename=" in disposition:
-                    filename = disposition.split("filename=")[-1].split(";")[0].strip('"').strip("'")
-                target = self._unique_path(bid_folder / filename)
-                target.write_bytes(body)
-                logger.info("[run %s] fallback downloaded %s", self.run_id, target.name)
-                return target.name
-        except Exception as exc:  # noqa: BLE001 — a single failed doc must not abort the bid
-            logger.info("[run %s] fallback download %s failed: %s", self.run_id, index, exc)
-            return None
+            for button in self.driver.find_elements(By.CSS_SELECTOR, COOKIE_ACCEPT_BUTTON):
+                if button.is_displayed():
+                    self.driver.execute_script("arguments[0].click();", button)
+                    logger.info("[run %s] dismissed the cookie banner", self.run_id)
+                    return
+        except WebDriverException:
+            pass
 
-    def _move_into(self, src: Path, folder: Path, name: str) -> Path:
-        target = self._unique_path(folder / name)
-        shutil.move(str(src), str(target))
-        return target
+    def _accept_acknowledgement(self) -> bool:
+        """Click Accept on the acknowledgement page.
+
+        The button is a jQuery `commandButton` of `type="submit"` inside the
+        CSRF-protected `solicitationForm`, so the acceptance has to go through a
+        real click on that element — posting the form by hand would drop the
+        token. A native Selenium click is tried first (closest to a user), with
+        a JS click as the fallback for when something still overlays it.
+
+        Returns True only once the page has actually left the acknowledgement,
+        so a click that was swallowed is reported as a failure rather than
+        assumed to have worked.
+        """
+        self._dismiss_cookie_banner()
+        try:
+            button = self.wait(DETAIL_TIMEOUT).until(
+                EC.element_to_be_clickable((By.CSS_SELECTOR, ACK_ACCEPT_BUTTON))
+            )
+            self.scroll_into_view(button)
+        except (TimeoutException, WebDriverException) as exc:
+            logger.warning(
+                "[run %s] no Accept button to click: %s", self.run_id, exc.__class__.__name__
+            )
+            return False
+
+        try:
+            button.click()
+        except WebDriverException as exc:
+            logger.info(
+                "[run %s] native Accept click failed (%s) — retrying via JS",
+                self.run_id, exc.__class__.__name__,
+            )
+            try:
+                self.driver.execute_script("arguments[0].click();", button)
+            except WebDriverException:
+                logger.warning("[run %s] could not click Accept at all", self.run_id)
+                return False
+
+        # The submit navigates; wait for this acknowledgement to go away rather
+        # than sleeping. Landing on the *next* acknowledgement also counts as
+        # progress — the caller loops.
+        try:
+            self.wait(DETAIL_TIMEOUT).until(EC.staleness_of(button))
+        except TimeoutException:
+            logger.warning(
+                "[run %s] the acknowledgement page did not change after Accept", self.run_id
+            )
+            return False
+        self._await_ajax_idle()
+        return True
+
+    def _clear_acknowledgements(self, link: str) -> tuple[dict[str, Any], dict[str, str] | None]:
+        """Accept each acknowledgement gating `link`, then read the bid.
+
+        A solicitation can stack more than one (a pass/fail requirement *and* a
+        US-based-company attestation), so accepting once can simply land on the
+        next. Returns the scraped record and the acknowledgement still blocking
+        it, or None once the bid itself is readable.
+        """
+        record: dict[str, Any] = {}
+        gate = self._acknowledgement_gate()
+        for attempt in range(MAX_ACK_ACCEPTS):
+            if gate is None:
+                break
+            logger.info(
+                "[run %s] accepting required acknowledgement %r (%d of at most %d) for %s",
+                self.run_id, gate.get("name") or "(unnamed)", attempt + 1, MAX_ACK_ACCEPTS, link,
+            )
+            if not self._accept_acknowledgement():
+                self.screenshot(f"ack_{sanitize_filename(gate.get('name') or 'unnamed')[:40]}")
+                return record, gate
+            self._accepted_acknowledgements.append(
+                {"url": link, "name": gate.get("name") or "(unnamed)"}
+            )
+            # Re-read the page we landed on: either the bid, or the next
+            # acknowledgement in the stack.
+            record = self._read_current_detail(link)
+            gate = self._acknowledgement_gate()
+        if gate is not None:
+            logger.warning(
+                "[run %s] still gated after %d acceptance(s): %s",
+                self.run_id, MAX_ACK_ACCEPTS, link,
+            )
+        return record, gate
+
+    def _read_current_detail(self, link: str) -> dict[str, Any]:
+        """Read the detail fields from the page already loaded.
+
+        Used straight after an Accept: the portal has navigated to the bid
+        itself, and re-requesting `link` would be a wasted round trip.
+        """
+        try:
+            self.wait(DETAIL_TIMEOUT).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, ".mets-field"))
+            )
+        except TimeoutException:
+            logger.warning(
+                "[run %s] no fields rendered after accepting for %s", self.run_id, link
+            )
+        return {key: self._extract_field(label, link).strip() for key, label in DETAIL_FIELDS.items()}
+
+    @staticmethod
+    def _classify(record: dict[str, Any]) -> str:
+        """OK / PARTIAL_DATA / EXTRACTION_FAILED for a scraped record."""
+        if not any(record.get(field) for field in DETAIL_FIELDS):
+            return STATUS_FAILED
+        if not all(record.get(field) for field in REQUIRED_FIELDS):
+            return STATUS_PARTIAL
+        return STATUS_OK
+
+    def _collect_documents(
+        self, reference_number: str, title: str, dest_folder: Path, detail_url: str
+    ) -> documents.DownloadOutcome:
+        """Detect and download every attachment for the solicitation on screen.
+
+        Detection opens the lazily-rendered documents tab and waits for the
+        attachment anchors; downloading then fetches those hrefs directly over
+        HTTP, in parallel and streamed to disk, rather than clicking each link
+        and waiting on Chrome's download directory one file at a time.
+        """
+        label = reference_number or detail_url
+        links, badge = documents.extract_document_links(
+            self.driver, self.run_id, label, detail_url
+        )
+
+        expected = int(badge) if badge is not None and badge.isdigit() else None
+
+        if not links:
+            if expected:
+                # Detected-but-unreachable is the case that must never pass
+                # silently: the badge says there are files and we could not
+                # reach a single one.
+                message = (
+                    f"documents tab reports {expected} file(s) for {label} but no "
+                    f"download links could be found"
+                )
+                logger.error("[run %s] %s", self.run_id, message)
+                run_manager.add_error(self.run_id, message)
+                self.screenshot(f"no_docs_{sanitize_filename(label)[:40]}")
+            logger.info("[run %s] Found 0 documents for %s", self.run_id, label)
+            return documents.DownloadOutcome(detected=0, badge=badge)
+
+        bid_folder = dest_folder / f"{reference_number} - {_safe_title(title)}"
+        outcome = documents.download_documents(
+            self._http_session(),
+            links,
+            bid_folder,
+            self.run_id,
+            label,
+            referer=detail_url,
+            should_stop=self.raise_if_stopped,
+        )
+        outcome.badge = badge
+        self._documents_detected += outcome.distinct
+        self._documents_downloaded += outcome.downloaded
+        self._documents_duplicates += outcome.duplicates
+
+        # Reconcile against the badge only now — after the duplicates the portal
+        # lists twice have been collapsed. Comparing the raw link count would
+        # flag a bid whose documents are all present as a mismatch.
+        if expected is not None and expected != outcome.distinct:
+            self._doc_count_mismatches += 1
+            logger.warning(
+                "[run %s] %s: documents tab reports %d file(s) but %d distinct "
+                "document(s) were found",
+                self.run_id, label, expected, outcome.distinct,
+            )
+
+        if outcome.failed:
+            self._documents_failed += len(outcome.failed)
+            run_manager.add_error(
+                self.run_id,
+                f"{len(outcome.failed)} of {outcome.detected} document(s) failed to "
+                f"download for {label}",
+            )
+        return outcome
+
+    def _http_session(self) -> requests.Session:
+        """The run's shared HTTP session, cookies refreshed from the browser.
+
+        One session for the whole run keeps connections pooled; the cookies are
+        re-copied per bid because BidNet rotates the session cookie and a stale
+        one turns every download into a login-page redirect.
+        """
+        self._session = documents.build_session(self.driver, self._session)
+        return self._session
 
     @staticmethod
     def _unique_path(path: Path) -> Path:
@@ -681,6 +984,103 @@ class BidnetScraper(BaseScraper):
             logger.info("[run %s] %s unique solicitations from %s keyword search(es)",
                         self.run_id, len(link_keywords), len(keywords))
 
+            # Reconciliation, printed before anything is saved: every collected
+            # solicitation is accounted for, and the export count is the sum of
+            # the parts. If these ever disagree, the run says so here rather than
+            # leaving it to be noticed in the spreadsheet days later.
+            by_status = Counter(r.get("status") or STATUS_OK for r in all_records)
+            fallback = by_status[STATUS_PARTIAL] + by_status[STATUS_FAILED]
+            logger.info(
+                "[SUMMARY] run %s | Scraped: %d | Fully extracted: %d | Failed/Fallback: %d "
+                "| Acknowledgement required: %d | Final Export Count: %d "
+                "| Skipped (closing soon): %d",
+                self.run_id, len(link_keywords), by_status[STATUS_OK], fallback,
+                by_status[STATUS_ACK_REQUIRED], len(all_records),
+                self._skipped_closing_soon,
+            )
+            expected = len(link_keywords) - self._skipped_closing_soon
+            if len(all_records) != expected:
+                logger.error(
+                    "[SUMMARY] run %s | MISMATCH: %d collected - %d skipped = %d expected, "
+                    "but %d record(s) are being exported",
+                    self.run_id, len(link_keywords), self._skipped_closing_soon,
+                    expected, len(all_records),
+                )
+            run_manager.update_run(
+                self.run_id,
+                bids_fully_extracted=by_status[STATUS_OK],
+                bids_partial=by_status[STATUS_PARTIAL],
+                bids_extraction_failed=by_status[STATUS_FAILED],
+                bids_acknowledgement_required=by_status[STATUS_ACK_REQUIRED],
+                acknowledgements_required=self._acknowledgement_required,
+                acknowledgements_accepted=self._accepted_acknowledgements,
+            )
+
+            # Say plainly what was accepted on the account's behalf. Each one is
+            # a submission the issuing agency can see, so it belongs in the run
+            # record rather than only in a log line.
+            if self._accepted_acknowledgements:
+                logger.info(
+                    "[run %s] accepted %d required acknowledgement(s): %s",
+                    self.run_id, len(self._accepted_acknowledgements),
+                    "; ".join(
+                        f"{item['name']} → {item['url']}"
+                        for item in self._accepted_acknowledgements
+                    ),
+                )
+                run_manager.add_warning(
+                    self.run_id,
+                    f"accepted {len(self._accepted_acknowledgements)} required "
+                    f"acknowledgement(s) on BidNet to read gated solicitations: "
+                    + ", ".join(
+                        sorted({item["name"] for item in self._accepted_acknowledgements})
+                    ),
+                )
+
+            # Gated bids get their own line: they are not scrape failures, and
+            # the only thing that opens them is a human clicking Accept on the
+            # portal (or enabling bidnet_auto_accept_acknowledgements).
+            if self._acknowledgement_required:
+                listing = "; ".join(
+                    f"{item['name']} → {item['url']}" for item in self._acknowledgement_required
+                )
+                logger.warning(
+                    "[run %s] %d solicitation(s) are gated behind a required "
+                    "acknowledgement and could not be read: %s",
+                    self.run_id, len(self._acknowledgement_required), listing,
+                )
+                run_manager.add_warning(
+                    self.run_id,
+                    f"{len(self._acknowledgement_required)} solicitation(s) need a "
+                    f"required acknowledgement accepted on BidNet before they can be "
+                    f"read — they are in the spreadsheet flagged "
+                    f"{STATUS_ACK_REQUIRED} with their detail URLs",
+                )
+
+            # Documents, reconciled the same way the bids are: detected versus
+            # actually saved. Anything short here means a bid's folder is
+            # missing a file its spreadsheet row claims, which is worth an
+            # error rather than a line buried in the log.
+            logger.info(
+                "[DOCUMENTS] run %s | Detected: %d | Downloaded: %d | Failed: %d | "
+                "Duplicate copies removed: %d | Count mismatches: %d",
+                self.run_id, self._documents_detected, self._documents_downloaded,
+                self._documents_failed, self._documents_duplicates,
+                self._doc_count_mismatches,
+            )
+            run_manager.update_run(
+                self.run_id,
+                documents_detected=self._documents_detected,
+                documents_downloaded=self._documents_downloaded,
+                documents_failed=self._documents_failed,
+            )
+            if self._documents_failed:
+                run_manager.add_warning(
+                    self.run_id,
+                    f"{self._documents_failed} of {self._documents_detected} detected "
+                    f"document(s) could not be downloaded",
+                )
+
             # One master spreadsheet for the whole run, at the root of its folder.
             self._write_master_excel(all_records)
 
@@ -743,30 +1143,47 @@ class BidnetScraper(BaseScraper):
             run_manager.add_error(self.run_id, str(exc)[:500])
             run_manager.update_run(self.run_id, status="failed", step="failed")
         finally:
+            if self._session is not None:
+                self._session.close()
+                self._session = None
             self.cleanup()
             run_manager.update_run(self.run_id, finished_at=datetime.now().isoformat())
             self._save_run_row()
             run_manager.remove_empty_folder(self.run_id)
 
     def _write_master_excel(self, records: list[dict]) -> None:
-        """One master spreadsheet for the run, at the root of its folder.
+        """This niche's spreadsheet, at the root of its niche folder.
 
         Every keyword's bids in a single sheet — one row per solicitation, with
         every keyword that surfaced it comma-joined in `Matched Keyword`.
 
-        Named with `exports.excel_name`, which is also what the packaging step
-        calls its DB-regenerated copy: matching names mean `build_zip` recognises
-        this file as already present and does not add a second spreadsheet. So
-        the ZIP ships exactly one Excel — the DB's version when the database is
-        reachable, this one when it is not.
+        Named `<Niche>_Bids.xlsx`, which is also the name the packaging step
+        writes its DB-regenerated copy to. Same path, so the archive ships one
+        spreadsheet per niche — the DB's version (covering every run of this
+        niche today) when the database is reachable, this one when it is not.
+        It is deliberately *not* uniquified: a re-run of the same niche should
+        refresh its sheet rather than leave a second one beside it.
         """
         self.set_step("generating_excel")
-        run = run_manager.get_run(self.run_id) or {"run_id": self.run_id, "scraper": "bidnet"}
-        out_path = self._unique_path(self.document_folder / excel_name(run))
+        out_path = storage.excel_path(
+            self.niche_folder, self.niche_label, self.niche_key, self.niche_slug
+        )
         try:
-            export.generate_excel_from_records(records, out_path)
+            written = export.generate_excel_from_records(records, out_path)
             run_manager.update_run(self.run_id, excel_path=str(out_path))
-            logger.info("[run %s] wrote %s bids to %s", self.run_id, len(records), out_path.name)
+            # The writer's own count, never len(records): logging the input count
+            # is what let a filtered-out row look exported.
+            logger.info("[run %s] wrote %s bids to %s", self.run_id, written, out_path.name)
+            if written != len(records):
+                logger.error(
+                    "[run %s] spreadsheet holds %s row(s) but %s record(s) were collected — "
+                    "records were dropped by the writer",
+                    self.run_id, written, len(records),
+                )
+                run_manager.add_error(
+                    self.run_id,
+                    f"spreadsheet holds {written} rows but {len(records)} bids were collected",
+                )
         except Exception:  # noqa: BLE001 — never fail a whole run over the spreadsheet
             logger.exception("[run %s] master Excel generation failed", self.run_id)
             run_manager.add_error(self.run_id, "excel generation failed (see logs)")

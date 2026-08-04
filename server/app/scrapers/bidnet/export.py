@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 _BID_FIELDS = {
     "reference_number", "solicitation_number", "solicitation_type", "title",
     "publication_date", "question_acceptance_deadline", "closing_date",
-    "documents_count", "matched_keyword", "niche",
+    "documents_count", "matched_keyword", "niche", "status", "detail_url",
 }
 
 
@@ -95,6 +95,12 @@ def save_bids(run: dict[str, Any], records: list[dict[str, Any]]) -> int:
     scraped record kept in `raw_data`, and one commit at the end. Rolls back and
     re-raises on any error so the caller can fall back to an Excel-from-records.
     Returns the number of rows stored.
+
+    Records with no reference number are still inserted (the unique constraint
+    is on `(run_id, reference_number)` and Postgres treats NULLs as distinct), so
+    a bid whose detail page failed to render is preserved rather than dropped.
+    A genuine duplicate reference *is* skipped — but never silently: it is logged
+    with the reference so an unexpected collision is visible.
     """
     session = SessionLocal()
     try:
@@ -102,6 +108,7 @@ def save_bids(run: dict[str, Any], records: list[dict[str, Any]]) -> int:
 
         stored = 0
         seen_refs: set[str] = set()
+        skipped_dupes: list[str] = []
         for record in records:
             values: dict[str, Any] = {k: (record.get(k) or None) for k in _BID_FIELDS}
             values["run_id"] = run["run_id"]
@@ -109,6 +116,7 @@ def save_bids(run: dict[str, Any], records: list[dict[str, Any]]) -> int:
 
             ref = values.get("reference_number")
             if ref and ref in seen_refs:
+                skipped_dupes.append(ref)
                 continue
             if ref:
                 seen_refs.add(ref)
@@ -123,7 +131,15 @@ def save_bids(run: dict[str, Any], records: list[dict[str, Any]]) -> int:
             stored += 1
 
         session.commit()
-        logger.info("[run %s] stored %d bid rows in DB", run.get("run_id"), stored)
+        if skipped_dupes:
+            logger.warning(
+                "[run %s] %d record(s) shared a reference number already stored for this "
+                "run and were not written again: %s",
+                run.get("run_id"), len(skipped_dupes), ", ".join(skipped_dupes),
+            )
+        logger.info(
+            "[run %s] stored %d of %d bid row(s) in DB", run.get("run_id"), stored, len(records)
+        )
         return stored
     except Exception:
         session.rollback()
@@ -170,12 +186,68 @@ def generate_excel(run_id: str, out_path: str | Path) -> int:
     return count
 
 
+def _rows_for_runs(run_ids: list[str]) -> list[BidnetBid]:
+    if not run_ids:
+        return []
+    session = SessionLocal()
+    try:
+        return session.execute(
+            select(BidnetBid).where(BidnetBid.run_id.in_(run_ids)).order_by(BidnetBid.id)
+        ).scalars().all()
+    finally:
+        session.close()
+
+
+def generate_excel_for_runs(run_ids: list[str], out_path: str | Path) -> int:
+    """Build one sheet covering several runs, de-duplicated by reference number.
+
+    A niche can be run more than once in a day — a re-run after a portal
+    hiccup, or a second pass with different filters. Its folder holds a single
+    `<Niche>_Bids.xlsx`, and that sheet has to carry every run's bids or the
+    re-run would quietly replace the earlier one's results. Bids seen in more
+    than one run are written once, keeping the most recent row, since the same
+    solicitation surfacing twice is one solicitation.
+
+    Returns the number of rows written.
+    """
+    rows = _rows_for_runs(run_ids)
+    deduped: dict[str, BidnetBid] = {}
+    ordered: list[BidnetBid] = []
+    for row in rows:
+        ref = (row.reference_number or "").strip()
+        if not ref:
+            # No reference number to key on — a bid whose detail page failed to
+            # render. Kept as its own row rather than collapsed into another.
+            ordered.append(row)
+            continue
+        if ref in deduped:
+            # Later row wins: same run_id order means the newer scrape.
+            ordered[ordered.index(deduped[ref])] = row
+            deduped[ref] = row
+            continue
+        deduped[ref] = row
+        ordered.append(row)
+
+    count = _write_workbook(ordered, out_path)
+    logger.info(
+        "wrote %d rows to %s from %d run(s) (%d duplicate reference(s) collapsed)",
+        count, out_path, len(run_ids), len(rows) - count,
+    )
+    return count
+
+
 def generate_excel_from_records(records: list[dict[str, Any]], out_path: str | Path) -> int:
     """Build this run's Excel sheet straight from the in-memory scraped records.
 
-    Used as a fallback when the DB is unavailable, so a run always produces its
-    Excel even though nothing could be persisted. Mirrors generate_excel: only
-    records that carry a reference number are written (same as what save_bids stores).
+    **Every record is written.** This used to skip records with no reference
+    number, which silently dropped exactly the bids most worth seeing — the ones
+    whose detail page could not be read — while the caller logged the unfiltered
+    count, so the log claimed more rows than the file held. A record that could
+    not be fully scraped now appears with its `status` (EXTRACTION_FAILED /
+    PARTIAL_DATA) and `detail_url` so it can be chased by hand.
+
+    Returns the number of rows written, which callers must log rather than the
+    length of what they passed in.
     """
     workbook = Workbook()
     sheet = workbook.active
@@ -183,8 +255,6 @@ def generate_excel_from_records(records: list[dict[str, Any]], out_path: str | P
     sheet.append([header for _, header in EXCEL_COLUMNS])
     count = 0
     for record in records:
-        if not record.get("reference_number"):
-            continue
         sheet.append([record.get(attr) for attr, _ in EXCEL_COLUMNS])
         count += 1
     workbook.save(str(out_path))

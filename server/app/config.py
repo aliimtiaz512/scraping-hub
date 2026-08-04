@@ -34,6 +34,16 @@ class Settings(BaseSettings):
     bidnet_direct_link: str = "https://www.bidnetdirect.com/"
     bidnet_username: str = ""
     bidnet_password: str = ""
+    # Some solicitations sit behind a "required acknowledgement" page that must
+    # be Accepted before the bid is readable — attesting to something on the
+    # account's behalf (e.g. "this company is US-based") or recording that an
+    # addendum was read, which the issuing agency can see.
+    #
+    # On by default at the account holder's instruction: runs click Accept and
+    # then read the bid normally. Set false to leave those bids untouched, in
+    # which case they are exported flagged ACKNOWLEDGEMENT_REQUIRED with their
+    # detail URL for a human to accept on the portal.
+    bidnet_auto_accept_acknowledgements: bool = True
 
     # Wisconsin eSupplier (PeopleSoft) — public bidder portal, no login.
     wisconsin_url: str = "https://esupplier.wi.gov/psp/esupplier/SUPPLIER/ERP/h/?tab=WI_BIDDER"

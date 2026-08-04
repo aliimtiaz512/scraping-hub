@@ -56,6 +56,15 @@ def excel_name(run: dict[str, Any]) -> str:
     existing naming convention (criteria in the name, no timestamps)."""
     scraper = run.get("scraper") or "results"
     search = (run.get("search") or "").strip()
+    # BidNet names its sheet after the niche, matching the copy inside the
+    # session ZIP — a bare-sheet fallback download shouldn't arrive under a
+    # different name than the one in the bundle.
+    if scraper == "bidnet" and run.get("niche_label"):
+        from app.scrapers.bidnet import storage
+
+        return storage.excel_filename(
+            run["niche_label"], run.get("niche") or "", run.get("niche_slug")
+        )
     label = {
         "septa": f"Septa_({search or 'today open quotes'})",
         "wisconsin": f"Wisconsin_({search or 'all current solicitations'})",
@@ -125,12 +134,22 @@ def build_zip(run: dict[str, Any], out_path: Path) -> str:
     """
     scraper = run.get("scraper")
     folder = Path(run.get("folder") or "")
+
+    # A BidNet run writes into one niche folder of a shared per-day session
+    # root, and the deliverable is the whole root — every niche run that day.
+    # Zipping `folder` alone would ship a single niche and silently drop the
+    # rest of the day's work.
+    session_root = Path(run.get("session_root") or "") if scraper == "bidnet" else None
+    if session_root and session_root.is_dir():
+        with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            _add_tree(zf, session_root, arc_prefix=session_root.name)
+        return sanitize_filename(session_root.name, max_length=150) + ".zip"
+
     with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as zf:
         # Legacy BidNet runs foldered results per niche+tier group inside a
         # shared per-day bucket, so only this run's groups belonged in its ZIP.
-        # A run is now one niche in its own timestamped folder, and `folder` is
-        # exactly the run's output — the generic walk below covers both, since
-        # old runs' group folders sit under the bucket it points at.
+        # Older single-niche runs point `folder` at exactly their own output —
+        # the generic walk below covers both.
         if folder.is_dir():
             _add_tree(zf, folder)
 
@@ -155,12 +174,17 @@ def archive_run(run_id: str) -> str | None:
     Either way the temp workspace folder is then deleted. Best-effort: on
     failure the workspace is kept so the download endpoint can still package it
     on demand. Returns the archive path, or None if packaging failed.
+
+    BidNet is the exception: its runs accumulate into a shared per-day session
+    root, so it packages the whole root and keeps it (see `_archive_bidnet`).
     """
     from app.core import run_manager
 
     run = run_manager.get_run(run_id)
     if not run:
         return None
+    if run.get("scraper") == "bidnet" and run.get("session_root"):
+        return _archive_bidnet(run_id, run)
     folder = Path(run.get("folder") or "")
     label = folder.name or f"{run.get('scraper')}_{run_id}"
     # The run_id suffix keeps same-second runs from colliding in the archive.
@@ -180,6 +204,104 @@ def archive_run(run_id: str) -> str | None:
     run_manager.update_run(run_id, zip_path=str(out), zip_name=out.name)
     _cleanup_workspace(run_id, folder)
     return str(out)
+
+
+def _archive_bidnet(run_id: str, run: dict[str, Any]) -> str | None:
+    """Bundle a BidNet session root — every niche run that day — into one ZIP.
+
+    Unlike every other portal, the workspace is **not** deleted afterwards: the
+    root is shared, and removing it would throw away the niches already
+    finished. Instead each run refreshes its own niche's spreadsheet, rebuilds
+    the whole-root ZIP, and points every run of that day at it, so a download
+    triggered from any of them carries all niches completed so far. Expired
+    session roots are pruned on the way out.
+    """
+    from app.core import run_manager
+    from app.scrapers.bidnet import storage
+
+    root = Path(run["session_root"])
+    if not root.is_dir():
+        logger.error("[run %s] session root %s is gone — nothing to archive", run_id, root)
+        return None
+
+    _refresh_niche_excel(run_id, run)
+
+    out = settings.archive_root / storage.zip_name(root)
+    # One writer at a time: two niches can finish together, and both rebuild
+    # this same archive. The temp-then-replace also means a download in flight
+    # never reads a half-written ZIP.
+    with storage.zip_lock:
+        tmp = out.with_name(out.name + f".{run_id}.tmp")
+        try:
+            with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zf:
+                _add_tree(zf, root, arc_prefix=root.name)
+            tmp.replace(out)
+        except Exception:  # noqa: BLE001 — packaging must never fail the run
+            logger.exception("[run %s] could not build BidNet session ZIP", run_id)
+            tmp.unlink(missing_ok=True)
+            return None
+
+    # Every run of this session points at the same archive, so an earlier
+    # niche's Download button serves the bundle including the later ones.
+    for sibling in run_manager.list_runs("bidnet"):
+        if sibling.get("session_root") == str(root):
+            run_manager.update_run(sibling["run_id"], zip_path=str(out), zip_name=out.name)
+
+    logger.info(
+        "[run %s] packaged %d niche folder(s) from %s into %s",
+        run_id, len(storage.niche_dirs(root)), root.name, out.name,
+    )
+    storage.prune_old_sessions()
+    return str(out)
+
+
+def _refresh_niche_excel(run_id: str, run: dict[str, Any]) -> None:
+    """Rewrite this niche's `<Niche>_Bids.xlsx` from the DB.
+
+    Covers every run of the same niche in the same session, so a re-run adds to
+    the sheet instead of replacing the earlier run's rows. Best-effort — the
+    scraper already wrote a records-based sheet at this exact path, which stands
+    if the DB is unreachable.
+    """
+    from app.core import run_manager
+    from app.scrapers.bidnet import export as bidnet_export, storage
+
+    folder = Path(run.get("niche_folder") or run.get("folder") or "")
+    if not folder.is_dir():
+        return
+    run_ids = [
+        sibling["run_id"]
+        for sibling in run_manager.list_runs("bidnet")
+        if sibling.get("session_root") == run.get("session_root")
+        and sibling.get("niche") == run.get("niche")
+    ]
+    if run_id not in run_ids:
+        run_ids.append(run_id)
+
+    out = storage.excel_path(
+        folder, run.get("niche_label") or "", run.get("niche") or "", run.get("niche_slug")
+    )
+    # Build beside the real sheet and only swap it in once it is known to hold
+    # rows. A run whose DB save failed has its bids *only* in the sheet the
+    # scraper wrote from memory — regenerating straight over that path would
+    # replace real results with an empty workbook, losing the run's output at
+    # the last step.
+    staging = out.with_name(out.name + f".{run_id}.tmp")
+    try:
+        written = bidnet_export.generate_excel_for_runs(run_ids, staging)
+        if written == 0 and out.is_file():
+            logger.warning(
+                "[run %s] the DB returned no rows for this niche — keeping the "
+                "sheet the scraper wrote (%s)", run_id, out.name,
+            )
+            staging.unlink(missing_ok=True)
+            return
+        staging.replace(out)
+        run_manager.update_run(run_id, excel_path=str(out), excel_name=out.name)
+        logger.info("[run %s] niche sheet %s holds %d row(s)", run_id, out.name, written)
+    except Exception:  # noqa: BLE001 — the scraper's own sheet is already there
+        logger.exception("[run %s] could not refresh the niche spreadsheet", run_id)
+        staging.unlink(missing_ok=True)
 
 
 def _archive_excel(run_id: str, run: dict[str, Any], folder: Path, out: Path) -> str | None:

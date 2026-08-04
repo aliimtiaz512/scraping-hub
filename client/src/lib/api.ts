@@ -40,7 +40,9 @@ export interface BidResult {
   // RideMetro
   ref_number?: string;
   project?: string;
-  // BidNet
+  // BidNet. `status` (shared with North Dakota) is the record-completeness flag:
+  // OK | PARTIAL_DATA | EXTRACTION_FAILED — a bid whose detail page could not be
+  // read is exported flagged rather than dropped.
   reference_number?: string;
   solicitation_type?: string;
   closing_date?: string;
@@ -149,6 +151,10 @@ export interface RunStatus {
   min_days_until_close?: number;
   bids_skipped_closing_soon?: number;
   bids_kept_unreadable_close?: number;
+  // BidNet: how the run's records broke down by completeness.
+  bids_fully_extracted?: number;
+  bids_partial?: number;
+  bids_extraction_failed?: number;
   // SAM-only filters.
   date_from?: string | null;
   date_to?: string | null;

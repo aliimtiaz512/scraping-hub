@@ -46,7 +46,17 @@ export default function BidnetResults({ bids }: { bids: BidResult[] }) {
           <td className="tabular whitespace-nowrap px-4 py-3 text-xs text-ink-600">{bid.closing_date || "—"}</td>
           <td className="tabular px-4 py-3 text-center text-ink-600">{bid.documents?.length ?? 0}</td>
           <td className="px-4 py-3">
-            {bid.error ? (
+            {/* A bid whose detail page could not be read is kept and flagged
+                rather than dropped, so say so here — the documents indicator
+                alone would make it look like an ordinary bid with no files. */}
+            {bid.status && bid.status !== "OK" ? (
+              <span
+                title={bid.error ?? bid.status}
+                className="whitespace-nowrap rounded-full border border-amber-300 bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-800"
+              >
+                {bid.status === "EXTRACTION_FAILED" ? "Not readable" : "Partial"}
+              </span>
+            ) : bid.error ? (
               <DocStatus state="failed" title={bid.error} />
             ) : bid.documents?.length ? (
               <DocStatus state="ok" />

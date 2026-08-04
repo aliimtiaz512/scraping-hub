@@ -60,6 +60,13 @@ class BidnetBid(Base):
     matched_keyword: Mapped[str | None] = mapped_column(Text)
     # Which niche the run searched (a run is always exactly one).
     niche: Mapped[str | None] = mapped_column(String(64), index=True)
+    # How complete this record is — see scraper.RECORD_STATUSES. Every bid the
+    # run opened is stored, including ones whose detail page could not be read,
+    # so a scraped solicitation is never silently absent from the output.
+    status: Mapped[str | None] = mapped_column(String(32), index=True)
+    # The solicitation's detail page, so a PARTIAL_DATA / EXTRACTION_FAILED row
+    # can be chased by hand.
+    detail_url: Mapped[str | None] = mapped_column(Text)
 
     # Complete original scraped record: {field -> value}. Preserved so nothing is
     # lost even when the portal's fields differ from what we mapped.
@@ -71,6 +78,7 @@ class BidnetBid(Base):
 # Column order for the generated Excel, mapped to friendly headers (matches the
 # original on-demand export).
 EXCEL_COLUMNS: list[tuple[str, str]] = [
+    ("status", "Status"),
     ("niche", "Niche"),
     ("reference_number", "Reference Number"),
     ("solicitation_number", "Solicitation Number"),
@@ -81,4 +89,5 @@ EXCEL_COLUMNS: list[tuple[str, str]] = [
     ("closing_date", "Closing Date"),
     ("documents_count", "Documents Count"),
     ("matched_keyword", "Matched Keyword"),
+    ("detail_url", "Detail URL"),
 ]
