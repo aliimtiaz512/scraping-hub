@@ -577,26 +577,28 @@ export function startCalEProcureScrape(): Promise<{ run_id: string; folder: stri
 
 export interface StartEmmaScrapeOptions {
   // All optional and combinable; all blank captures every public solicitation.
-  category?: string;
-  solicitationType?: string;
+  // These are the three filters the portal shows above the results grid.
+  keyword?: string;
   status?: string;
+  category?: string;
   livePreview?: boolean;
 }
 
 /**
- * Sign in, open Public Solicitations, optionally apply the filter bar (Main
- * Category / Solicitation Type / Status), scrape the whole grid, and store every
- * solicitation still closing at least 7 days out.
+ * Sign in, open Public Solicitations, optionally apply the filter bar (Keywords /
+ * Status / Category), scrape the whole grid, open each solicitation to extract
+ * all its fields and download its documents, and store every solicitation still
+ * closing at least 7 days out.
  */
 export function startEmmaScrape({
-  category = "",
-  solicitationType = "",
+  keyword = "",
   status = "",
+  category = "",
   livePreview = false,
 }: StartEmmaScrapeOptions = {}): Promise<{ run_id: string; search: string; folder: string }> {
   return request(`/emma/scrape${livePreviewQuery(livePreview)}`, {
     method: "POST",
-    body: JSON.stringify({ category, solicitation_type: solicitationType, status }),
+    body: JSON.stringify({ keyword, status, category }),
   });
 }
 

@@ -12,9 +12,9 @@ import { getRunStatus, startEmmaScrape, type RunStatus } from "@/lib/api";
 const POLL_INTERVAL_MS = 3000;
 
 export default function EmmaPanel() {
-  const [category, setCategory] = useState("");
-  const [solicitationType, setSolicitationType] = useState("");
+  const [keyword, setKeyword] = useState("");
   const [status, setStatus] = useState("");
+  const [category, setCategory] = useState("");
   const [run, setRun] = useState<RunStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
@@ -34,9 +34,9 @@ export default function EmmaPanel() {
     setStarting(true);
     try {
       const { run_id } = await startEmmaScrape({
-        category: category.trim(),
-        solicitationType: solicitationType.trim(),
+        keyword: keyword.trim(),
         status: status.trim(),
+        category: category.trim(),
         livePreview,
       });
       setRun(await getRunStatus("emma", run_id));
@@ -58,7 +58,7 @@ export default function EmmaPanel() {
   };
 
   const isRunning = run !== null && (run.status === "pending" || run.status === "running");
-  const hasCriteria = [category, solicitationType, status].some((v) => v.trim() !== "");
+  const hasCriteria = [keyword, status, category].some((v) => v.trim() !== "");
 
   return (
     <div className="space-y-6">
@@ -66,22 +66,15 @@ export default function EmmaPanel() {
 
       <Card
         title="Filters"
-        description="All three are optional and combinable. Leave them blank to capture every public solicitation. Filters are applied best-effort against EMMA's filter-bar autocompletes. Only solicitations closing at least 7 days out are kept."
+        description="The same three filters the portal shows above Public Solicitations — all optional and combinable. Leave them blank to capture every public solicitation. Each opened bid has all its fields extracted and its documents downloaded; only solicitations closing at least 7 days out are kept."
       >
         <div className="grid gap-4 sm:grid-cols-3">
           <Field
-            label="Main Category"
-            value={category}
-            onChange={setCategory}
+            label="Keywords"
+            value={keyword}
+            onChange={setKeyword}
             disabled={isRunning}
-            placeholder="e.g. Transport planning"
-          />
-          <Field
-            label="Solicitation Type"
-            value={solicitationType}
-            onChange={setSolicitationType}
-            disabled={isRunning}
-            placeholder="e.g. Public Notice"
+            placeholder="e.g. engineering"
           />
           <Field
             label="Status"
@@ -89,6 +82,13 @@ export default function EmmaPanel() {
             onChange={setStatus}
             disabled={isRunning}
             placeholder="e.g. Open"
+          />
+          <Field
+            label="Category"
+            value={category}
+            onChange={setCategory}
+            disabled={isRunning}
+            placeholder="e.g. Civil engineering"
           />
         </div>
       </Card>

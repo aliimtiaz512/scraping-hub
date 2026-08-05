@@ -23,21 +23,22 @@ router = APIRouter(prefix="/emma", tags=["emma"])
 
 class ScrapeRequest(BaseModel):
     # All optional; an empty request captures every current public solicitation.
-    category: str = ""
-    solicitation_type: str = ""
+    # These are the three filters the portal shows above the results grid.
+    keyword: str = ""
     status: str = ""
+    category: str = ""
 
 
 @router.post("/scrape")
 def start_scrape(request: ScrapeRequest, background_tasks: BackgroundTasks, live_preview: bool = False) -> dict:
-    category = request.category.strip()
-    solicitation_type = request.solicitation_type.strip()
+    keyword = request.keyword.strip()
     status = request.status.strip()
+    category = request.category.strip()
     search = ", ".join(
         part for part in (
-            f"category={category}" if category else "",
-            f"type={solicitation_type}" if solicitation_type else "",
+            f"keyword={keyword}" if keyword else "",
             f"status={status}" if status else "",
+            f"category={category}" if category else "",
         ) if part
     ) or "all public solicitations"
 
@@ -49,14 +50,14 @@ def start_scrape(request: ScrapeRequest, background_tasks: BackgroundTasks, live
         {
             "label": label,
             "search": search,
-            "category": category,
-            "solicitation_type": solicitation_type,
+            "keyword": keyword,
             "status": status,
+            "category": category,
             "excel_exported": False,
             "live_preview": live_preview,
         },
     )
-    background_tasks.add_task(execute_run, run["run_id"], category, solicitation_type, status)
+    background_tasks.add_task(execute_run, run["run_id"], keyword, status, category)
     return {"run_id": run["run_id"], "search": search, "folder": run["folder"]}
 
 

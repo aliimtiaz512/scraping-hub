@@ -73,6 +73,42 @@ USER_AGENT = (
 )
 
 
+def _clear_stale_wdm_locks(max_age: float = 300) -> None:
+    """Remove leftover webdriver-manager lock files older than `max_age` seconds.
+
+    webdriver-manager serialises driver downloads with a lock file under ~/.wdm.
+    A process killed mid-install leaves that lock behind, and every later
+    start_driver then waits on it and fails with "Timed out waiting for
+    webdriver-manager lock". A healthy install holds the lock for seconds, so
+    anything old is safe to clear.
+    """
+    try:
+        for lock in (Path.home() / ".wdm").glob(".wdm-lock*"):
+            if time.time() - lock.stat().st_mtime > max_age:
+                lock.unlink(missing_ok=True)
+                logger.warning("removed stale webdriver-manager lock %s", lock)
+    except OSError:  # noqa: PERF203 — lock cleanup is best-effort
+        pass
+
+
+def _resolve_chromedriver() -> str:
+    """ChromeDriverManager().install(), self-healing a stale wdm lock.
+
+    Clears clearly-stale locks first; if the resolver still times out on the
+    lock, remove it outright and retry once (a concurrent healthy install only
+    holds the lock briefly, so a timeout means it is orphaned).
+    """
+    _clear_stale_wdm_locks()
+    try:
+        return ChromeDriverManager().install()
+    except Exception as exc:  # noqa: BLE001 — only the lock timeout is retried
+        if "lock" not in str(exc).lower():
+            raise
+        logger.warning("webdriver-manager lock timeout — clearing the lock and retrying once")
+        _clear_stale_wdm_locks(max_age=0)
+        return ChromeDriverManager().install()
+
+
 class BaseScraper:
     def __init__(self, run_id: str):
         self.run_id = run_id
@@ -151,7 +187,7 @@ class BaseScraper:
                 "profile.default_content_setting_values.automatic_downloads": 1,
             },
         )
-        service = Service(ChromeDriverManager().install())
+        service = Service(_resolve_chromedriver())
         self.driver = webdriver.Chrome(service=service, options=options)
         self.driver.set_page_load_timeout(60)
         # Expose this run's browser to the shared live-screenshot endpoint so the

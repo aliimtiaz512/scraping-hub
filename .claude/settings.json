@@ -49,7 +49,11 @@
       "Bash(curl -s --max-time 6 http://localhost:8000/)",
       "Bash(grep -rlE *)",
       "Bash(.venv/bin/python -c \"import main; from app.scrapers.emma import scraper; print\\('OK; recycle:', scraper.RECYCLE_EVERY, '| _restart_browser:', hasattr\\(scraper.EmmaScraper,'_restart_browser'\\)\\)\")",
-      "Bash(cd \"/home/akif-aziz/Public/Head office scrappers/scraping-hub\" && echo \"=== live: in-progress run folders in the temp workspace ===\" && ls -d \"/tmp/scraping-hub-runs/\"*EMMA* 2>/dev/null | head; echo \"  \\(per-bid folders inside a run, if any\\):\"; find /tmp/scraping-hub-runs -path '*EMMA*' -name '*.pdf' -o -path '*EMMA*' -name '*.doc*' 2>/dev/null | head -5; echo && echo \"=== finished-run archives \\(the deliverable ZIPs\\) ===\" && ls -lah data/archives/ 2>/dev/null | grep -iE \"emma|\\\\.zip\" | tail -10 || echo \"\\(no archives dir / no EMMA zips yet\\)\")"
+      "Bash(cd \"/home/akif-aziz/Public/Head office scrappers/scraping-hub\" && echo \"=== live: in-progress run folders in the temp workspace ===\" && ls -d \"/tmp/scraping-hub-runs/\"*EMMA* 2>/dev/null | head; echo \"  \\(per-bid folders inside a run, if any\\):\"; find /tmp/scraping-hub-runs -path '*EMMA*' -name '*.pdf' -o -path '*EMMA*' -name '*.doc*' 2>/dev/null | head -5; echo && echo \"=== finished-run archives \\(the deliverable ZIPs\\) ===\" && ls -lah data/archives/ 2>/dev/null | grep -iE \"emma|\\\\.zip\" | tail -10 || echo \"\\(no archives dir / no EMMA zips yet\\)\")",
+      "Bash(cd \"/home/akif-aziz/Public/Head office scrappers/scraping-hub/server\" && echo \"=== who owns the lock message ===\" && grep -rn \"wdm-lock\\\\|Timed out waiting for webdriver-manager\" app/ | head -5 && echo && echo \"=== the lock file on disk ===\" && ls -la /home/akif-aziz/.wdm/ 2>/dev/null | head && echo && echo \"=== lock content \\(owner PID?\\) ===\" && cat /home/akif-aziz/.wdm/.wdm-lock-chromedriver-linux64 2>/dev/null; echo && echo \"=== chrome/chromedriver processes alive ===\" && pgrep -af \"chromedriver|chrome\" | head -5 || echo \"\\(none\\)\")",
+      "Read(//home/akif-aziz/.wdm/**)",
+      "Bash(.venv/bin/pip show *)",
+      "Bash(rm -f /home/akif-aziz/.wdm/.wdm-lock-chromedriver-linux64)"
     ],
     "additionalDirectories": [
       "/home/akif-aziz/Public/Head office scrappers/scraping-hub/client/.next"

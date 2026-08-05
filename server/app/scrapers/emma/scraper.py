@@ -67,10 +67,13 @@ SOURCING_MENU_TEXT = "Sourcing"
 PUBLIC_SOLICITATIONS_TEXT = "Public Solicitations"
 PUBLIC_SOLICITATIONS_HREF = "request_browse_public"
 
-# -- filter bar + results grid (Ivalua ids, confirmed against the live page) ---
-CATEGORY_SEARCH_ID = "body_x_selFamily_search"       # Main Category autocomplete
-TYPE_SEARCH_ID = "body_x_selRfptypeCode_search"      # Solicitation Type autocomplete
-STATUS_SEARCH_ID = "body_x_selStatusCode_2_search"   # Status autocomplete
+# -- filter bar + results grid (Ivalua ids, confirmed live against the labelled
+# controls: label "Keywords" -> txtBpmCodeCalculated_3, "Status" ->
+# selStatusCode_search, "Category" -> selFamily_search. Note selStatusCode_2 is
+# actually "Award Status", not the Status filter.) --------------------------
+KEYWORDS_ID = "body_x_txtBpmCodeCalculated_3"        # "Keywords" free-text box
+STATUS_SEARCH_ID = "body_x_selStatusCode_search"     # "Status" autocomplete (Open/Closed/Response Opened)
+CATEGORY_SEARCH_ID = "body_x_selFamily_search"       # "Category" autocomplete
 SEARCH_BTN_ID = "body_x_prxFilterBar_x_cmdSearchBtn"
 
 GRID_ID = "body_x_grid_grd"
@@ -129,14 +132,14 @@ class EmmaScraper(BaseScraper):
     def __init__(
         self,
         run_id: str,
-        category: str = "",
-        solicitation_type: str = "",
+        keyword: str = "",
         status: str = "",
+        category: str = "",
     ):
         super().__init__(run_id)
-        self.category = (category or "").strip()
-        self.solicitation_type = (solicitation_type or "").strip()
+        self.keyword = (keyword or "").strip()
         self.status = (status or "").strip()
+        self.category = (category or "").strip()
         self.excel_path: Path | None = None
         # Full in-memory copy of every kept row — the Excel fallback source if the
         # DB is unavailable.
@@ -157,11 +160,14 @@ class EmmaScraper(BaseScraper):
     def _filters_summary(self) -> str:
         return ", ".join(
             part for part in (
-                f"category={self.category}" if self.category else "",
-                f"type={self.solicitation_type}" if self.solicitation_type else "",
+                f"keyword={self.keyword}" if self.keyword else "",
                 f"status={self.status}" if self.status else "",
+                f"category={self.category}" if self.category else "",
             ) if part
         ) or "all public solicitations"
+
+    def _has_filters(self) -> bool:
+        return bool(self.keyword or self.status or self.category)
 
     def _safe_click(self, element) -> bool:
         """Click, falling back to a JS click if something overlays the target."""
@@ -349,22 +355,22 @@ class EmmaScraper(BaseScraper):
     def apply_filters(self) -> None:
         """Apply whichever filter-bar fields the user supplied, then Search.
 
-        All three (Main Category / Solicitation Type / Status) are optional and
-        combinable. With none set, the grid already lists every public
-        solicitation, so we skip straight to scraping. Each filter is best-effort:
-        a failure warns and continues rather than aborting the run.
+        Keywords / Status / Category are optional and combinable — the same three
+        fields the portal shows above the results. With none set, the grid already
+        lists every public solicitation, so we skip straight to scraping. Each
+        filter is best-effort: a failure warns and continues rather than aborting.
         """
-        if not (self.category or self.solicitation_type or self.status):
+        if not self._has_filters():
             logger.info("[run %s] no filters set — scraping the full list", self.run_id)
             return
 
         self.set_step("applying_filters")
-        if self.category:
-            self._select_autocomplete(CATEGORY_SEARCH_ID, self.category, "category")
-        if self.solicitation_type:
-            self._select_autocomplete(TYPE_SEARCH_ID, self.solicitation_type, "solicitation type")
+        if self.keyword:
+            self._fill_keywords(self.keyword)
         if self.status:
             self._select_autocomplete(STATUS_SEARCH_ID, self.status, "status")
+        if self.category:
+            self._select_autocomplete(CATEGORY_SEARCH_ID, self.category, "category")
 
         self.set_step("searching")
         first_before = self._first_row_id()
@@ -375,6 +381,18 @@ class EmmaScraper(BaseScraper):
                 "var b = document.getElementById(arguments[0]); if (b) b.click();", SEARCH_BTN_ID
             )
         self._wait_grid_settled(first_before)
+
+    def _fill_keywords(self, value: str) -> None:
+        """Type into the plain "Keywords" text box (best-effort)."""
+        try:
+            box = self.wait(10).until(EC.presence_of_element_located((By.ID, KEYWORDS_ID)))
+            self.scroll_into_view(box)
+            box.clear()
+            box.send_keys(value)
+            logger.info("[run %s] applied keyword filter %r", self.run_id, value)
+        except WebDriverException:
+            logger.info("[run %s] keyword field not found for %r; continuing", self.run_id, value)
+            run_manager.add_warning(self.run_id, f"could not enter keyword '{value}'")
 
     def _select_autocomplete(self, search_id: str, value: str, label: str) -> None:
         """Type into an Ivalua Semantic-UI autocomplete and pick the best match.
@@ -422,9 +440,7 @@ class EmmaScraper(BaseScraper):
             if not row.get("emma_id"):
                 continue
             row["detail_url"] = self._abs_url(row.get("detail_url"))
-            row["matched_filters"] = self._filters_summary() if (
-                self.category or self.solicitation_type or self.status
-            ) else ""
+            row["matched_filters"] = self._filters_summary() if self._has_filters() else ""
             row["documents"] = []
             rows.append(row)
         return rows
@@ -646,8 +662,79 @@ class EmmaScraper(BaseScraper):
             logger.exception("[run %s] browser restart failed", self.run_id)
             return False
 
+    # Extract every labelled field on a solicitation's detail page. Different
+    # solicitations expose different fields (pre-bid conference, MBE %, contact
+    # email, alternate link, …), so this captures whatever is there rather than a
+    # fixed list. Values are cleaned of Ivalua chrome: the clear-button ("Delete
+    # the value"), the label echoed into the body, and encrypted tokens (CfDJ…).
+    _JS_DETAIL_FIELDS = r"""
+        const NOISE=/^(default|high contrast|yes|no|show|hide|show \/ hide column|actions?|select this row|edit)$/i;
+        const CLEAR=/delete the value\.?/ig;
+        const panel = document.getElementById('body_x_tabc_rfp_ext_prxrfp_ext_x')
+                   || document.getElementById('body_x_tabc_rfp_ext')
+                   || document.getElementById('pageContent') || document.body;
+        const out={};
+        panel.querySelectorAll("[data-iv-role='field']").forEach(f=>{
+          // Skip anything inside the documents grid — those are handled separately.
+          if (f.closest("[id*='prxDoc']")) return;
+          let labEl=f.querySelector("label,.control-label,.field-label,.iv-label");
+          let L=labEl?(labEl.textContent||'').replace(/\s+/g,' ').replace(/\*/g,'').trim():'';
+          if(!L || NOISE.test(L) || L.length>60) return;
+          let V='';
+          let sel=f.querySelector("select");
+          let inp=f.querySelector("input[type='text'],input:not([type]),textarea");
+          if(sel && sel.selectedIndex>=0){ V=(sel.options[sel.selectedIndex].textContent||'').trim(); }
+          else if(inp){ V=(inp.value||'').trim(); }
+          else {
+            let body=f.querySelector(".iv-field-body,.field-body,.iv-value,.value");
+            V=((body||f).textContent||'');
+            if(labEl) V=V.replace(labEl.textContent,'');
+          }
+          V=V.replace(CLEAR,'').replace(/\s+/g,' ').trim();
+          if(!V || NOISE.test(V) || V.startsWith('CfDJ')) return;
+          if(V.length>1000) V=V.slice(0,1000);
+          if(!(L in out)) out[L]=V;
+        });
+        return out;
+    """
+
+    def _extract_detail_fields(self) -> dict[str, str]:
+        """Return {label: value} for every labelled field on the current detail
+        page. Never raises — a failure just yields an empty dict."""
+        try:
+            data = self.driver.execute_script(self._JS_DETAIL_FIELDS)
+            return {str(k): str(v) for k, v in (data or {}).items() if k and v}
+        except WebDriverException:
+            return {}
+
+    # Detail-page labels whose (cleaner) value should fill a grid column when the
+    # grid left it blank or gave an encrypted token — e.g. the grid renders the
+    # Procurement Officer as a CfDJ… token, but the detail page has the real name.
+    _DETAIL_BACKFILL = {
+        "procurement_officer": ("Procurement Officer / Buyer",),
+        "close_date": ("Due / Close Date (EST)", "Due / Close Date"),
+        "main_category": ("Main Category",),
+        "issuing_agency": ("Issuing Agency",),
+        "solicitation_type": ("Solicitation Type",),
+        "status": ("Status",),
+    }
+
+    def _backfill_from_detail(self, rec: dict[str, Any], detail: dict[str, str]) -> None:
+        """Fill a grid column from the detail page when the grid value is missing
+        or an encrypted token."""
+        for field, labels in self._DETAIL_BACKFILL.items():
+            current = (rec.get(field) or "").strip()
+            if current and not current.startswith("CfDJ"):
+                continue
+            for label in labels:
+                val = (detail.get(label) or "").strip()
+                if val and not val.startswith("CfDJ"):
+                    rec[field] = val
+                    break
+
     def _download_solicitation_docs(self, url: str, rec: dict[str, Any]) -> list[str]:
-        """Download every file in one solicitation's RFx Documents grid.
+        """Open a solicitation's detail page: extract all of its fields into the
+        record, then download every file in its RFx Documents grid.
 
         The grid loads lazily, so we scroll it into view and wait for its rows;
         each file's direct download anchor is clicked (Chrome saves it to the
@@ -655,6 +742,16 @@ class EmmaScraper(BaseScraper):
         with no documents returns an empty list.
         """
         self.navigate(url)
+        time.sleep(2)  # let the detail form finish rendering its fields
+
+        # Capture all of this solicitation's fields (varies per solicitation) so
+        # the record — and the Excel/DB — carry the full detail, not just the grid
+        # row. Stored under `detail`; also fills any grid column left blank.
+        detail = self._extract_detail_fields()
+        if detail:
+            rec["detail"] = detail
+            self._backfill_from_detail(rec, detail)
+
         links = self._collect_document_links()
         if not links:
             return []
@@ -850,8 +947,8 @@ def _xpath_literal(text: str) -> str:
 
 def execute_run(
     run_id: str,
-    category: str = "",
-    solicitation_type: str = "",
+    keyword: str = "",
     status: str = "",
+    category: str = "",
 ) -> None:
-    EmmaScraper(run_id, category, solicitation_type, status).run()
+    EmmaScraper(run_id, keyword, status, category).run()
