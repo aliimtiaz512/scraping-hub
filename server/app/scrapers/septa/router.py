@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from app.core import run_manager
 from app.core.filenames import timestamp
 from app.db import get_session
-from app.scrapers.septa.filters import BadDate, OpenDateRange
+from app.scrapers.septa.filters import BadDate, OpenDateFilter
 from app.scrapers.septa.models import EXCEL_COLUMNS, SeptaBid
 from app.scrapers.septa.scraper import execute_run
 
@@ -15,29 +15,28 @@ router = APIRouter(prefix="/septa", tags=["septa"])
 
 
 class ScrapeRequest(BaseModel):
-    """What a run searches — an optional Open Date Range, and nothing else.
+    """What a run searches — an optional "opens from" date, and nothing else.
 
-    Both ends are optional and there is no default. A request with neither
-    fetches every open quote the portal is showing; that is the normal case.
-    Keyword, commodity-code and niche searching have been removed.
+    Optional, with no default: omitting it fetches every open quote the portal
+    is showing, which is the normal case. There is no "opens to" bound —
+    the filter is open-ended on purpose. Keyword, commodity-code and niche
+    searching have been removed.
       date_from — "opens from" date, YYYY-MM-DD
-      date_to   — "opens to" date, YYYY-MM-DD
     """
 
     date_from: str | None = None
-    date_to: str | None = None
 
 
 @router.post("/scrape")
 def start_scrape(request: ScrapeRequest, background_tasks: BackgroundTasks, live_preview: bool = False) -> dict:
-    dates = OpenDateRange(start=request.date_from, end=request.date_to)
+    dates = OpenDateFilter(opens_from=request.date_from)
 
     # Reject an unparseable date here rather than in the worker: a 400 is an
     # immediate, correctable answer, whereas the scraper would start a browser,
     # warn, and quietly search everything instead of the range that was asked
     # for — which looks like the filter being ignored.
     try:
-        dates.portal_values()
+        dates.portal_value()
     except BadDate as exc:
         raise HTTPException(
             status_code=400,
@@ -57,13 +56,12 @@ def start_scrape(request: ScrapeRequest, background_tasks: BackgroundTasks, live
         {
             "label": label,
             "search": search,
-            "date_from": dates.start,
-            "date_to": dates.end,
+            "date_from": dates.opens_from,
             "excel_exported": False,
             "live_preview": live_preview,
         },
     )
-    background_tasks.add_task(execute_run, run["run_id"], dates.start, dates.end)
+    background_tasks.add_task(execute_run, run["run_id"], dates.opens_from)
     return {"run_id": run["run_id"], "search": search, "folder": run["folder"]}
 
 

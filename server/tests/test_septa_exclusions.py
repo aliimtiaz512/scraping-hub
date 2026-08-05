@@ -21,7 +21,7 @@ from app.scrapers.septa.exclusions import (  # noqa: E402
     excluded_by,
     is_excluded,
 )
-from app.scrapers.septa.filters import BadDate, OpenDateRange  # noqa: E402
+from app.scrapers.septa.filters import BadDate, OpenDateFilter  # noqa: E402
 
 # -- real scraped summaries that MUST be excluded ---------------------------
 # GASKET and CUMMINS are independent terms, so a summary naming either goes —
@@ -145,33 +145,38 @@ def test_the_reported_term_is_stable_when_several_match():
     assert excluded_by(summary) == "GASKET"
 
 
-# -- optional date range ----------------------------------------------------
+# -- the optional opens-from date -------------------------------------------
 
 
-def test_no_dates_means_bypass_the_filter_entirely():
+def test_no_date_means_bypass_the_filter_entirely():
     """The headline behaviour: no input -> no date typing -> all open quotes."""
-    for empty in (OpenDateRange(), OpenDateRange(start="", end=""), OpenDateRange(start="   ")):
+    for empty in (OpenDateFilter(), OpenDateFilter(opens_from=""), OpenDateFilter(opens_from="   ")):
         assert empty.is_empty
-        assert empty.portal_values() == (None, None)
+        assert empty.portal_value() is None
         assert empty.summary() == "all open quotes"
 
 
-def test_dates_convert_to_the_portal_format():
-    rng = OpenDateRange(start="2026-08-05", end="2026-08-31")
-    assert rng.portal_values() == ("08/05/2026", "08/31/2026")
-    assert not rng.is_empty
+def test_a_date_converts_to_the_portal_format():
+    f = OpenDateFilter(opens_from="2026-08-05")
+    assert f.portal_value() == "08/05/2026"
+    assert not f.is_empty
+    assert f.summary() == "opens from 2026-08-05"
 
 
-def test_a_start_only_range_behaves_like_the_old_single_date():
-    rng = OpenDateRange(start="2026-08-05")
-    assert rng.portal_values() == ("08/05/2026", None)
-    assert rng.summary() == "opens from 2026-08-05"
+def test_there_is_no_opens_to_bound():
+    """The filter is an open-ended lower bound — an upper one could only hide
+    quotes, so the model has no field for it and the form's box is never
+    touched."""
+    assert "end" not in OpenDateFilter.model_fields
+    assert "opens_to" not in OpenDateFilter.model_fields
+    assert set(OpenDateFilter.model_fields) == {"opens_from"}
 
 
-def test_an_end_only_range_is_allowed():
-    rng = OpenDateRange(end="2026-08-31")
-    assert rng.portal_values() == (None, "08/31/2026")
-    assert rng.summary() == "opens until 2026-08-31"
+def test_the_scraper_only_knows_the_from_box():
+    from app.scrapers.septa.scraper import SEL
+
+    assert "open_date_from_xpath" in SEL
+    assert not any("end" in key or "_to_" in key for key in SEL), sorted(SEL)
 
 
 def test_there_is_no_default_to_today():
@@ -179,26 +184,18 @@ def test_there_is_no_default_to_today():
     silently narrowing an unfiltered run to a single day."""
     from datetime import date
 
-    values = OpenDateRange().portal_values()
-    assert values == (None, None)
-    assert date.today().strftime("%m/%d/%Y") not in [v for v in values if v]
+    assert OpenDateFilter().portal_value() is None
+    assert OpenDateFilter().summary() != date.today().strftime("%m/%d/%Y")
 
 
 def test_a_bad_date_is_reported_not_guessed_at():
     for bad in ("05/08/2026", "2026-13-01", "tomorrow", "20260805"):
         try:
-            OpenDateRange(start=bad).portal_values()
+            OpenDateFilter(opens_from=bad).portal_value()
         except BadDate as exc:
-            assert exc.field == "start"
             assert exc.value == bad
         else:
             raise AssertionError(f"{bad!r} should not have parsed")
-
-
-def test_range_summary_reads_naturally():
-    assert OpenDateRange(start="2026-08-05", end="2026-08-31").summary() == (
-        "opens 2026-08-05 to 2026-08-31"
-    )
 
 
 # -- the record gate --------------------------------------------------------
@@ -215,7 +212,7 @@ def _scraper():
     from app.scrapers.septa.scraper import SeptaScraper
 
     run = run_manager.create_run("septa", Path("/tmp"))
-    return SeptaScraper(run["run_id"], OpenDateRange())
+    return SeptaScraper(run["run_id"], OpenDateFilter())
 
 
 def _row(ref, summary, close="12/01/2026"):

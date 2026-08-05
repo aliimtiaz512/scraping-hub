@@ -4,8 +4,8 @@ One run, one search:
 
     login
     go straight to the Open Quotes search form
-    Open Date Range given?  -> fill it       <- entirely optional
-                   not given -> type nothing
+    "Opens from" date given?  -> fill it     <- entirely optional
+                     not given -> type nothing
     click Search
     page through the grid, skipping blacklisted summaries
     store what's left in the DB, export one sheet
@@ -18,10 +18,14 @@ verified. Fetching the grid whole and filtering it locally is both simpler and
 more complete, so the niche catalog, the per-term search loop, and the
 re-navigation machinery that loop needed are all removed.
 
-The Open Date Range is **optional and has no default**. The previous scraper
+The "Opens from" date is **optional and has no default**. The previous scraper
 substituted today's date whenever a run carried no other filter, which quietly
-narrowed an unfiltered run to a single day. No dates now means no date typing
+narrowed an unfiltered run to a single day. No date now means no date typing
 at all, which is what returns every open quote.
+
+Only the *from* side of the portal's Open Date Range is ever filled. The form
+also has an "opens to" box and a closes pair; the run leaves them alone, so the
+filter is an open-ended lower bound.
 
 Summaries naming an out-of-scope manufacturer are dropped during parsing —
 before evaluation, before the DB, before the sheet. See `exclusions.py`, which
@@ -59,7 +63,7 @@ from app.services.notifier import notify_scrape_completion
 from app.core.base_scraper import BaseScraper
 from app.core.filenames import sanitize_filename
 from app.scrapers.septa import exclusions, export
-from app.scrapers.septa.filters import BadDate, OpenDateRange
+from app.scrapers.septa.filters import BadDate, OpenDateFilter
 
 logger = logging.getLogger(__name__)
 
@@ -130,11 +134,11 @@ SEL = {
         "//*[contains(text(), 'Invalid') or contains(text(), 'Failed') or "
         "contains(text(), 'locked') or contains(text(), 'more attempts')]"
     ),
-    # The Open Date Range pair. The "Opens" start box is the one the previous
-    # scraper drove; its "to" counterpart follows the same ASP.NET naming.
-    # Both stay tolerant of an id change, but neither is required — a run with
-    # no dates never looks for them.
-    "open_date_start_xpath": (
+    # The Open Date Range "from" box — the only filter input a run ever fills.
+    # The form also has an "opens to" box and a closes pair; they are
+    # deliberately left alone. Tolerant of an id change, but not required: a
+    # run with no date never looks for it.
+    "open_date_from_xpath": (
         "//*[@id='ctl00_ctl00_masterMain_cntMain_ctl00_txtOpensStartDate'] | "
         "//input[contains(@name, 'txtOpensStartDate')] | "
         "//input[contains(@id, 'OpenDate') or contains(@name, 'OpenDate') or "
@@ -142,12 +146,6 @@ SEL = {
         "contains(@id, 'StartDate') or contains(@name, 'StartDate')] | "
         "//input[contains(@class, 'date') and not(contains(@id, 'Close')) "
         "and not(contains(@id, 'End'))]"
-    ),
-    "open_date_end_xpath": (
-        "//*[@id='ctl00_ctl00_masterMain_cntMain_ctl00_txtOpensEndDate'] | "
-        "//input[contains(@name, 'txtOpensEndDate')] | "
-        "//input[contains(@id, 'OpensEnd') or contains(@name, 'OpensEnd') or "
-        "contains(@id, 'OpensToDate') or contains(@name, 'OpensToDate')]"
     ),
     "search_btn_xpath": (
         "//a[contains(text(), 'Search') or contains(text(), 'SEARCH')] | "
@@ -177,12 +175,12 @@ SEL = {
 
 
 class SeptaScraper(BaseScraper):
-    def __init__(self, run_id: str, dates: OpenDateRange | None = None):
+    def __init__(self, run_id: str, dates: OpenDateFilter | None = None):
         super().__init__(run_id)
         # The run's only search filter, and it is optional: an empty range means
         # the date boxes are never touched and the search returns every open
         # quote. There is no keyword, commodity code or niche any more.
-        self.dates = dates or OpenDateRange()
+        self.dates = dates or OpenDateFilter()
         self.excel_path: Path | None = None
         # Full in-memory copy of every scraped row — the Excel fallback source if
         # the DB is unavailable.
@@ -466,7 +464,7 @@ class SeptaScraper(BaseScraper):
             )
         logger.info("[run %s] reached the Open Quotes search form", self.run_id)
 
-    # -- optional date range + search ---------------------------------------
+    # -- optional opens-from date + search ----------------------------------
 
     def _visible_field(self, xpath: str):
         """The first visible input matching `xpath`, freshly located."""
@@ -491,46 +489,42 @@ class SeptaScraper(BaseScraper):
             return False
         return self._fill_field(field, value)
 
-    def apply_date_range(self) -> None:
-        """Fill the Open Date Range — or deliberately do nothing.
+    def apply_date_filter(self) -> None:
+        """Fill the "Opens from" box — or deliberately do nothing.
 
-        Nothing is the normal case. When the run carries no dates the boxes are
+        Nothing is the normal case. When the run carries no date the box is
         never located or typed into, and Search then returns every open quote.
         A date that will not parse is reported and skipped rather than replaced
         with a guess, so the run widens to everything instead of silently
         searching a day nobody asked for.
+
+        The form's "opens to" box is never touched: the filter is an open-ended
+        lower bound, and an upper bound could only hide quotes.
         """
         if self.dates.is_empty:
             logger.info(
-                "[run %s] no Open Date Range given — searching all open quotes",
+                "[run %s] no opens-from date given — searching all open quotes",
                 self.run_id,
             )
             return
 
-        self.set_step("applying_date_range")
+        self.set_step("applying_date_filter")
         try:
-            start, end = self.dates.portal_values()
+            value = self.dates.portal_value()
         except BadDate as exc:
             logger.warning("[run %s] %s — searching unfiltered instead", self.run_id, exc)
             run_manager.add_warning(
                 self.run_id,
-                f"could not read the {exc.field} date {exc.value!r} (expected YYYY-MM-DD) "
-                "— searched all open quotes instead",
+                f"could not read the opens-from date {exc.value!r} (expected "
+                "YYYY-MM-DD) — searched all open quotes instead",
             )
             return
 
-        for value, xpath, label in (
-            (start, SEL["open_date_start_xpath"], "Open Date Range 'from'"),
-            (end, SEL["open_date_end_xpath"], "Open Date Range 'to'"),
-        ):
-            if value is None:
-                continue
-            if self._fill_date(xpath, value, label):
-                logger.info("[run %s] %s = %s", self.run_id, label, value)
-            else:
-                run_manager.add_warning(
-                    self.run_id, f"could not enter the {label} ({value})"
-                )
+        label = "Open Date Range 'from'"
+        if self._fill_date(SEL["open_date_from_xpath"], value, label):
+            logger.info("[run %s] %s = %s", self.run_id, label, value)
+        else:
+            run_manager.add_warning(self.run_id, f"could not enter the {label} ({value})")
 
     def search(self) -> None:
         """Click Search and wait for the results grid."""
@@ -712,8 +706,8 @@ class SeptaScraper(BaseScraper):
             self.start_driver()
             self.login()
             self.navigate_to_open_quotes()
-            # One search: the optional date range, then Search, then the grid.
-            self.apply_date_range()
+            # One search: the optional opens-from date, Search, then the grid.
+            self.apply_date_filter()
             self.search()
             self.scrape_all_pages()
 
@@ -825,7 +819,7 @@ class SeptaScraper(BaseScraper):
             logger.exception("[run %s] save_run failed", self.run_id)
 
 
-def execute_run(run_id: str, date_from: str | None = None, date_to: str | None = None) -> None:
-    """Run one SEPTA scrape. Both dates are optional; omitting them searches
-    every open quote."""
-    SeptaScraper(run_id, OpenDateRange(start=date_from, end=date_to)).run()
+def execute_run(run_id: str, date_from: str | None = None) -> None:
+    """Run one SEPTA scrape. The opens-from date is optional; omitting it
+    searches every open quote."""
+    SeptaScraper(run_id, OpenDateFilter(opens_from=date_from)).run()

@@ -436,26 +436,20 @@ export function startNorthDakotaScrape(
 // -- SEPTA (vendor procurement portal) ---------------------------------------
 
 export interface StartSeptaScrapeOptions {
-  /** Open Date Range "from", YYYY-MM-DD. Optional. */
+  /** Open Date Range "from", YYYY-MM-DD. Optional; there is no "to" bound. */
   dateFrom?: string;
-  /** Open Date Range "to", YYYY-MM-DD. Optional. */
-  dateTo?: string;
   livePreview?: boolean;
 }
 
-/** Start a SEPTA run. Both dates are optional and there is no default —
- *  sending neither fetches every open quote, which is the normal case. */
+/** Start a SEPTA run. The opens-from date is optional and has no default —
+ *  omitting it fetches every open quote, which is the normal case. */
 export function startSeptaScrape({
   dateFrom = "",
-  dateTo = "",
   livePreview = false,
 }: StartSeptaScrapeOptions = {}): Promise<{ run_id: string; search: string; folder: string }> {
   return request(`/septa/scrape${livePreviewQuery(livePreview)}`, {
     method: "POST",
-    body: JSON.stringify({
-      date_from: dateFrom || null,
-      date_to: dateTo || null,
-    }),
+    body: JSON.stringify({ date_from: dateFrom || null }),
   });
 }
 
