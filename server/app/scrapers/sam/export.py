@@ -12,70 +12,40 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from openpyxl import Workbook
-from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
-from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.styles import PatternFill
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from app.core import excel_style
 from app.db import SessionLocal
 from app.scrapers.sam.models import EXCEL_COLUMNS, SamBid, SamRun
 
 logger = logging.getLogger(__name__)
 
-# Styling ported verbatim from the sam-septa portal (server/utils/excel.py) so
-# the hub's SAM workbook is visually identical to the real portal's export:
-# a navy header row, REJECT rows tinted red, auto-fit column widths, and illegal
-# control characters stripped from every cell.
-_HEADER_FILL = PatternFill("solid", fgColor="1E3A5F")
-_HEADER_FONT = Font(bold=True, color="FFFFFF", size=11)
-_HEADER_ALIGN = Alignment(horizontal="center", vertical="center", wrap_text=True)
+# The header row, widths and cell sanitising are the hub's standard (see
+# app/core/excel_style). What is SAM's own is the evaluator's verdict showing in
+# the row colour: REJECT tinted red, MANUAL_REVIEW amber so it stands apart from
+# a clean REJECT.
 _REJECT_FILL = PatternFill("solid", fgColor="FFCCCC")
-# MANUAL_REVIEW rows are tinted amber so they stand apart from clean REJECTs.
 _REVIEW_FILL = PatternFill("solid", fgColor="FFF2CC")
 
 
-def _sanitize_cell(value: Any) -> Any:
-    if isinstance(value, str):
-        return ILLEGAL_CHARACTERS_RE.sub("", value)
-    return value
-
-
 def _write_styled_sheet(rows: list[list[Any]], out_path: str | Path) -> None:
-    """Write the SAM workbook with the sam-septa portal's exact styling.
-
-    Header order/labels come from EXCEL_COLUMNS (already identical to the portal);
-    this adds the navy header, red REJECT rows, and auto-fit widths on top.
-    """
+    """Write the SAM workbook: the hub's standard sheet, plus decision tinting."""
     headers = [header for _, header in EXCEL_COLUMNS]
-    workbook = Workbook()
-    sheet = workbook.active
-    sheet.title = "SAM Bids"
+    workbook, sheet = excel_style.new_workbook("SAM Bids")
+    excel_style.write_table(sheet, headers, rows)
 
-    sheet.append([_sanitize_cell(h) for h in headers])
-    for cell in sheet[1]:
-        cell.fill = _HEADER_FILL
-        cell.font = _HEADER_FONT
-        cell.alignment = _HEADER_ALIGN
-    sheet.row_dimensions[1].height = 30
-
-    dec_idx = headers.index("Decision") if "Decision" in headers else -1
-    for row_idx, row in enumerate(rows, start=2):
-        sanitized = [_sanitize_cell(v) for v in row]
-        sheet.append(sanitized)
-        if dec_idx != -1:
-            fill = None
-            if sanitized[dec_idx] == "REJECT":
-                fill = _REJECT_FILL
-            elif sanitized[dec_idx] == "MANUAL_REVIEW":
-                fill = _REVIEW_FILL
+    if "Decision" in headers:
+        decision_column = headers.index("Decision") + 1
+        for row_idx in range(2, sheet.max_row + 1):
+            fill = {
+                "REJECT": _REJECT_FILL,
+                "MANUAL_REVIEW": _REVIEW_FILL,
+            }.get(sheet.cell(row=row_idx, column=decision_column).value)
             if fill is not None:
                 for cell in sheet[row_idx]:
                     cell.fill = fill
-
-    for col in sheet.columns:
-        max_len = max((len(str(c.value or "")) for c in col), default=10)
-        sheet.column_dimensions[col[0].column_letter].width = min(max_len + 4, 60)
 
     workbook.save(str(out_path))
 

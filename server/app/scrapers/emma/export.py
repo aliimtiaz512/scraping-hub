@@ -13,10 +13,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from openpyxl import Workbook
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from app.core import excel_style
 from app.db import SessionLocal
 from app.scrapers.emma.models import EXCEL_COLUMNS, EmmaBid, EmmaRun
 
@@ -175,13 +175,16 @@ def generate_excel(run_id: str, out_path: str | Path) -> int:
     details = [(bid.raw_data or {}).get("detail") or {} for bid in rows]
     detail_cols = _detail_columns(details)
 
-    workbook = Workbook()
-    sheet = workbook.active
-    sheet.title = "EMMA Solicitations"
-    sheet.append([header for _, header in EXCEL_COLUMNS] + detail_cols)
-    for bid, detail in zip(rows, details):
-        base = [getattr(bid, attr, None) for attr, _ in EXCEL_COLUMNS]
-        sheet.append(base + [detail.get(col) for col in detail_cols])
+    workbook, sheet = excel_style.new_workbook("EMMA Solicitations")
+    excel_style.write_table(
+        sheet,
+        [header for _, header in EXCEL_COLUMNS] + detail_cols,
+        (
+            [getattr(bid, attr, None) for attr, _ in EXCEL_COLUMNS]
+            + [detail.get(col) for col in detail_cols]
+            for bid, detail in zip(rows, details)
+        ),
+    )
     workbook.save(str(out_path))
     logger.info("[run %s] wrote %d rows (%d detail cols) to %s",
                 run_id, len(rows), len(detail_cols), out_path)
@@ -197,13 +200,15 @@ def generate_excel_from_records(records: list[dict[str, Any]], out_path: str | P
     kept = [r for r in records if r.get("emma_id")]
     detail_cols = _detail_columns([r.get("detail") or {} for r in kept])
 
-    workbook = Workbook()
-    sheet = workbook.active
-    sheet.title = "EMMA Solicitations"
-    sheet.append([header for _, header in EXCEL_COLUMNS] + detail_cols)
-    for record in kept:
-        detail = record.get("detail") or {}
-        base = [record.get(attr) for attr, _ in EXCEL_COLUMNS]
-        sheet.append(base + [detail.get(col) for col in detail_cols])
+    workbook, sheet = excel_style.new_workbook("EMMA Solicitations")
+    excel_style.write_table(
+        sheet,
+        [header for _, header in EXCEL_COLUMNS] + detail_cols,
+        (
+            [record.get(attr) for attr, _ in EXCEL_COLUMNS]
+            + [(record.get("detail") or {}).get(col) for col in detail_cols]
+            for record in kept
+        ),
+    )
     workbook.save(str(out_path))
     return len(kept)

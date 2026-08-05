@@ -18,8 +18,10 @@ are different facts, and a report that only shows the former is the one a
 reader can trust. Skipped (Incomplete) agencies are listed the same way, so the
 sheet accounts for every row of My Network.
 
-Styling follows the SAM / MyFlorida sweep exports so the hub's workbooks read
-alike.
+The column headers, cell sanitising and column widths are the hub's standard
+(see app/core/excel_style), so this report's rows read like every other portal's
+sheet. What is RideMetro's own is the banner above each block, in the same navy
+a shade larger, and the note that stands in for an agency with no rows.
 """
 
 from __future__ import annotations
@@ -28,51 +30,33 @@ import logging
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
-from openpyxl import Workbook
-from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
-from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
-from openpyxl.utils import get_column_letter
+from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.worksheet.worksheet import Worksheet
 
+from app.core import excel_style
 from app.scrapers.ridemetro.models import SHEET_COLUMNS
 
 logger = logging.getLogger(__name__)
 
 SHEET_TITLE = "Open Opportunities"
 
-_BANNER_FILL = PatternFill("solid", fgColor="1E3A5F")
+_BANNER_FILL = PatternFill("solid", fgColor=excel_style.HEADER_COLOR)
 _BANNER_FONT = Font(bold=True, color="FFFFFF", size=14)
 _BANNER_ALIGN = Alignment(horizontal="left", vertical="center", indent=1)
-
-_HEADER_FILL = PatternFill("solid", fgColor="E8EEF5")
-_HEADER_FONT = Font(bold=True, color="1E3A5F", size=11)
-_HEADER_ALIGN = Alignment(horizontal="left", vertical="center", wrap_text=True)
+_BANNER_HEIGHT = 26
 
 _DATA_ALIGN = Alignment(vertical="top", wrap_text=True)
 _URL_FONT = Font(color="1155CC", underline="single")
 _NOTE_FONT = Font(italic=True, color="6B7280")
 _NOTE_ALIGN = Alignment(horizontal="left", vertical="center", indent=1)
 
-_EDGE = Side(style="thin", color="D5DDE5")
-_CELL_BORDER = Border(left=_EDGE, right=_EDGE, top=_EDGE, bottom=_EDGE)
-
-# Per-column widths, in SHEET_COLUMNS order.
-_WIDTHS = (12, 24, 58, 20, 28, 11, 46)
-
-# Excel refuses a cell over 32,767 characters.
-_MAX_CELL = 32000
+_CELL_BORDER = excel_style.CELL_BORDER
 
 
 def _clean(value: Any) -> Any:
-    if value is None:
-        return None
     if isinstance(value, (list, tuple)):
         value = ", ".join(str(v) for v in value if v not in (None, ""))
-    if isinstance(value, str):
-        value = ILLEGAL_CHARACTERS_RE.sub("", value)
-        if len(value) > _MAX_CELL:
-            value = value[:_MAX_CELL] + " …[truncated]"
-    return value
+    return excel_style.sanitize_cell(value)
 
 
 def _merge_across(sheet: Worksheet, row: int) -> None:
@@ -91,17 +75,18 @@ def _write_banner(sheet: Worksheet, row: int, agency: str) -> None:
     # The fill only follows the merge if every covered cell carries it.
     for column in range(1, len(SHEET_COLUMNS) + 1):
         sheet.cell(row=row, column=column).fill = _BANNER_FILL
-    sheet.row_dimensions[row].height = 26
+    sheet.row_dimensions[row].height = _BANNER_HEIGHT
 
 
 def _write_headers(sheet: Worksheet, row: int) -> None:
+    """One block's column headers, in the hub's standard header styling.
+
+    Repeated per agency block, so it is styled row by row rather than through
+    `format_excel_headers` (which formats the one header row of a plain sheet).
+    """
     for column, (_, header) in enumerate(SHEET_COLUMNS, start=1):
-        cell = sheet.cell(row=row, column=column, value=header)
-        cell.fill = _HEADER_FILL
-        cell.font = _HEADER_FONT
-        cell.alignment = _HEADER_ALIGN
-        cell.border = _CELL_BORDER
-    sheet.row_dimensions[row].height = 20
+        sheet.cell(row=row, column=column, value=header)
+    excel_style.style_header_row(sheet, row, last_column=len(SHEET_COLUMNS))
 
 
 def _write_record(sheet: Worksheet, row: int, record: dict[str, Any]) -> None:
@@ -136,12 +121,7 @@ def build(
     agency name to the line shown in place of its rows when it has none.
     """
     notes = notes or {}
-    workbook = Workbook()
-    sheet = workbook.active
-    sheet.title = SHEET_TITLE
-
-    for index, width in enumerate(_WIDTHS, start=1):
-        sheet.column_dimensions[get_column_letter(index)].width = width
+    workbook, sheet = excel_style.new_workbook(SHEET_TITLE)
 
     row = 1
     written = 0
@@ -161,6 +141,11 @@ def build(
             row += 1
 
         row += 1  # blank separator row between agency blocks
+
+    # Widths come last, once every block is written, so they fit the widest
+    # value in the sheet. Banners are merged, so they are excluded from the
+    # measurement and never stretch the first column to an agency name.
+    excel_style.autofit_columns(sheet)
 
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)

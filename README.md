@@ -93,6 +93,21 @@ document in its original niche-wise folders — stored in `ARCHIVE_DIR`
   portal. Configured by `RECIPIENT_EMAILS` + the `AWS_*` / `PUBLIC_BASE_URL`
   settings; a blank `RECIPIENT_EMAILS` disables it.
 
+### Excel presentation
+
+Every portal's sheet looks the same, because they all format through
+`app/core/excel_style.py`: a navy (`#1F4E78`) header row in bold white, centred,
+thinly bordered, 26pt tall and frozen, with columns auto-sized to their longest
+value (padded, capped at 60 so one long description can't push the rest off the
+screen), and control characters Excel rejects stripped from every cell.
+
+A plain export is then two calls — `new_workbook(title)` and
+`write_table(sheet, headers, rows)`. Portals with more to say compose on top:
+SAM tints REJECT/MANUAL_REVIEW rows, the MyFlorida sweep tints cross-listed
+ones, and RideMetro repeats the standard header under each agency banner via
+`style_header_row`. To restyle every report in the hub, change the constants at
+the top of that one module.
+
 ## Structure
 
 ```
@@ -103,7 +118,7 @@ server/
 └── app/
     ├── config.py               # settings, per-portal credentials, storage/delivery paths
     ├── db.py                   # SQLAlchemy engine/session/Base
-    ├── core/                   # SHARED: run_manager, base_scraper, exports (ZIP), download_router, filenames, models
+    ├── core/                   # SHARED: run_manager, base_scraper, exports (ZIP), excel_style, download_router, filenames, models
     ├── services/               # notifier (SES email + S3)
     └── scrapers/
         ├── myflorida/  ridemetro/  bidnet/  wisconsin/  northdakota/

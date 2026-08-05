@@ -21,66 +21,44 @@ from pathlib import Path
 from typing import Any
 
 from openpyxl import Workbook
-from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
-from openpyxl.styles import Alignment, Font, PatternFill
-from openpyxl.utils import get_column_letter
+from openpyxl.styles import PatternFill
 
+from app.core import excel_style
 from app.scrapers.myflorida.sweep.config import OTHER, Config
 from app.scrapers.myflorida.sweep.models import OTHER_EXTRA_COLUMNS, SHEET_COLUMNS
 
 logger = logging.getLogger(__name__)
 
-_HEADER_FILL = PatternFill("solid", fgColor="1E3A5F")
-_HEADER_FONT = Font(bold=True, color="FFFFFF", size=11)
-_HEADER_ALIGN = Alignment(horizontal="center", vertical="center", wrap_text=True)
 # Cross-listed rows are tinted so a reviewer can see at a glance that the ad is
-# owned by another lane and has already been counted there.
+# owned by another lane and has already been counted there. Everything else
+# about how these sheets look — header row, widths, cell sanitising — is the
+# hub's standard (see app/core/excel_style).
 _CROSS_FILL = PatternFill("solid", fgColor="EAF2FB")
 
 OTHER_SHEET = "Other"
 
-# Excel refuses a cell over 32,767 characters; descriptions and extracted text
-# routinely exceed that. The full value is in the DB.
-_MAX_CELL = 32000
-_MAX_WIDTH = 60
-
 
 def _cell(value: Any) -> Any:
+    """A sweep value as a cell: lists joined, then the hub's standard cleanup."""
     if isinstance(value, (list, tuple)):
         value = ", ".join(str(v) for v in value if v not in (None, ""))
-    if isinstance(value, str):
-        value = ILLEGAL_CHARACTERS_RE.sub("", value)
-        if len(value) > _MAX_CELL:
-            value = value[:_MAX_CELL] + " …[truncated]"
-    return value
+    return excel_style.sanitize_cell(value)
 
 
 def _write_sheet(workbook: Workbook, title: str, columns, rows: list[dict]) -> None:
     sheet = workbook.create_sheet(title=title)
-    headers = [header for _, header in columns]
-    sheet.append([_cell(h) for h in headers])
-    for cell in sheet[1]:
-        cell.fill = _HEADER_FILL
-        cell.font = _HEADER_FONT
-        cell.alignment = _HEADER_ALIGN
-    sheet.row_dimensions[1].height = 30
-    sheet.freeze_panes = "A2"
+    excel_style.write_table(
+        sheet,
+        [header for _, header in columns],
+        ([_cell(row.get(key)) for key, _ in columns] for row in rows),
+    )
 
     role_index = next((i for i, (key, _) in enumerate(columns) if key == "role"), None)
-    for row_index, row in enumerate(rows, start=2):
-        values = [_cell(row.get(key)) for key, _ in columns]
-        sheet.append(values)
-        if role_index is not None and values[role_index] == "CROSS-LISTED":
-            for cell in sheet[row_index]:
-                cell.fill = _CROSS_FILL
-
-    for index, _ in enumerate(columns, start=1):
-        letter = get_column_letter(index)
-        longest = max(
-            (len(str(c.value or "")) for c in sheet[letter]),
-            default=10,
-        )
-        sheet.column_dimensions[letter].width = min(longest + 4, _MAX_WIDTH)
+    if role_index is not None:
+        for row_index in range(2, sheet.max_row + 1):
+            if sheet.cell(row=row_index, column=role_index + 1).value == "CROSS-LISTED":
+                for cell in sheet[row_index]:
+                    cell.fill = _CROSS_FILL
 
 
 def build_workbook(config: Config, rows_by_lane: dict[str, list[dict]], out_path: Path) -> Path:

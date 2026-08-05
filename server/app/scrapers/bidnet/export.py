@@ -10,10 +10,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from openpyxl import Workbook
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from app.core import excel_style
 from app.db import SessionLocal
 from app.scrapers.bidnet.models import EXCEL_COLUMNS, BidnetBid, BidnetRun
 
@@ -169,12 +169,12 @@ def _all_rows() -> list[BidnetBid]:
 
 
 def _write_workbook(rows: list[BidnetBid], out_path: str | Path) -> int:
-    workbook = Workbook()
-    sheet = workbook.active
-    sheet.title = "BidNet Bids"
-    sheet.append([header for _, header in EXCEL_COLUMNS])
-    for bid in rows:
-        sheet.append([getattr(bid, attr, None) for attr, _ in EXCEL_COLUMNS])
+    workbook, sheet = excel_style.new_workbook("BidNet Bids")
+    excel_style.write_table(
+        sheet,
+        [header for _, header in EXCEL_COLUMNS],
+        ([getattr(bid, attr, None) for attr, _ in EXCEL_COLUMNS] for bid in rows),
+    )
     workbook.save(str(out_path))
     return len(rows)
 
@@ -249,14 +249,12 @@ def generate_excel_from_records(records: list[dict[str, Any]], out_path: str | P
     Returns the number of rows written, which callers must log rather than the
     length of what they passed in.
     """
-    workbook = Workbook()
-    sheet = workbook.active
-    sheet.title = "BidNet Bids"
-    sheet.append([header for _, header in EXCEL_COLUMNS])
-    count = 0
-    for record in records:
-        sheet.append([record.get(attr) for attr, _ in EXCEL_COLUMNS])
-        count += 1
+    workbook, sheet = excel_style.new_workbook("BidNet Bids")
+    count = excel_style.write_table(
+        sheet,
+        [header for _, header in EXCEL_COLUMNS],
+        ([record.get(attr) for attr, _ in EXCEL_COLUMNS] for record in records),
+    )
     workbook.save(str(out_path))
     return count
 

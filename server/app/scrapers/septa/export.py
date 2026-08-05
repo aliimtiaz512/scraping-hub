@@ -14,10 +14,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from openpyxl import Workbook
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from app.core import excel_style
 from app.db import SessionLocal
 from app.scrapers.septa.models import (
     EXCEL_COLUMNS,
@@ -252,11 +252,13 @@ def _open_bid_rows_for_run(run_id: str) -> list[SeptaOpenBid]:
 
 
 def _write_sheet(sheet, columns: list[tuple[str, str]], rows: list[Any], getter) -> int:
-    """Header row plus one row per record. Returns how many records were written."""
-    sheet.append([header for _, header in columns])
-    for row in rows:
-        sheet.append([getter(row, attr) for attr, _ in columns])
-    return len(rows)
+    """Header row plus one row per record, in the hub's standard styling.
+    Returns how many records were written."""
+    return excel_style.write_table(
+        sheet,
+        [header for _, header in columns],
+        ([getter(row, attr) for attr, _ in columns] for row in rows),
+    )
 
 
 def generate_excel(run_id: str, out_path: str | Path) -> int:
@@ -272,9 +274,7 @@ def generate_excel(run_id: str, out_path: str | Path) -> int:
     quotes = _rows_for_run(run_id)
     open_bids = _open_bid_rows_for_run(run_id)
 
-    workbook = Workbook()
-    sheet = workbook.active
-    sheet.title = QUOTES_SHEET
+    workbook, sheet = excel_style.new_workbook(QUOTES_SHEET)
     _write_sheet(sheet, EXCEL_COLUMNS, quotes, lambda r, attr: getattr(r, attr, None))
     _write_sheet(
         workbook.create_sheet(OPEN_BIDS_SHEET),
@@ -304,9 +304,7 @@ def generate_excel_from_records(
     kept_quotes = [r for r in records if r.get("requisition_number")]
     kept_bids = [r for r in (open_bids or []) if r.get("bid_number")]
 
-    workbook = Workbook()
-    sheet = workbook.active
-    sheet.title = QUOTES_SHEET
+    workbook, sheet = excel_style.new_workbook(QUOTES_SHEET)
     _write_sheet(sheet, EXCEL_COLUMNS, kept_quotes, lambda r, attr: r.get(attr))
     _write_sheet(
         workbook.create_sheet(OPEN_BIDS_SHEET),

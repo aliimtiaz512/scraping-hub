@@ -17,8 +17,7 @@ ad number" logic lives in exactly one place.
 import logging
 from pathlib import Path
 
-from openpyxl import Workbook
-
+from app.core import excel_style
 from app.core.filenames import sanitize_filename
 from app.scrapers.myflorida.ingest import map_row, parse_excel
 
@@ -66,16 +65,16 @@ def merge_exports(
             ad_by_key[key] = ad
             ordered_keys.append(key)
 
-    workbook = Workbook()
-    sheet = workbook.active
-    sheet.title = "Bids"
-    sheet.append([*headers, *EXTRA_COLUMNS])
-    for key in ordered_keys:
-        raw = raw_by_key[key]
-        ad = ad_by_key[key]
-        row = [raw.get(header) for header in headers]
-        row += [niche, keyword_by_ad.get(ad, ""), folder_by_ad.get(ad, "")]
-        sheet.append(row)
+    workbook, sheet = excel_style.new_workbook("Bids")
+    excel_style.write_table(
+        sheet,
+        [*headers, *EXTRA_COLUMNS],
+        (
+            [raw_by_key[key].get(header) for header in headers]
+            + [niche, keyword_by_ad.get(ad_by_key[key], ""), folder_by_ad.get(ad_by_key[key], "")]
+            for key in ordered_keys
+        ),
+    )
 
     target = run_dir / f"{sanitize_filename(niche)}_bids.xlsx"
     workbook.save(str(target))

@@ -12,10 +12,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from openpyxl import Workbook
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from app.core import excel_style
 from app.db import SessionLocal
 from app.scrapers.northdakota.models import EXCEL_COLUMNS, NorthDakotaBid, NorthDakotaRun
 
@@ -146,12 +146,12 @@ def _rows_for_run(run_id: str) -> list[NorthDakotaBid]:
 def generate_excel(run_id: str, out_path: str | Path) -> int:
     """Build this run's Excel sheet from northdakota_bids. Returns the row count."""
     rows = _rows_for_run(run_id)
-    workbook = Workbook()
-    sheet = workbook.active
-    sheet.title = "North Dakota Bids"
-    sheet.append([header for _, header in EXCEL_COLUMNS])
-    for bid in rows:
-        sheet.append([getattr(bid, attr, None) for attr, _ in EXCEL_COLUMNS])
+    workbook, sheet = excel_style.new_workbook("North Dakota Bids")
+    excel_style.write_table(
+        sheet,
+        [header for _, header in EXCEL_COLUMNS],
+        ([getattr(bid, attr, None) for attr, _ in EXCEL_COLUMNS] for bid in rows),
+    )
     workbook.save(str(out_path))
     logger.info("[run %s] wrote %d rows to %s", run_id, len(rows), out_path)
     return len(rows)
@@ -162,15 +162,15 @@ def generate_excel_from_records(records: list[dict[str, Any]], out_path: str | P
 
     Mirrors generate_excel: only records that carry an rfp_id are written.
     """
-    workbook = Workbook()
-    sheet = workbook.active
-    sheet.title = "North Dakota Bids"
-    sheet.append([header for _, header in EXCEL_COLUMNS])
-    count = 0
-    for record in records:
-        if not record.get("rfp_id"):
-            continue
-        sheet.append([record.get(attr) for attr, _ in EXCEL_COLUMNS])
-        count += 1
+    workbook, sheet = excel_style.new_workbook("North Dakota Bids")
+    count = excel_style.write_table(
+        sheet,
+        [header for _, header in EXCEL_COLUMNS],
+        (
+            [record.get(attr) for attr, _ in EXCEL_COLUMNS]
+            for record in records
+            if record.get("rfp_id")
+        ),
+    )
     workbook.save(str(out_path))
     return count
