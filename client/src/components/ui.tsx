@@ -240,6 +240,64 @@ export function Field({
   );
 }
 
+/**
+ * Mutually exclusive options as one connected control — for a choice that
+ * changes what a run does, where a checkbox or a chip row would wrongly imply
+ * several can be picked.
+ *
+ * Real radio inputs underneath, visually hidden. The buttons-styled-as-tabs
+ * version looks identical and is unreachable by keyboard or screen reader;
+ * this way arrow-key navigation and the group semantics come for free, and the
+ * focus ring is carried on the label via `has-[:focus-visible]`.
+ */
+export function SegmentedControl<T extends string>({
+  name,
+  value,
+  options,
+  onChange,
+  disabled,
+}: {
+  name: string;
+  value: T;
+  options: readonly { value: T; label: string; hint?: string }[];
+  onChange: (value: T) => void;
+  disabled?: boolean;
+}) {
+  return (
+    <div role="radiogroup" className="grid gap-2 sm:grid-cols-2">
+      {options.map((option) => {
+        const active = option.value === value;
+        return (
+          <label
+            key={option.value}
+            className={`flex flex-col gap-0.5 rounded-lg border px-4 py-3 transition has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-gold-400/40 ${
+              disabled ? "cursor-not-allowed opacity-60" : "cursor-pointer"
+            } ${
+              active
+                ? "border-gold-400 bg-gold-50 shadow-sm"
+                : "border-ink-200 bg-white hover:border-ink-300 hover:bg-ink-50"
+            }`}
+          >
+            <input
+              type="radio"
+              name={name}
+              value={option.value}
+              checked={active}
+              disabled={disabled}
+              onChange={() => onChange(option.value)}
+              className="sr-only"
+            />
+            <span className={`text-sm font-medium ${active ? "text-gold-700" : "text-ink-900"}`}>
+              {option.label}
+            </span>
+            {option.hint && <span className="text-xs leading-relaxed text-ink-500">{option.hint}</span>}
+          </label>
+        );
+      })}
+    </div>
+  );
+}
+
 /** Shared table shell: bordered, scrollable, with a quiet header row. */
 export function DataTable({
   headers,

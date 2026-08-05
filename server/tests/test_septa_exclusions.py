@@ -160,7 +160,9 @@ def test_a_date_converts_to_the_portal_format():
     f = OpenDateFilter(opens_from="2026-08-05")
     assert f.portal_value() == "08/05/2026"
     assert not f.is_empty
-    assert f.summary() == "opens from 2026-08-05"
+    # The summary names the module too, now that it is selectable — see
+    # test_septa_module_choice.py.
+    assert f.summary() == "open quotes opening from 2026-08-05"
 
 
 def test_there_is_no_opens_to_bound():

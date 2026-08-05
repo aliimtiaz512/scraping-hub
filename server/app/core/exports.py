@@ -85,9 +85,15 @@ def excel_bytes(run: dict[str, Any]) -> tuple[bytes, str] | None:
     Regenerated fresh from the DB when the portal supports it; otherwise (or if
     generation fails) read from the run's on-disk workbook — MyFlorida's merged
     export, or the fallback sheet a scraper writes when the DB was down.
+
+    A run whose DB save failed is the exception: regenerating it would *succeed*
+    and return an empty workbook, silently replacing the fallback sheet that
+    holds the only copy of the rows. Generation failing is not the signal to
+    watch for here — the DB being empty is — so the flag the scraper sets is
+    what decides, and such a run reads straight from disk.
     """
     scraper = run.get("scraper")
-    if scraper in _GENERATOR_PORTALS:
+    if scraper in _GENERATOR_PORTALS and not run.get("db_save_failed"):
         try:
             module = importlib.import_module(
                 _EXPORT_MODULES.get(scraper, f"app.scrapers.{scraper}.export")

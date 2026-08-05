@@ -1,10 +1,18 @@
-"""Summary blacklist for SEPTA Open Quotes.
+"""Blacklist for SEPTA, applied to Open Quotes summaries and Open Bids titles.
 
-A quote whose summary names one of these is skipped outright — not evaluated,
-not stored, not exported. SEPTA's Open Quotes grid is a parts-requisition feed
+A row whose text names one of these is skipped outright — not evaluated, not
+stored, not exported. SEPTA's Open Quotes grid is a parts-requisition feed
 (`MODULE CUMMINS 5579356RX PARTICULATE`, `BRACKET NEW FLYER 695953
 ASSY-ORBSTAR`), and these terms mark the parts that are out of scope: the bus
 and engine manufacturers, plus gaskets whoever makes them.
+
+**One list, both modules.** The Bid module's titles are checked against exactly
+these terms and this matching. The requirement for Bids was written as four
+entries with `GASKET CUMMINS` as a phrase — the same wording the Quotes list
+started from — but it is applied here in its split form, which is a deliberate
+choice made when that wording was measured against real rows (see below) and
+confirmed for Bids. Keeping the two modules on one list also means a term added
+later cannot silently apply to only half the run.
 
 Every term stands alone — none of them is a phrase requiring two adjacent
 words. `NEW FLYER` is two words because the manufacturer's name is.
@@ -81,21 +89,24 @@ _PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
 )
 
 
-def excluded_by(summary: str | None) -> str | None:
-    """The blacklisted term appearing in `summary`, or None to keep the quote.
+def excluded_by(text: str | None) -> str | None:
+    """The blacklisted term appearing in `text`, or None to keep the row.
+
+    `text` is a quote's summary or a bid's title — the same terms and the same
+    whole-word matching apply to both.
 
     Returns the term itself rather than a bool so the caller can log and tally
-    *why* a quote was dropped — a filter that removes rows without saying which
+    *why* a row was dropped — a filter that removes rows without saying which
     rule fired is indistinguishable from a scrape that missed them.
     """
-    if not summary:
+    if not text:
         return None
     for term, pattern in _PATTERNS:
-        if pattern.search(summary):
+        if pattern.search(text):
             return term
     return None
 
 
-def is_excluded(summary: str | None) -> bool:
-    """True when `summary` names a blacklisted term."""
-    return excluded_by(summary) is not None
+def is_excluded(text: str | None) -> bool:
+    """True when `text` names a blacklisted term."""
+    return excluded_by(text) is not None

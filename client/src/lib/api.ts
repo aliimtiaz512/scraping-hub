@@ -69,6 +69,10 @@ export interface BidResult {
   // SEPTA (`niche` is shared with the MyFlorida sweep, declared below)
   requisition_number?: string;
   summary?: string;
+  // SEPTA Open Bids. The Bid module's rows key on a bid number and carry a
+  // title, where the Quote module's carry a requisition number and a summary —
+  // which is why a run reports one module's shape or the other's, never a mix.
+  bid_number?: string;
   open_date?: string;
   /** Which of the niche's keywords/commodity codes surfaced this quote —
    *  comma-joined, since a search per term often finds the same one twice. */
@@ -142,7 +146,9 @@ export interface RunStatus {
   search?: string;
   agency?: string;
   nigp_code?: string;
-  // SEPTA-only: the optional filters a run was launched with.
+  // SEPTA-only: which module the run searched, and the optional filters it was
+  // launched with. `module` decides which columns the results table renders.
+  module?: SeptaModule;
   date_filter?: string | null;
   commodity_code?: string | null;
   // SEPTA-only: the always-on close-date filter's effect. Only quotes closing at
@@ -435,21 +441,49 @@ export function startNorthDakotaScrape(
 
 // -- SEPTA (vendor procurement portal) ---------------------------------------
 
+/**
+ * Which of the portal's two modules a run searches. Exactly one — the run
+ * navigates to it and searches it, and never opens the other.
+ */
+export type SeptaModule = "quotes" | "open_bids";
+
+export const SEPTA_MODULES: readonly { value: SeptaModule; label: string; hint: string }[] = [
+  {
+    value: "quotes",
+    label: "Open Quotes",
+    hint: "The Quote module — parts requisitions, keyed by requisition number.",
+  },
+  {
+    value: "open_bids",
+    label: "Open Bids",
+    hint: "The Bid module — solicitations, keyed by bid number.",
+  },
+];
+
 export interface StartSeptaScrapeOptions {
+  /** Which module to search. Defaults to Open Quotes, as the API does. */
+  module?: SeptaModule;
   /** Open Date Range "from", YYYY-MM-DD. Optional; there is no "to" bound. */
   dateFrom?: string;
   livePreview?: boolean;
 }
 
-/** Start a SEPTA run. The opens-from date is optional and has no default —
- *  omitting it fetches every open quote, which is the normal case. */
+/** Start a SEPTA run against one module. The opens-from date is optional and
+ *  has no default — omitting it fetches every open row in the selected module,
+ *  which is the normal case. */
 export function startSeptaScrape({
+  module = "quotes",
   dateFrom = "",
   livePreview = false,
-}: StartSeptaScrapeOptions = {}): Promise<{ run_id: string; search: string; folder: string }> {
+}: StartSeptaScrapeOptions = {}): Promise<{
+  run_id: string;
+  search: string;
+  module: SeptaModule;
+  folder: string;
+}> {
   return request(`/septa/scrape${livePreviewQuery(livePreview)}`, {
     method: "POST",
-    body: JSON.stringify({ date_from: dateFrom || null }),
+    body: JSON.stringify({ module, date_from: dateFrom || null }),
   });
 }
 

@@ -82,6 +82,15 @@ class Settings(BaseSettings):
     # at /vendor/requisitions/list/ that carries no filter inputs at all. Every
     # search lands on the list, so each new term has to come back here first.
     septa_search_url: str = "https://epsadmin.septa.org/vendor/requisitions/search/"
+    # The Bid module, which sits alongside Quotes in the vendor menu. Same shape
+    # as the Quotes form (filters here, results on a separate list page), and a
+    # run searches it with the same optional opens-from date.
+    #
+    # This default is a best guess at the portal's URL and is deliberately
+    # overridable from .env: if it 404s or lands on a page with no search form,
+    # the scraper falls back to finding the "Open Bids" link in the menu, so a
+    # wrong value here costs a redirect rather than the whole Bids pass.
+    septa_bids_search_url: str = "https://epsadmin.septa.org/vendor/bids/search/"
 
     # Cal eProcure (California eProcurement / BidSync "BS3") — supplier login on
     # an ASP.NET page (#userid / #pwd), plain username+password (no SSO/MFA).
