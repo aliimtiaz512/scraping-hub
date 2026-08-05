@@ -33,9 +33,14 @@ results.
 
 **List-only portals** (metadata → DB → generated Excel, no document downloads):
 
-- **RideMetro** (Bonfire) — captures every Open Public Opportunity. List-only by
-  design (detail-page document downloads are intentionally dropped). See
-  `plan_ride-metro.md`.
+- **RideMetro** (Bonfire / Euna Supplier Network) — logs in to the RideMetro
+  portal, hops to **My Euna Supplier Network → My Network**, and sweeps every
+  agency in the account's network whose registration Status is **Complete**
+  (Incomplete ones have no portal behind their button), capturing each one's
+  Open Public Opportunities. The export is a single agency-grouped Excel: a
+  full-width banner per agency, its column headers, its rows, a blank row
+  between blocks. List-only by design (detail-page document downloads are
+  intentionally dropped).
 - **Wisconsin** (eSupplier / PeopleSoft) — public bidder portal, **no login**.
   Searches Current Solicitations by keyword / agency / NIGP code (all optional)
   and pages through the whole PeopleSoft results grid.

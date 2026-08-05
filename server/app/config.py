@@ -24,11 +24,21 @@ class Settings(BaseSettings):
     mfmp_password: str = ""
     mfmp_login_url: str = "https://vendor.myfloridamarketplace.com/login"
 
-    # RideMetro (Bonfire)
+    # RideMetro (Bonfire) — the login is RideMetro's own portal, but a run
+    # sweeps the whole Euna Supplier Network the account belongs to: every
+    # agency listed under My Network whose registration Status is Complete.
+    # The bonfirehub session is shared across all three hosts, so the network
+    # and agency portals need no second login.
     ridemetro_email: str = ""
     ridemetro_password: str = ""
     ridemetro_login_url: str = "https://ridemetro.bonfirehub.com/login"
+    # The post-login landing page, and where the "My Euna Supplier Network"
+    # button lives.
     ridemetro_opportunities_url: str = "https://ridemetro.bonfirehub.com/portal/?tab=openOpportunities"
+    # Where that button goes, and the My Network tab within it. Used directly
+    # when the button/tab isn't clickable (it is feature-flagged in the portal).
+    ridemetro_supplier_network_url: str = "https://vendor.bonfirehub.com"
+    ridemetro_agencies_url: str = "https://vendor.bonfirehub.com/agencies"
 
     # BidNet Direct
     bidnet_direct_link: str = "https://www.bidnetdirect.com/"

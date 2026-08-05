@@ -154,8 +154,12 @@ export default function RunStatus({ run }: { run: RunStatusData }) {
             </Notice>
           )}
 
+          {/* Warnings are non-fatal notices of every kind — a keyword that
+              matched nothing, a filter that wouldn't apply, a list that came
+              back short — so the heading counts them rather than naming one
+              cause. */}
           {run.warnings && run.warnings.length > 0 && (
-            <Notice tone="amber" title={`No results for ${run.warnings.length} ${run.warnings.length === 1 ? "search" : "searches"}`}>
+            <Notice tone="amber" title={`${run.warnings.length} ${run.warnings.length === 1 ? "notice" : "notices"}`}>
               <ul className="max-h-28 space-y-1 overflow-y-auto">
                 {run.warnings.map((warning, i) => (
                   <li key={i} className="font-mono text-xs leading-relaxed">

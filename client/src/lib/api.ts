@@ -37,9 +37,12 @@ export interface BidResult {
   // MyFlorida
   number?: string;
   title?: string;
-  // RideMetro
+  // RideMetro — `agency` (shared with Wisconsin) is which Euna Supplier Network
+  // agency the opportunity came from; `close_date` / `days_left` are that
+  // agency's own list columns.
   ref_number?: string;
   project?: string;
+  days_left?: string;
   // BidNet. `status` (shared with North Dakota) is the record-completeness flag:
   // OK | PARTIAL_DATA | EXTRACTION_FAILED — a bid whose detail page could not be
   // read is exported flagged rather than dropped.
@@ -119,6 +122,18 @@ export interface BidResult {
   document_errors?: string[];
 }
 
+/** One row of the RideMetro run's Euna Supplier Network roster. */
+export interface RideMetroAgency {
+  name: string;
+  url: string;
+  /** The agency's supplier-registration status: "Complete" | "Incomplete". */
+  status: string;
+  /** True when the run skipped it — registration Incomplete, so no portal. */
+  skipped: boolean;
+  opportunities: number;
+  error?: string | null;
+}
+
 export interface RunStatus {
   run_id: string;
   // The sweep runs under its own key rather than a `Portal` — see the sweep
@@ -157,6 +172,15 @@ export interface RunStatus {
   min_days_until_close?: number;
   bids_skipped_closing_soon?: number;
   bids_kept_unreadable_close?: number;
+  // RideMetro-only: the Euna Supplier Network sweep. `agencies` is the whole My
+  // Network roster in portal order — including the Incomplete ones the run
+  // skipped and the Complete ones that had nothing open, neither of which
+  // contributes a bid row. `bids_closing_soon` counts (but does not drop)
+  // opportunities closing within the hub's 7-day runway.
+  agencies?: RideMetroAgency[];
+  agencies_found?: number;
+  agencies_scraped?: number;
+  bids_closing_soon?: number;
   // BidNet: how the run's records broke down by completeness.
   bids_fully_extracted?: number;
   bids_partial?: number;

@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from app.core import run_manager
 from app.core.filenames import timestamp
 from app.db import get_session
-from app.scrapers.ridemetro.models import EXCEL_COLUMNS, RideMetroBid
+from app.scrapers.ridemetro.models import API_FIELDS, RideMetroBid
 from app.scrapers.ridemetro.scraper import execute_run
 
 router = APIRouter(prefix="/ridemetro", tags=["ridemetro"])
@@ -38,7 +38,7 @@ def scrape_runs() -> dict:
 
 
 def _bid_to_dict(bid: RideMetroBid) -> dict:
-    data = {attr: getattr(bid, attr) for attr, _ in EXCEL_COLUMNS}
+    data = {attr: getattr(bid, attr) for attr in API_FIELDS}
     data.update(id=bid.id, run_id=bid.run_id, raw_data=bid.raw_data)
     return data
 
@@ -46,6 +46,7 @@ def _bid_to_dict(bid: RideMetroBid) -> dict:
 @router.get("/bids")
 def list_bids(
     run_id: str | None = Query(None, description="Filter by scrape run"),
+    agency: str | None = Query(None, description="Filter by agency name"),
     limit: int = Query(100, ge=1, le=1000),
     offset: int = Query(0, ge=0),
     session: Session = Depends(get_session),
@@ -54,6 +55,8 @@ def list_bids(
     stmt = select(RideMetroBid).order_by(RideMetroBid.scraped_at.desc(), RideMetroBid.id.desc())
     if run_id:
         stmt = stmt.where(RideMetroBid.run_id == run_id)
+    if agency:
+        stmt = stmt.where(RideMetroBid.agency == agency)
     try:
         rows = session.execute(stmt.limit(limit).offset(offset)).scalars().all()
     except OperationalError as exc:

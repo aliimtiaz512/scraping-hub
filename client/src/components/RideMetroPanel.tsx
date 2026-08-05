@@ -56,7 +56,7 @@ export default function RideMetroPanel() {
     <div className="space-y-6">
       {error && <ErrorBanner message={error} />}
 
-      <LaunchBar summary="No configuration needed — this run captures every open public opportunity.">
+      <LaunchBar summary="No configuration needed — this run sweeps every Complete agency in the Euna Supplier Network and captures their open public opportunities.">
         <div className="flex items-center gap-2">
           <StopButton run={run} onError={setError} />
           <LiveMonitor run={run} portal="ridemetro" />
@@ -67,7 +67,7 @@ export default function RideMetroPanel() {
       </LaunchBar>
 
       {run && <RunStatusPanel run={run} />}
-      {run && <RideMetroResults bids={run.bids} />}
+      {run && <RideMetroResults bids={run.bids} agencies={run.agencies} />}
     </div>
   );
 }

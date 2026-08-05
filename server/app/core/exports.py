@@ -34,8 +34,10 @@ DOC_PORTALS = {"myflorida", "bidnet", "northdakota", "emma"}
 # The MyFlorida sweep is the same shape: it downloads each ad's attachments only
 # to extract their text for the classifier, then deletes them. SEPTA never
 # downloads anything at all — its Open Quotes grid is metadata only, so the
-# merged sheet across a niche's searches is the entire deliverable.
-EXCEL_ONLY_PORTALS = {"sam", "myflorida_sweep", "septa"}
+# merged sheet across a niche's searches is the entire deliverable. RideMetro is
+# the same: its Euna Supplier Network sweep only reads each agency's
+# opportunities list, and the agency-grouped report is all a run produces.
+EXCEL_ONLY_PORTALS = {"sam", "myflorida_sweep", "septa", "ridemetro"}
 
 # Portals whose export module can rebuild the run's Excel from the DB via
 # `generate_excel(run_id, path)`. MyFlorida is absent on purpose: its workbook
