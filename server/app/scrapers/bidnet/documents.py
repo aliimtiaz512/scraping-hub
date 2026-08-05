@@ -48,6 +48,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 from urllib.parse import unquote, urlparse
+from uuid import uuid4
 
 import requests
 from selenium.common.exceptions import TimeoutException, WebDriverException
@@ -91,6 +92,9 @@ MAX_PARALLEL_DOWNLOADS = 4
 # Streaming chunk size — large files go to disk incrementally rather than being
 # held in memory in full.
 CHUNK_SIZE = 256 * 1024
+# Suffix for a download still in flight. Excluded from the folder index so a
+# half-written file is never mistaken for a stored document.
+PARTIAL_SUFFIX = ".part"
 # Retries per file. A single transient 5xx/reset should not lose an attachment.
 DOWNLOAD_ATTEMPTS = 3
 DOWNLOAD_BACKOFF = 1.5
@@ -124,8 +128,14 @@ class DownloadOutcome:
     seconds: float = 0.0
     # The tab's own count badge, when it could be read — a cross-check only.
     badge: str | None = None
-    # Byte-identical copies removed after download (see `_dedupe`).
+    # Downloads discarded because their bytes matched a file already in the
+    # folder (see `_FolderIndex`).
     duplicates: int = 0
+    # Attachments the folder already held under the same name, so no HTTP
+    # request was made at all. The normal case when a niche is re-run.
+    skipped_existing: int = 0
+    # Repeated URLs collapsed out of the attachment list before downloading.
+    duplicate_links: int = 0
 
     def __post_init__(self) -> None:
         self.saved = self.saved if self.saved is not None else []
@@ -137,9 +147,14 @@ class DownloadOutcome:
 
     @property
     def distinct(self) -> int:
-        """Detected links minus the copies that proved byte-identical — the
-        number of real documents the solicitation actually offers."""
-        return self.detected - self.duplicates
+        """How many real documents the solicitation offers.
+
+        Detected links minus everything that turned out to be the same file
+        again: a repeated URL, or bytes identical to one already stored. Files
+        skipped because the folder already held them are *not* subtracted —
+        they are the document, just downloaded on an earlier run.
+        """
+        return self.detected - self.duplicates - self.duplicate_links
 
 
 def _abs_url(href: str) -> str:
@@ -412,41 +427,127 @@ def filename_from_response(response, fallback: str) -> str:
     return fallback
 
 
-# Serialises filename reservation. Downloads run in parallel and BidNet does
-# reuse names across a bid's attachments ("Addendum 1.pdf" twice), so two
-# threads can pick the same target: without this they would open the same
-# `.part` file and interleave two documents into one corrupt file.
+# Serialises every decision about what a bid folder already holds. Downloads
+# run in parallel, and the same document can arrive twice at once (BidNet reuses
+# filenames across a bid's attachments), so naming and content-matching have to
+# happen one thread at a time or two files interleave into one.
 _RESERVE_LOCK = threading.Lock()
 
 
-def _reserve(folder: Path, name: str) -> tuple[Path, Path]:
-    """Claim a free filename, returning (final path, .part path).
+class _FolderIndex:
+    """What a bid's documents folder already contains, indexed by content.
 
-    The `.part` file is created inside the lock, which is what makes the claim
-    stick: a second thread wanting the same name sees it and takes the next
-    suffix instead.
+    Built once per download and consulted before anything is written, so a file
+    is stored exactly once no matter how it arrives:
+
+    * **already there from an earlier run** — the folder persists for the whole
+      session (`storage.py`), so re-running a niche used to re-download every
+      attachment and park it beside the original as `Addendum 1 (2).pdf`. A
+      seven-document bid became fourteen files on the second run and
+      twenty-one on the third. Matched by name up front, so the re-download
+      never even happens;
+    * **the same bytes under a second name** — the portal lists some files in
+      both the documents and the line-items tables under different document
+      ids. Matched by size-then-hash once the bytes are on disk;
+    * **a different file that wants the same name** — genuinely distinct
+      content is kept, taking the next free `(n)` suffix.
+
+    Hashes are computed lazily and cached: size is a cheap pre-filter, so a
+    file is only ever hashed when something the same length turns up.
+
+    Each stored file can also be *claimed* by at most one attachment link. That
+    is what separates the two ways a link can land on a file that is already
+    there: the first link to claim it is that document (stored on an earlier
+    run, or moments ago in this batch), and any further link claiming the same
+    file is the portal listing one document twice. Counting them apart matters
+    — without the claim, a re-run reports every document as freshly present and
+    a bid's twinned attachment inflates the saved list past the file count.
     """
-    base = folder / name
-    stem, suffix = base.stem, base.suffix
-    with _RESERVE_LOCK:
-        counter = 1
-        while True:
-            candidate = base if counter == 1 else folder / f"{stem} ({counter}){suffix}"
-            partial = candidate.with_suffix(candidate.suffix + ".part")
-            if not candidate.exists() and not partial.exists():
-                partial.touch()
-                return candidate, partial
+
+    def __init__(self, folder: Path):
+        self.folder = folder
+        self.names: set[str] = set()
+        self._by_size: dict[int, list[str]] = {}
+        self._hashes: dict[str, str] = {}
+        # Files already accounted for by a link in this batch. See `claim`.
+        self._claimed: set[str] = set()
+        if folder.is_dir():
+            for path in sorted(folder.iterdir()):
+                if path.is_file() and path.suffix != PARTIAL_SUFFIX:
+                    try:
+                        self._remember(path.name, path.stat().st_size)
+                    except OSError:
+                        continue
+
+    def claim(self, name: str) -> bool:
+        """Account for `name` against one link. True if it was still unclaimed.
+
+        False means another link in this batch already stands for that file, so
+        the caller is holding a second copy of a document, not a second
+        document.
+        """
+        if name in self._claimed:
+            return False
+        self._claimed.add(name)
+        return True
+
+    def _remember(self, name: str, size: int) -> None:
+        self.names.add(name)
+        self._by_size.setdefault(size, []).append(name)
+
+    def _hash_of(self, name: str) -> str | None:
+        if name not in self._hashes:
+            try:
+                self._hashes[name] = _digest(self.folder / name)
+            except OSError:
+                return None
+        return self._hashes[name]
+
+    def match(self, size: int, digest: str) -> str | None:
+        """The name of an existing file with identical content, if any."""
+        for name in self._by_size.get(size, []):
+            if self._hash_of(name) == digest:
+                return name
+        return None
+
+    def free_name(self, name: str) -> str:
+        """`name`, or the next `name (n)` that is not taken."""
+        if name not in self.names:
+            return name
+        stem, suffix = Path(name).stem, Path(name).suffix
+        counter = 2
+        while f"{stem} ({counter}){suffix}" in self.names:
             counter += 1
+        return f"{stem} ({counter}){suffix}"
+
+    def record(self, name: str, size: int, digest: str) -> None:
+        """Register a file this batch just wrote — claimed by the link that
+        wrote it, so a sibling link arriving with the same bytes is recognised
+        as a duplicate rather than a second document."""
+        self._remember(name, size)
+        self._hashes[name] = digest
+        self._claimed.add(name)
 
 
 def _fetch_one(
     session: requests.Session,
     link: DocumentLink,
     folder: Path,
+    index: "_FolderIndex",
     referer: str,
     should_stop: Callable[[], None] | None,
-) -> tuple[str | None, str | None]:
-    """Stream one attachment to disk. Returns (saved name, error message)."""
+) -> tuple[str | None, str | None, str]:
+    """Stream one attachment to disk, storing it only if it is not already there.
+
+    Returns (name, error, outcome) where outcome is one of:
+
+      "stored"    — written to disk under `name`;
+      "existing"  — the bytes matched a file already there before this download
+                    started, so the download was discarded; `name` is that file;
+      "duplicate" — the bytes matched a file stored moments ago by another link
+                    in this same batch, i.e. the portal lists one document twice;
+      "failed"    — `name` is None and `error` says why.
+    """
     delay = DOWNLOAD_BACKOFF
     last_error = "unknown error"
     for attempt in range(1, DOWNLOAD_ATTEMPTS + 1):
@@ -463,15 +564,18 @@ def _fetch_one(
                     raise requests.RequestException(last_error)
 
                 name = filename_from_response(response, link.fallback_name)
-                # Stream through a .part file so an interrupted transfer never
-                # leaves a truncated document looking like a complete one, and
-                # so a name shared by two attachments cannot collide mid-write.
-                target, partial = _reserve(folder, name)
+                # A private, collision-proof staging name. The final name is
+                # only decided once the bytes are down and their hash is known,
+                # which is what lets an identical file be recognised instead of
+                # parked beside the original as "… (2).pdf".
+                partial = folder / f".{uuid4().hex}{PARTIAL_SUFFIX}"
+                hasher = hashlib.sha256()
                 size = 0
                 with partial.open("wb") as handle:
                     for chunk in response.iter_content(CHUNK_SIZE):
                         if chunk:
                             handle.write(chunk)
+                            hasher.update(chunk)
                             size += len(chunk)
 
                 if size == 0:
@@ -483,8 +587,22 @@ def _fetch_one(
                     last_error = f"truncated ({size} of {expected} bytes)"
                     raise requests.RequestException(last_error)
 
-                partial.rename(target)
-                return target.name, None
+                digest = hasher.hexdigest()
+                with _RESERVE_LOCK:
+                    already = index.match(size, digest)
+                    if already is not None:
+                        # Same bytes already on disk. Whether that counts as a
+                        # duplicate *document* depends on whether anything else
+                        # already stands for that file: if not, this link is
+                        # that document and it was simply stored earlier; if
+                        # so, the portal is listing one document twice.
+                        partial.unlink(missing_ok=True)
+                        return already, None, ("existing" if index.claim(already)
+                                               else "duplicate")
+                    final = index.free_name(name)
+                    partial.rename(folder / final)
+                    index.record(final, size, digest)
+                return final, None, "stored"
         except Exception as exc:  # noqa: BLE001 — one bad file must not lose the rest
             if partial is not None:
                 partial.unlink(missing_ok=True)
@@ -493,7 +611,7 @@ def _fetch_one(
                 time.sleep(delay)
                 delay *= 2
                 continue
-    return None, last_error
+    return None, last_error, "failed"
 
 
 def _digest(path: Path) -> str:
@@ -503,50 +621,6 @@ def _digest(path: Path) -> str:
         for chunk in iter(lambda: handle.read(CHUNK_SIZE), b""):
             hasher.update(chunk)
     return hasher.hexdigest()
-
-
-def _dedupe(folder: Path, names: list[str]) -> tuple[list[str], int]:
-    """Drop byte-identical copies from a bid's folder, keeping the first.
-
-    A solicitation lists the same file in more than one place — the documents
-    table and the line-items table — under two different document ids, so the
-    two anchors are genuinely distinct URLs serving identical bytes. Detection
-    deliberately keeps both (scoping it to one table would lose an attachment
-    that only ever appears in the other), so the duplicate is resolved here,
-    where the content itself settles the question. Size is checked first, so a
-    hash is only computed for files that could actually be duplicates.
-    """
-    by_size: dict[int, list[tuple[str, str]]] = {}
-    kept: list[str] = []
-    removed = 0
-    for name in names:
-        path = folder / name
-        try:
-            size = path.stat().st_size
-        except OSError:
-            kept.append(name)
-            continue
-        bucket = by_size.setdefault(size, [])
-        if not bucket:
-            bucket.append((name, ""))
-            kept.append(name)
-            continue
-        try:
-            digest = _digest(path)
-            for index, (other_name, other_digest) in enumerate(bucket):
-                if not other_digest:
-                    other_digest = _digest(folder / other_name)
-                    bucket[index] = (other_name, other_digest)
-                if other_digest == digest:
-                    path.unlink(missing_ok=True)
-                    removed += 1
-                    break
-            else:
-                bucket.append((name, digest))
-                kept.append(name)
-        except OSError:
-            kept.append(name)
-    return kept, removed
 
 
 def download_documents(
@@ -559,43 +633,112 @@ def download_documents(
     should_stop: Callable[[], None] | None = None,
     max_parallel: int = MAX_PARALLEL_DOWNLOADS,
 ) -> DownloadOutcome:
-    """Download every detected attachment into `folder`, concurrently.
+    """Download a bid's attachments into `folder`, storing each one exactly once.
 
     Files stream to disk as they arrive, so a 200 MB drawing set never sits in
     memory, and a bid's attachments are fetched several at a time instead of one
     click-and-wait at a time.
+
+    Three gates keep the folder at one file per distinct document, because the
+    same attachment can arrive by three different routes:
+
+    1. **the same URL twice** — collapsed here, before anything is fetched;
+    2. **a file the folder already holds** — matched by name and skipped
+       without an HTTP request at all. The bid folder lives for the whole
+       session, so without this a re-run of the same niche re-downloaded every
+       attachment and stacked it beside the original as `… (2).pdf`. Only
+       names that identify one link are answered this way; see below;
+    3. **the same bytes under a different name** — matched by hash as it lands
+       (see `_FolderIndex`) and discarded.
+
+    Each file on disk is then *claimed* by at most one link, which is what keeps
+    the counts honest: the first link to reach a file is that document, and a
+    second link reaching the same file is a copy the portal listed twice.
+
+    So a bid with N distinct documents ends up with exactly N files, whether it
+    is scraped once or five times.
     """
     outcome = DownloadOutcome(detected=len(links))
     if not links:
         return outcome
 
     folder.mkdir(parents=True, exist_ok=True)
-    started = time.monotonic()
-    workers = max(1, min(max_parallel, len(links)))
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        results = list(
-            pool.map(lambda l: _fetch_one(session, l, folder, referer, should_stop), links)
-        )
-    outcome.seconds = time.monotonic() - started
 
-    for link, (name, error) in zip(links, results):
-        if name:
+    # Gate 1 — the attachment list itself. Extraction already de-duplicates by
+    # URL; repeating it here is the last thing standing between a repeated link
+    # and a repeated file, and it costs one pass over a list of a dozen items.
+    unique: list[DocumentLink] = []
+    seen_urls: set[str] = set()
+    for link in links:
+        if link.url not in seen_urls:
+            seen_urls.add(link.url)
+            unique.append(link)
+    outcome.duplicate_links = len(links) - len(unique)
+
+    # Gate 2 — anything already on disk under the same name. On BidNet the
+    # anchor text *is* the filename the server sends back, so this is a reliable
+    # match and saves re-fetching the whole document set on a re-run.
+    index = _FolderIndex(folder)
+    # A name shared by two links is not evidence about either of them. The
+    # portal does reuse a filename across a bid's attachments, and the folder
+    # then holds "Addendum 1.pdf" and "Addendum 1 (2).pdf" — but which link's
+    # bytes went into which is decided by whichever download landed first, and
+    # that order is not stable between runs. Answering such a link from disk
+    # would pair it with the wrong file and count the other as a duplicate, so
+    # only unambiguous names are skipped; the rest are fetched and matched on
+    # their bytes, which is order-independent.
+    name_counts: dict[str, int] = {}
+    for link in unique:
+        name_counts[link.fallback_name] = name_counts.get(link.fallback_name, 0) + 1
+
+    todo: list[DocumentLink] = []
+    for link in unique:
+        name = link.fallback_name
+        if name_counts[name] == 1 and name in index.names and index.claim(name):
+            outcome.skipped_existing += 1
             outcome.saved.append(name)
         else:
-            outcome.failed.append(f"{link.fallback_name}: {error}")
+            todo.append(link)
 
-    kept, outcome.duplicates = _dedupe(folder, outcome.saved)
-    outcome.saved = kept
+    started = time.monotonic()
+    if todo:
+        workers = max(1, min(max_parallel, len(todo)))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            results = list(
+                pool.map(
+                    lambda l: _fetch_one(session, l, folder, index, referer, should_stop),
+                    todo,
+                )
+            )
+        # Gate 3 happens inside _fetch_one, as each download lands.
+        for link, (name, error, status) in zip(todo, results):
+            if name is None:
+                outcome.failed.append(f"{link.fallback_name}: {error}")
+            elif status == "duplicate":
+                outcome.duplicates += 1
+            else:
+                # "stored" or "existing" — either way this attachment is backed
+                # by exactly one file in the folder.
+                if status == "existing":
+                    outcome.skipped_existing += 1
+                outcome.saved.append(name)
+    outcome.seconds = time.monotonic() - started
 
     label = reference or "bid"
-    # `detected` counts the links; the duplicates the portal lists twice are not
+    # `detected` counts the links; the copies the portal lists twice are not
     # separate documents, so the "N/N" the log reports is against the distinct
     # ones — otherwise a clean run would read as permanently one file short.
-    distinct = outcome.detected - outcome.duplicates
+    notes = []
+    if outcome.skipped_existing:
+        notes.append(f"{outcome.skipped_existing} already present")
+    if outcome.duplicates:
+        notes.append(f"{outcome.duplicates} duplicate copy/copies discarded")
+    if outcome.duplicate_links:
+        notes.append(f"{outcome.duplicate_links} repeated link(s)")
     logger.info(
         "[run %s] Found %d documents for %s | Downloaded %d/%d in %.1fs%s",
-        run_id, distinct, label, outcome.downloaded, distinct, outcome.seconds,
-        f" ({outcome.duplicates} duplicate copy/copies removed)" if outcome.duplicates else "",
+        run_id, outcome.distinct, label, outcome.downloaded, outcome.distinct,
+        outcome.seconds, f" ({', '.join(notes)})" if notes else "",
     )
     if outcome.failed:
         # Detected but not retrieved is the case worth shouting about: the bid

@@ -16,6 +16,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from urllib.parse import parse_qs, urlparse
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -281,7 +282,15 @@ class _Handler(BaseHTTPRequestHandler):
             time.sleep(0.1)
         else:
             seed = path.encode()
-            name = path.strip("/").replace("/", "_").replace("?", "_") + ".pdf"
+            # ?fn= lets a test say what Content-Disposition should come back.
+            # On the real portal the anchor text *is* the filename the server
+            # sends, so tests that care about that match set them to agree.
+            query = parse_qs(urlparse(path).query)
+            name = (
+                query["fn"][0]
+                if "fn" in query
+                else urlparse(path).path.strip("/").replace("/", "_") + ".pdf"
+            )
 
         filler = (seed * size)[: size - 8]
         body = b"%PDF-1.4" + filler
@@ -417,6 +426,178 @@ def test_different_files_of_the_same_size_are_both_kept():
             assert len(sizes) == 1, f"test premise broken, sizes differ: {sizes}"
             assert out.duplicates == 0, "distinct files of equal size were collapsed"
             assert out.downloaded == 2, out.saved
+    finally:
+        httpd.shutdown()
+
+
+# -- one file per document, however many times the bid is scraped -----------
+#
+# The bid folder lives for the whole session (see storage.py), so a niche
+# re-run lands on a folder that already holds the documents. That used to
+# re-download every one and park it beside the original as "… (2).pdf": a
+# seven-document bid became 14 files on the second run and 21 on the third.
+
+
+def _counting_server():
+    """A server that also reports how many requests it served."""
+    hits = {"n": 0}
+    outer = _Handler
+
+    class Counting(outer):
+        def do_GET(self):
+            hits["n"] += 1
+            outer.do_GET(self)
+
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), Counting)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    return httpd, f"http://127.0.0.1:{httpd.server_port}", hits
+
+
+def test_rescraping_a_bid_does_not_duplicate_its_documents():
+    """The reported bug, end to end: 7 documents must stay 7 files."""
+    httpd, base, hits = _counting_server()
+    try:
+        links = [DocumentLink(f"{base}/ok/{i}", f"doc{i}.pdf") for i in range(7)]
+        with TemporaryDirectory() as tmp:
+            folder = Path(tmp) / "0001 - Some Bid"
+            for run in (1, 2, 3):
+                out = download_documents(requests.Session(), links, folder, "run", "BID-1")
+                files = [p for p in folder.iterdir() if p.is_file()]
+                assert len(files) == 7, f"run {run}: {len(files)} files — {sorted(p.name for p in files)}"
+                assert out.distinct == 7
+                assert out.downloaded == 7, out.saved
+            # no "(2)" / "(3)" copies anywhere
+            assert not [p.name for p in folder.iterdir() if "(" in p.name]
+    finally:
+        httpd.shutdown()
+
+
+def test_a_rerun_makes_no_http_requests_at_all():
+    """Already-present files are skipped, not re-fetched and then discarded."""
+    httpd, base, hits = _counting_server()
+    try:
+        # ?fn= makes the server send back the name the anchor advertises, which
+        # is how the real portal behaves — and what lets the name check answer
+        # a re-run without touching the network.
+        links = [
+            DocumentLink(f"{base}/ok/{i}?fn=doc{i}.pdf", f"doc{i}.pdf") for i in range(4)
+        ]
+        with TemporaryDirectory() as tmp:
+            folder = Path(tmp) / "bid"
+            download_documents(requests.Session(), links, folder, "run", "BID-1")
+            assert hits["n"] == 4, hits
+            out = download_documents(requests.Session(), links, folder, "run", "BID-1")
+            assert hits["n"] == 4, f"re-downloaded on the second pass: {hits['n']} requests"
+            assert out.skipped_existing == 4
+            assert out.downloaded == 4, out.saved
+    finally:
+        httpd.shutdown()
+
+
+def test_a_repeated_url_in_the_list_is_collapsed_before_downloading():
+    httpd, base, hits = _counting_server()
+    try:
+        link = DocumentLink(f"{base}/ok/1", "doc.pdf")
+        with TemporaryDirectory() as tmp:
+            folder = Path(tmp) / "bid"
+            out = download_documents(
+                requests.Session(), [link, link, link], folder, "run", "BID-1"
+            )
+            assert out.duplicate_links == 2
+            assert out.distinct == 1
+            assert hits["n"] == 1, f"fetched a repeated link {hits['n']} times"
+            assert len([p for p in folder.iterdir() if p.is_file()]) == 1
+    finally:
+        httpd.shutdown()
+
+
+def test_same_bytes_under_a_different_name_are_stored_once_on_every_run():
+    """The two-document-id case, held across a re-run.
+
+    The portal lists one file under two document ids, so both links are in
+    *every* scrape of the bid — the second run sees the pair again, not one
+    half of it. Both runs must report one distinct document and leave one file.
+    """
+    httpd, base, _ = _counting_server()
+    try:
+        links = [
+            DocumentLink(f"{base}/twin/560", "Vendor Certification.pdf"),
+            DocumentLink(f"{base}/twin/561", "VENDOR'S CERTIFICATION.pdf"),
+        ]
+        with TemporaryDirectory() as tmp:
+            folder = Path(tmp) / "bid"
+            for run in (1, 2, 3):
+                out = download_documents(requests.Session(), links, folder, "run", "BID-1")
+                assert out.duplicates == 1, f"run {run}: {out}"
+                assert out.distinct == 1, f"run {run}: {out}"
+                # The saved list is what the report speaks from, so it must not
+                # outgrow the folder either.
+                assert len(out.saved) == 1, f"run {run}: {out.saved}"
+                files = [p for p in folder.iterdir() if p.is_file()]
+                assert len(files) == 1, f"run {run}: {sorted(p.name for p in files)}"
+    finally:
+        httpd.shutdown()
+
+
+def test_two_distinct_documents_sharing_a_name_survive_a_rerun():
+    """The name check must not collapse a real second document.
+
+    BidNet does reuse a filename across a bid's attachments, so the folder ends
+    up holding "same.pdf" and "same (2).pdf" — both links advertising the same
+    name. Answering *both* from disk on the next run would drop one document
+    from the report; only the first link may be, and the second has to be
+    fetched and judged on its bytes.
+    """
+    httpd, base, _ = _counting_server()
+    try:
+        links = [DocumentLink(f"{base}/collide/{i}", "same.pdf") for i in range(2)]
+        with TemporaryDirectory() as tmp:
+            folder = Path(tmp) / "bid"
+            for run in (1, 2):
+                out = download_documents(requests.Session(), links, folder, "run", "BID-1")
+                assert out.distinct == 2, f"run {run}: {out}"
+                assert out.duplicates == 0, f"run {run}: distinct content was discarded — {out}"
+                assert len(out.saved) == 2, f"run {run}: {out.saved}"
+                files = sorted(p.name for p in folder.iterdir() if p.is_file())
+                assert files == ["same (2).pdf", "same.pdf"], f"run {run}: {files}"
+    finally:
+        httpd.shutdown()
+
+
+def test_a_genuinely_different_file_with_a_taken_name_still_gets_stored():
+    """Dedup must not swallow distinct content that happens to share a name."""
+    httpd, base, _ = _counting_server()
+    try:
+        with TemporaryDirectory() as tmp:
+            folder = Path(tmp) / "bid"
+            download_documents(
+                requests.Session(), [DocumentLink(f"{base}/ok/1", "same.pdf")],
+                folder, "run", "BID-1",
+            )
+            out = download_documents(
+                requests.Session(), [DocumentLink(f"{base}/vary", "same.pdf")],
+                folder, "run", "BID-1",
+            )
+            names = sorted(p.name for p in folder.iterdir() if p.is_file())
+            assert len(names) == 2, names
+            assert out.duplicates == 0, "distinct content was wrongly discarded"
+    finally:
+        httpd.shutdown()
+
+
+def test_an_interrupted_part_file_is_never_counted_as_stored():
+    httpd, base, _ = _counting_server()
+    try:
+        with TemporaryDirectory() as tmp:
+            folder = Path(tmp) / "bid"
+            folder.mkdir(parents=True)
+            (folder / "doc0.pdf.part").write_bytes(b"half a file")
+            out = download_documents(
+                requests.Session(), [DocumentLink(f"{base}/ok/0?fn=doc0.pdf", "doc0.pdf")],
+                folder, "run", "BID-1",
+            )
+            assert out.skipped_existing == 0, "a .part file was mistaken for a stored document"
+            assert (folder / "doc0.pdf").is_file()
     finally:
         httpd.shutdown()
 
