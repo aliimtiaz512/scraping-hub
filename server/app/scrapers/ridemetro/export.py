@@ -52,6 +52,7 @@ def _run_values(run: dict[str, Any]) -> dict[str, Any]:
     return {
         "run_id": run["run_id"],
         "status": run.get("status"),
+        "account": run.get("account"),
         "started_at": _parse_dt(run.get("started_at")),
         "finished_at": _parse_dt(run.get("finished_at")),
         "opportunities_found": run.get("bids_found", 0),

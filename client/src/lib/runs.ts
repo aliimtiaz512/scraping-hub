@@ -110,7 +110,14 @@ export function runTarget(run: RunStatus): string {
     if (!search || search === "all public solicitations") return "All public solicitations";
     return search;
   }
-  if (run.scraper === "ridemetro") return "All open opportunities";
+  // Which account ran is the only thing that varies between RideMetro runs, and
+  // it changes what the run covers (each account is its own supplier network),
+  // so it is what the run history shows as the target.
+  if (run.scraper === "ridemetro") {
+    return run.account_label
+      ? `${run.account_label} · all open opportunities`
+      : "All open opportunities";
+  }
   if (run.scraper === "septa") {
     return run.date_filter ? `Opens ${run.date_filter}` : "Today's open quotes";
   }

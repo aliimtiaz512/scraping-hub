@@ -4,6 +4,10 @@ from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 SERVER_ROOT = Path(__file__).resolve().parent.parent
+# The one .env every loader in the project reads: pydantic-settings below, and
+# app/core/credentials.py, which re-reads it literally to confirm a credential
+# survived the parse.
+ENV_FILE = SERVER_ROOT / ".env"
 
 
 class Settings(BaseSettings):
@@ -14,7 +18,7 @@ class Settings(BaseSettings):
     # PUBLIC_BASE_URL) belong in .env. A field can still be overridden by an env
     # var of the same name if a specific deployment ever needs to.
     model_config = SettingsConfigDict(
-        env_file=SERVER_ROOT / ".env",
+        env_file=ENV_FILE,
         env_file_encoding="utf-8",
         extra="ignore",
     )
@@ -29,6 +33,17 @@ class Settings(BaseSettings):
     # agency listed under My Network whose registration Status is Complete.
     # The bonfirehub session is shared across all three hosts, so the network
     # and agency portals need no second login.
+    #
+    # Two accounts are configured, and each run picks one (see
+    # app/scrapers/ridemetro/accounts.py). They are separate logins into separate
+    # supplier networks, so which one runs decides which agencies are swept.
+    hoope_lab_username: str = ""
+    hoope_lab_password: str = ""
+    fedpints_username: str = ""
+    fedpints_password: str = ""
+    # The pre-accounts keys. Still read as the Hoope Lab account's credentials so
+    # a deployment whose .env predates the switch keeps working; the account's
+    # own HOOPE_LAB_* keys win when both are set.
     ridemetro_email: str = ""
     ridemetro_password: str = ""
     ridemetro_login_url: str = "https://ridemetro.bonfirehub.com/login"
@@ -118,10 +133,14 @@ class Settings(BaseSettings):
     emma_username: str = ""
     emma_password: str = ""
 
-    # Unison Marketplace — the vendored engine (server/scrappers/unison/) reads
-    # these straight from the environment via its own load_dotenv(); declared here
-    # too so the .env keys are documented in one place. SAM.gov needs no creds;
-    # NAICS is a public reference page.
+    # Unison Marketplace — the vendored engine (app/scrapers/unison/engine/) reads
+    # these straight from os.environ via its own load_dotenv(); declared here too
+    # so the .env keys are documented in one place, and so the run's credential
+    # check can confirm the two loaders agree. SAM.gov needs no creds; NAICS is a
+    # public reference page.
+    #
+    # This password carries $ / % / # / ^, so its .env line must be SINGLE-quoted
+    # — see the QUOTING note in .env.example and app/core/credentials.py.
     unison_email: str = ""
     unison_password: str = ""
 

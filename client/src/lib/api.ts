@@ -181,6 +181,11 @@ export interface RunStatus {
   agencies_found?: number;
   agencies_scraped?: number;
   bids_closing_soon?: number;
+  /** Which login the run used, and its masked username — the two accounts sweep
+   *  different networks, so a finished run has to say which one it was. */
+  account?: string;
+  account_label?: string;
+  account_username?: string;
   // BidNet: how the run's records broke down by completeness.
   bids_fully_extracted?: number;
   bids_partial?: number;
@@ -305,8 +310,32 @@ export function startMyFloridaScrape({
 
 // -- RideMetro ---------------------------------------------------------------
 
-export function startRideMetroScrape(livePreview = false): Promise<{ run_id: string; folder: string }> {
-  return request(`/ridemetro/scrape${livePreviewQuery(livePreview)}`, { method: "POST" });
+/** One of the two RideMetro logins a run can use. Separate accounts belong to
+ *  separate Euna Supplier Networks, so the choice decides which agencies get
+ *  swept — not just who signs in. Never carries a password; `username` arrives
+ *  masked, and `configured` is false when either key is missing from the
+ *  server's .env, which is what makes the option unselectable. */
+export interface RideMetroAccount {
+  key: string;
+  label: string;
+  /** Masked, e.g. `Ra…@hoopoelabs.com`, or "(not set)". */
+  username: string;
+  configured: boolean;
+  username_env: string;
+  password_env: string;
+}
+
+export function getRideMetroAccounts(): Promise<{ accounts: RideMetroAccount[]; default: string }> {
+  return request("/ridemetro/accounts");
+}
+
+export function startRideMetroScrape(
+  account: string,
+  livePreview = false,
+): Promise<{ run_id: string; folder: string; account: string }> {
+  const query = new URLSearchParams({ account });
+  if (livePreview) query.set("live_preview", "true");
+  return request(`/ridemetro/scrape?${query}`, { method: "POST" });
 }
 
 // -- BidNet Direct -----------------------------------------------------------

@@ -7,13 +7,15 @@ reads it back into records, and stores them the hub way (DB-first + Excel).
 
 import csv
 import logging
+import os
 import shutil
 import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from app.core import live, run_manager
+from app.config import ENV_FILE, settings
+from app.core import credentials, live, run_manager
 from app.core.closing_filter import MIN_DAYS_UNTIL_CLOSE, filter_records
 from app.core.filenames import sanitize_filename
 from app.scrapers.unison import export
@@ -30,6 +32,58 @@ _CSV_MAP = {
     "Buyer": "buyer",
     "End Date": "end_date",
 }
+
+
+# What the vendored engine falls back to when the variable is unset — it types
+# these into the login form rather than failing (unison_scraper.py, the
+# `os.getenv(..., 'your_...')` calls). Mirrored here so the check sees exactly
+# the strings the engine will use.
+_ENGINE_FALLBACKS = {
+    "UNISON_EMAIL": "your_email@example.com",
+    "UNISON_PASSWORD": "your_password",
+}
+
+
+def _verify_credentials(run_id: str) -> None:
+    """Confirm the credentials survived the .env parse, before we try to log in.
+
+    The engine reads `os.environ`, which python-dotenv filled from server/.env —
+    so this checks those exact strings against the literal text of the file. A
+    password whose `#` was taken as a comment, whose `$name` was expanded, or
+    that is shadowed by a stale export in the environment is caught here and the
+    run stops. Attempting the login anyway would report a portal problem for a
+    file problem, and spend a failed attempt on a real vendor account doing it.
+
+    Nothing sensitive is logged — see app/core/credentials.fingerprint.
+    """
+    run_manager.update_run(run_id, step="verifying_credentials")
+    loaded = {
+        name: os.getenv(name, fallback) for name, fallback in _ENGINE_FALLBACKS.items()
+    }
+    checks = credentials.verify_all(loaded, ENV_FILE, portal="unison")
+
+    # The hub's own settings read the same file separately; if the two loaders
+    # disagree, something between them is rewriting the value.
+    for name, expected in (
+        ("UNISON_EMAIL", settings.unison_email),
+        ("UNISON_PASSWORD", settings.unison_password),
+    ):
+        if expected and loaded[name] != expected:
+            message = (
+                f"{name} differs between the engine's environment "
+                f"[{credentials.fingerprint(loaded[name])}] and app settings "
+                f"[{credentials.fingerprint(expected)}] — an exported "
+                f"{name} is shadowing server/.env"
+            )
+            logger.error("[run %s] %s", run_id, message)
+            run_manager.add_error(run_id, message)
+            raise RuntimeError(message)
+
+    failures = credentials.problems(checks)
+    if failures:
+        for failure in failures:
+            run_manager.add_error(run_id, failure)
+        raise RuntimeError(failures[0])
 
 
 def _read_records(csv_path: Path) -> list[dict[str, Any]]:
@@ -52,6 +106,9 @@ def execute_run(run_id: str, filter_by: str | None = None) -> None:
     # data/documents entirely (it is read back below, then discarded).
     csv_dir = Path(tempfile.mkdtemp(prefix="unison_"))
     try:
+        _verify_credentials(run_id)
+        run_manager.update_run(run_id, step="scraping")
+
         scraper = UnisonMarketplaceScraper()
         # Hidden by default; show the browser only for a live-preview run.
         scraper.headless = not (run_manager.get_run(run_id) or {}).get("live_preview", False)

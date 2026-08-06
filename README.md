@@ -40,7 +40,10 @@ results.
   Open Public Opportunities. The export is a single agency-grouped Excel: a
   full-width banner per agency, its column headers, its rows, a blank row
   between blocks. List-only by design (detail-page document downloads are
-  intentionally dropped).
+  intentionally dropped). **Two accounts** — Hoope Lab and Fedpints — are
+  selectable per run in the console; each is a separate login into a separate
+  supplier network, so the choice decides which agencies get swept, and the
+  account's name is in the report's filename.
 - **Wisconsin** (eSupplier / PeopleSoft) — public bidder portal, **no login**.
   Searches Current Solicitations by keyword / agency / NIGP code (all optional)
   and pages through the whole PeopleSoft results grid.
@@ -162,13 +165,29 @@ cp .env.example .env   # fill in creds, DATABASE_URL, and (optionally) notificat
 Credentials in `server/.env`:
 
 - MyFlorida: `MFMP_EMAIL`, `MFMP_PASSWORD`
-- RideMetro: `RIDEMETRO_EMAIL`, `RIDEMETRO_PASSWORD`
+- RideMetro: `HOOPE_LAB_USERNAME`/`HOOPE_LAB_PASSWORD` and
+  `FEDPINTS_USERNAME`/`FEDPINTS_PASSWORD` — one account per run, picked in the
+  console. An account missing either key is shown as unavailable and cannot be
+  started (`GET /ridemetro/accounts` reports which are configured). The former
+  `RIDEMETRO_EMAIL`/`RIDEMETRO_PASSWORD` still work as the Hoope Lab account's
+  credentials when the `HOOPE_LAB_*` pair is unset.
 - BidNet Direct: `BIDNET_USERNAME`, `BIDNET_PASSWORD`
 - North Dakota: `NORTHDAKOTA_USERNAME`, `NORTHDAKOTA_PASSWORD` (+ `NORTHDAKOTA_MANUAL_LOGIN`)
 - SEPTA: `SEPTA_USERNAME`, `SEPTA_PASSWORD`
 - Cal eProcure: `Cal_ePROCURE_USERNAME`, `Cal_ePROCURE_PASSWORD`
 - Unison: `UNISON_EMAIL`, `UNISON_PASSWORD`
 - Wisconsin / SAM / NAICS: none (public)
+
+**Wrap any password containing punctuation in single quotes** —
+`UNISON_PASSWORD='pa$$w0rd%#here'`. Unquoted, a `#` after a space starts a
+comment and the rest of the password is silently dropped; double quotes stop
+that but read `\b`-style escapes, so they corrupt a password with a backslash.
+`.env.example` has the full matrix. A Unison run verifies this before it logs
+in (`app/core/credentials.py`): it re-reads the raw `.env` line and compares it
+against what the app loaded, then refuses to attempt the login if they differ —
+so a mis-parsed password is reported as a mis-parsed password rather than as a
+portal outage, and doesn't spend failed login attempts on a live vendor account.
+The check logs only a length/character-class/SHA-8 fingerprint, never a value.
 
 Storage & delivery (all optional — sensible defaults):
 

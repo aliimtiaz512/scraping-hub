@@ -1,9 +1,14 @@
-"""Selenium automation for the RideMetro account's Euna Supplier Network.
+"""Selenium automation for a RideMetro account's Euna Supplier Network.
 
 Flow: log in to the Bonfire portal -> click "My Euna Supplier Network" -> switch
 the top nav from Dashboard to "My Network" -> for every agency whose Status is
 Complete, click "Go to Agency" and read its Open Public Opportunities list ->
 store everything in the DB -> generate one agency-grouped Excel report.
+
+A run signs in as one of two configured accounts (see `accounts`), chosen when
+the run is started. That choice only decides which credentials the login step
+types: each account belongs to a different supplier network, so the same flow
+then sweeps whichever agencies that network lists.
 
 Agencies whose Status is Incomplete are skipped: the supplier registration for
 them is unfinished, and their "Go to Agency" button points at that agency's
@@ -35,7 +40,7 @@ from app.core.base_scraper import BaseScraper, StopRequested
 from app.core.closing_filter import MIN_DAYS_UNTIL_CLOSE, days_until_close
 from app.core.exports import archive_run
 from app.core.filenames import timestamp
-from app.scrapers.ridemetro import export, network, opportunities
+from app.scrapers.ridemetro import accounts, export, network, opportunities
 from app.scrapers.ridemetro.network import Agency
 from app.services.notifier import notify_scrape_completion
 
@@ -59,6 +64,10 @@ NEW_TAB_TIMEOUT = 30
 class RideMetroScraper(BaseScraper):
     def __init__(self, run_id: str):
         super().__init__(run_id)
+        # Which login this run uses. Resolved (and its credentials checked) in
+        # run(), so a misconfigured account fails the run with a clear reason
+        # instead of at the portal's login screen.
+        self.account: accounts.Account | None = None
         self.excel_path: Path | None = None
         self._records: list[dict[str, Any]] = []
         self._agencies: list[Agency] = []
@@ -72,6 +81,9 @@ class RideMetroScraper(BaseScraper):
     # -- flow steps ---------------------------------------------------------
 
     def login(self) -> None:
+        """Sign in as this run's account. The sequence is the same either way —
+        only the credentials typed into it differ."""
+        account = self.account or accounts.get(None)
         self.set_step("logging_in")
         self.navigate(settings.ridemetro_login_url)
         # Bonfire/Euna uses an identifier-first flow: the first screen shows only
@@ -80,12 +92,12 @@ class RideMetroScraper(BaseScraper):
         # then wait for the password field to appear before filling it.
         email = self.wait().until(EC.element_to_be_clickable(SEL["login_email"]))
         email.clear()
-        email.send_keys(settings.ridemetro_email)
+        email.send_keys(account.username)
         self.driver.find_element(*SEL["login_submit"]).click()
 
         password = self.wait().until(EC.element_to_be_clickable(SEL["login_password"]))
         password.clear()
-        password.send_keys(settings.ridemetro_password)
+        password.send_keys(account.password)
 
         # Submit and confirm we actually leave the login page. This React form
         # sometimes swallows the submit click when it lands during a re-render
@@ -251,7 +263,20 @@ class RideMetroScraper(BaseScraper):
         finally:
             if opened_tab:
                 self._close_tab()
-            self._return_to_network()
+            # Getting back to the roster is cleanup, not part of reading this
+            # agency: letting it throw here would mark an agency whose rows are
+            # already captured as one that "could not be read", which is what
+            # the report would then say. The next agency's lookup re-navigates
+            # to My Network anyway if the roster really is gone.
+            try:
+                self._return_to_network()
+            except StopRequested:
+                raise
+            except Exception:  # noqa: BLE001 — cleanup must not lose the agency's rows
+                logger.warning(
+                    "[run %s] could not return to My Network after %s — the next "
+                    "agency will reopen it", self.run_id, agency.name, exc_info=True,
+                )
 
     def _open_agency(self, agency: Agency) -> bool:
         """Click the agency's "Go to Agency" button; return True if a tab opened.
@@ -391,10 +416,33 @@ class RideMetroScraper(BaseScraper):
 
     # -- orchestration ------------------------------------------------------
 
+    def _select_account(self) -> None:
+        """Resolve this run's login and confirm it can actually be used.
+
+        The endpoint already checked this before creating the run; doing it again
+        here covers a run started any other way, and means the browser is never
+        launched for a login that cannot succeed. `require` raises with the
+        `.env` keys to fix, which becomes the run's error.
+        """
+        self.set_step("selecting_account")
+        requested = (run_manager.get_run(self.run_id) or {}).get("account")
+        self.account = accounts.require(requested)
+        run_manager.update_run(
+            self.run_id,
+            account=self.account.key,
+            account_label=self.account.label,
+            account_username=accounts.mask(self.account.username),
+        )
+        logger.info(
+            "[run %s] signing in as %s (%s)",
+            self.run_id, self.account.label, accounts.mask(self.account.username),
+        )
+
     def run(self) -> None:
         run_manager.update_run(self.run_id, status="running")
         self._save_run_row()  # initial run row (best-effort)
         try:
+            self._select_account()
             self.start_driver()
             self.login()
             self.open_supplier_network()
