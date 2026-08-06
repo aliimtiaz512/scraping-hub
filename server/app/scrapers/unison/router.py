@@ -1,5 +1,4 @@
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
-from pydantic import BaseModel
 from sqlalchemy import or_, select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
@@ -7,21 +6,47 @@ from sqlalchemy.orm import Session
 from app.core import run_manager
 from app.core.filenames import timestamp
 from app.db import get_session
-from app.scrapers.unison import runner
+from app.scrapers.unison import filters, runner
 from app.scrapers.unison.models import EXCEL_COLUMNS, UnisonRequest
 
 router = APIRouter(prefix="/unison", tags=["unison"])
 
 
-class ScrapeRequest(BaseModel):
-    # Optional dashboard filter passed straight to the engine's run_scraper.
-    filter_by: str | None = None
+@router.get("/filters")
+def list_filters() -> dict:
+    """The portal's Filter By criteria, for the console's dropdown.
+
+    Served rather than hardcoded in the frontend so the option values the engine
+    selects on and the labels the user picks from have one source.
+    """
+    return {"filters": filters.catalog(), "default": filters.DEFAULT_FILTER_ID}
 
 
 @router.post("/scrape")
-def start_scrape(request: ScrapeRequest, background_tasks: BackgroundTasks, live_preview: bool = False) -> dict:
-    filter_by = (request.filter_by or "").strip() or None
-    search = f"filter={filter_by}" if filter_by else "all requests"
+def start_scrape(
+    background_tasks: BackgroundTasks,
+    filter_id: str = Query(
+        filters.DEFAULT_FILTER_ID,
+        description="Portal 'Filter By' option value; -1 (Select Criteria) reads the whole listing",
+    ),
+    live_preview: bool = False,
+) -> dict:
+    """Start a run.
+
+    The one parameter is the portal's own Filter By criterion. Everything else
+    about how a run is narrowed is a property of the scraper (see `filters`),
+    not something a caller chooses.
+    """
+    if not filters.is_valid_filter(filter_id):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Unknown Filter By value {filter_id!r} — choose one of: "
+                f"{', '.join(value for value, _ in filters.PORTAL_FILTERS)}"
+            ),
+        )
+    label = filters.filter_label(filter_id)
+    search = "all requests" if filter_id == filters.DEFAULT_FILTER_ID else label
 
     # Per-run workspace folder (its name becomes the run's ZIP name). Timestamped
     # so concurrent runs never share a workspace — each is zipped and deleted
@@ -30,10 +55,23 @@ def start_scrape(request: ScrapeRequest, background_tasks: BackgroundTasks, live
     run = run_manager.create_run(
         "unison",
         folder,
-        {"search": search, "filter_by": filter_by, "excel_exported": False, "live_preview": live_preview},
+        {
+            "search": search,
+            "excel_exported": False,
+            "live_preview": live_preview,
+            "filter_id": filter_id,
+            "filter_label": label,
+            # What the console shows about how this run was narrowed. The
+            # keyword and close-date filters remain off for the testing phase.
+            "filters_active": filters.describe(filter_id),
+            "filters_summary": filters.summary(filter_id),
+        },
     )
-    background_tasks.add_task(runner.execute_run, run["run_id"], filter_by)
-    return {"run_id": run["run_id"], "search": search, "folder": run["folder"]}
+    background_tasks.add_task(runner.execute_run, run["run_id"])
+    return {
+        "run_id": run["run_id"], "search": search,
+        "filter_id": filter_id, "folder": run["folder"],
+    }
 
 
 @router.get("/scrape/status/{run_id}")

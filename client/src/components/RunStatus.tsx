@@ -75,7 +75,7 @@ function runSubtitle(run: RunStatusData): string {
   if (run.scraper === "northdakota") return run.search && run.search !== "all public solicitations" ? run.search : "North Dakota";
   if (run.scraper === "septa") return run.date_filter ? `Opens ${run.date_filter}` : "SEPTA";
   if (run.scraper === "sam") return run.search && run.search !== "all active solicitations" ? run.search : "SAM.gov";
-  if (run.scraper === "unison") return run.filter_by ? run.filter_by : "Unison Marketplace";
+  if (run.scraper === "unison") return "Unison Marketplace";
   if (run.scraper === "naics") return "NAICS refresh";
   return "";
 }

@@ -34,6 +34,10 @@ class UnisonMarketplaceScraper:
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         self.csv_file = f'unison_requests_{timestamp}.csv'
         self.processed_ids = set()
+        # Filled in by collect_listing: how many pages the walk covered, and how
+        # many buys the listing said it held.
+        self.pages_scraped = 0
+        self.expected_buys = None
         self.keywords_to_exclude = [
             'gsa schedules', 'food rfi', 'market research', 
             'foods', 'meal', 'survey'
@@ -412,6 +416,143 @@ class UnisonMarketplaceScraper:
             logging.error(f"Filter error: {e}")
             return True  # Continue anyway
     
+    # -- page controls: Show, Filter By, pagination ---------------------------
+    #
+    # The three controls on the opportunities listing:
+    #
+    #   <select id="allOppPageSize" name="pageSize">   25 | 50 | 75 | 100
+    #   <select id="allOppFilterId" name="filterId">   -1 Select Criteria …
+    #   <ul class="page-links"> … <a title="Next Page" href="…pageNum=2&…">
+    #
+    # Both selects reload the listing on change, and the Next link carries the
+    # whole state (pageNum, pageSize, filterId) in its href — which is what the
+    # pagination walk follows.
+
+    PAGE_SIZE_SELECT = "allOppPageSize"
+    FILTER_SELECT = "allOppFilterId"
+    NEXT_LINK = "//a[@title='Next Page']"
+    PAGE_SUMMARY = "span.page-summary"
+
+    def set_page_size(self, size: str = "100") -> bool:
+        """Set Show: to `size` results per page. Returns False if it isn't there.
+
+        Fewer page loads for the same buys, and fewer chances for the listing to
+        shift under the walk — the portal's own default is 25.
+        """
+        try:
+            select = Select(WebDriverWait(self.driver, 10).until(
+                EC.presence_of_element_located((By.ID, self.PAGE_SIZE_SELECT))
+            ))
+            if (select.first_selected_option.get_attribute("value") or "") == size:
+                return True
+            select.select_by_value(size)
+            logging.info(f"Show: set to {size} per page")
+            self._await_listing_reload()
+            return True
+        except Exception as exc:
+            logging.warning(f"Could not set page size to {size}: {exc}")
+            return False
+
+    def apply_filter_id(self, filter_id: str) -> bool:
+        """Select a Filter By: criterion by its option value ("3" = last 7 days).
+
+        Selected by value rather than visible text: the values are stable ids,
+        where the labels are display copy. "-1" is the portal's "Select
+        Criteria" — no filter — and is left alone rather than selected, so an
+        unfiltered run touches the control at all.
+        """
+        if not filter_id or str(filter_id) == "-1":
+            logging.info("No Filter By criterion requested — reading the full listing")
+            return True
+        try:
+            select = Select(WebDriverWait(self.driver, 10).until(
+                EC.presence_of_element_located((By.ID, self.FILTER_SELECT))
+            ))
+            select.select_by_value(str(filter_id))
+            label = select.first_selected_option.text.strip()
+            logging.info(f"Filter By: {label} (value {filter_id})")
+            self._await_listing_reload()
+            return True
+        except Exception as exc:
+            logging.warning(f"Could not apply filter {filter_id}: {exc}")
+            return False
+
+    def _await_listing_reload(self) -> None:
+        """Wait for the listing to come back after a control changes it."""
+        try:
+            WebDriverWait(self.driver, 30).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, self.PAGE_SUMMARY))
+            )
+        except TimeoutException:
+            pass  # a listing with a single page may render no summary
+        time.sleep(1.5)  # let the table finish swapping in
+
+    def page_summary(self) -> str:
+        """The "1 - 25 of 28 Buys" line, or "" — used to check the walk's total."""
+        try:
+            return self.driver.find_element(By.CSS_SELECTOR, self.PAGE_SUMMARY).text.strip()
+        except NoSuchElementException:
+            return ""
+
+    def expected_total(self) -> int | None:
+        """How many buys the listing claims, from its summary line."""
+        match = re.search(r"of\s+([\d,]+)\s+Buys", self.page_summary(), re.IGNORECASE)
+        return int(match.group(1).replace(",", "")) if match else None
+
+    def next_page_url(self) -> str | None:
+        """The Next link's href, or None on the last page.
+
+        Followed as a URL rather than clicked: the href already carries
+        pageNum/pageSize/filterId, and a link that goes stale between being
+        found and being clicked costs a whole page of buys.
+        """
+        try:
+            link = self.driver.find_element(By.XPATH, self.NEXT_LINK)
+        except NoSuchElementException:
+            return None
+        return link.get_attribute("href") or None
+
+    def collect_listing(self, filter_id: str = "-1", page_size: str = "100",
+                        max_pages: int = 100) -> list:
+        """Every buy across every page of the listing, in portal order.
+
+        Assumes an already-logged-in driver on the opportunities page. Walks
+        Next until it runs out, guarding against a portal that keeps handing
+        back the same page. `max_pages` is a runaway backstop, not a cap on
+        results — a listing that hits it is logged loudly.
+        """
+        self.set_page_size(page_size)
+        self.apply_filter_id(filter_id)
+
+        rows: list = []
+        seen_urls: set = set()
+        pages = 0
+        while pages < max_pages:
+            pages += 1
+            page_rows = self.extract_request_data()
+            rows.extend(page_rows)
+            logging.info(f"Page {pages}: {len(page_rows)} buys (running total {len(rows)})")
+
+            next_url = self.next_page_url()
+            if not next_url or next_url in seen_urls:
+                break
+            seen_urls.add(next_url)
+            self.driver.get(next_url)
+            self._await_listing_reload()
+
+        expected = self.expected_total()
+        if expected is not None and len(rows) < expected:
+            logging.warning(
+                f"The listing reports {expected} buys but {len(rows)} were read "
+                f"across {pages} page(s) — some rows were not captured"
+            )
+        if pages >= max_pages:
+            logging.error(f"Stopped after {max_pages} pages — pagination did not terminate")
+
+        self.pages_scraped = pages
+        self.expected_buys = expected
+        return rows
+
     def contains_excluded_keywords(self, description: str) -> bool:
         """Check if description contains any excluded keywords"""
         if not description:
@@ -535,9 +676,23 @@ class UnisonMarketplaceScraper:
                         
                     # Extract Buy Number
                     buy_idx = col_map.get('buy_number', 0)
+                    detail_url = ""
                     if buy_idx < len(cells):
                         buy_text = cells[buy_idx].text.strip().split('\n')[0] # Take first line only
                         buyer_id = buy_text
+                        # The Buy # is a link to the buy's detail page
+                        # (/fbweb/buyDetails.do?buy_id=…). Captured here, while
+                        # the row is in hand, so the detail pass can visit each
+                        # buy by URL instead of re-finding a link that the
+                        # listing may have re-rendered under it.
+                        links = cells[buy_idx].find_elements(By.TAG_NAME, "a")
+                        if links:
+                            detail_url = links[0].get_attribute("href") or ""
+                            # The anchor text is the authoritative Buy # — the
+                            # cell's text can carry a status word underneath it.
+                            link_text = (links[0].text or "").strip()
+                            if link_text:
+                                buyer_id = link_text
                     else:
                         buyer_id = ""
 
@@ -597,7 +752,8 @@ class UnisonMarketplaceScraper:
                         'Buyer#': buyer_id,
                         'Buyer Description': description[:500].replace('\n', ' '), # Clean newlines
                         'Buyer': buyer_agency,
-                        'End Date': end_date
+                        'End Date': end_date,
+                        'Detail URL': detail_url,
                     }
                     
                     requests_data.append(request_data)
@@ -643,15 +799,38 @@ class UnisonMarketplaceScraper:
         except Exception as e:
             logging.error(f"Error saving to CSV: {e}")
     
+    def open_listing(self, filter_id: str = "-1", page_size: str = "100") -> list:
+        """Log in, reach the opportunities listing, and read every page of it.
+
+        The half of a run that needs a browser and a session. The driver is left
+        open and signed in so the caller can go on to the detail pages; closing
+        it is the caller's job (`self.driver.quit()`).
+        """
+        self.setup_driver()
+        self.load_existing_data()
+        if not self.login():
+            raise RuntimeError("Unison login failed — check the credentials in server/.env")
+        self.navigate_to_requests_page()
+        return self.collect_listing(filter_id=filter_id, page_size=page_size)
+
     def run_scraper(self, filter_by=None):
-        """Main method to run the entire scraping process"""
+        """Main method to run the entire scraping process.
+
+        The standalone path: listing -> CSV -> close. The hub does not use it —
+        its runner calls `open_listing` and keeps the session for the detail
+        pass — so this stays as the way to drive the engine on its own.
+
+        `filter_by` names an option in the dashboard's filter dropdown. Passing
+        None means *do not touch the dropdown*: the run reads the default
+        listing. It used to fall back to "Posted Today", which quietly limited
+        every run to same-day requests.
+        """
         logging.info("=" * 60)
         logging.info("STARTING UNISON MARKETPLACE SCRAPER")
         logging.info("=" * 60)
-        
-        # Determine filter name
-        filter_name = filter_by if filter_by else "Posted Today"
-        
+
+        filter_name = filter_by
+
         try:
             # Step 1: Setup
             print("\nStep 1: Setting up browser...")
@@ -670,14 +849,28 @@ class UnisonMarketplaceScraper:
             print("Step 3: Navigating to requests page...")
             self.navigate_to_requests_page()
             
-            # Step 4: Apply filter
-            print(f"Step 4: Applying '{filter_name}' filter...")
-            self.apply_filter(filter_name)
-            
-            # Step 5: Extract data
+            # Step 4: Apply filter (skipped when none was asked for)
+            if filter_name:
+                print(f"Step 4: Applying '{filter_name}' filter...")
+                self.apply_filter(filter_name)
+            else:
+                print("Step 4: No filter requested — reading the default listing.")
+                logging.info("No dashboard filter applied; taking the default listing")
+
+            # Step 5: Extract data — 100 per page, every page.
             print("Step 5: Extracting request data...")
-            all_data = self.extract_request_data()
-            
+            self.set_page_size("100")
+            all_data = []
+            seen_pages = set()
+            while True:
+                all_data.extend(self.extract_request_data())
+                next_url = self.next_page_url()
+                if not next_url or next_url in seen_pages:
+                    break
+                seen_pages.add(next_url)
+                self.driver.get(next_url)
+                self._await_listing_reload()
+
             # Step 6: Save data
             print("Step 6: Saving data...")
             self.save_to_csv(all_data)
@@ -693,7 +886,7 @@ class UnisonMarketplaceScraper:
             
             if len(all_data) == 0:
                 print("\n⚠️  No data extracted. Possible reasons:")
-                print("No requests posted today")
+                print("The dashboard listing is empty, or every row was already seen this run")
             
         except Exception as e:
             print(f"\n❌ ERROR: {e}")

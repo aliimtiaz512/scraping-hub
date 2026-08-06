@@ -37,7 +37,10 @@ DOC_PORTALS = {"myflorida", "bidnet", "northdakota", "emma"}
 # merged sheet across a niche's searches is the entire deliverable. RideMetro is
 # the same: its Euna Supplier Network sweep only reads each agency's
 # opportunities list, and the agency-grouped report is all a run produces.
-EXCEL_ONLY_PORTALS = {"sam", "myflorida_sweep", "septa", "ridemetro"}
+# Unison joined them once its evaluator went in: it fetches each buy's
+# attachments to read them into the decision, then discards them — after the
+# verdict the files serve no purpose, so the sheet is the deliverable.
+EXCEL_ONLY_PORTALS = {"sam", "myflorida_sweep", "septa", "ridemetro", "unison"}
 
 # Portals whose export module can rebuild the run's Excel from the DB via
 # `generate_excel(run_id, path)`. MyFlorida is absent on purpose: its workbook

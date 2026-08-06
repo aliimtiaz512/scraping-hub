@@ -41,11 +41,21 @@ def _kill_words(session) -> list[str]:
     return [r.value for r in rows]
 
 
-def evaluate(notice_id: str, full_text: str, naics_code: str = "", title: str = "") -> dict:
+def evaluate(
+    notice_id: str,
+    full_text: str,
+    naics_code: str = "",
+    title: str = "",
+    requirement_hint: str | None = None,
+) -> dict:
     """Evaluate one bid with the vendored funnel, using live DB kill-words.
 
     Mirrors the sam-septa route: copy the config, override only `kill_words` with
     the DB rows, and delegate to the vendored ``evaluate_bid``.
+
+    `requirement_hint` is passed straight through for a portal that can prove the
+    requirement type structurally (Unison's Line Item table). SAM does not set
+    it, so SAM's decisions are unaffected — see `evaluate_bid`.
     """
     session = SessionLocal()
     try:
@@ -56,7 +66,10 @@ def evaluate(notice_id: str, full_text: str, naics_code: str = "", title: str = 
     cfg = dict(SAM_CONFIG)
     cfg["evaluation"] = dict(cfg.get("evaluation", {}))
     cfg["evaluation"]["kill_words"] = kill_words
-    return evaluate_bid(notice_id, full_text, cfg, naics_code=naics_code, title=title)
+    return evaluate_bid(
+        notice_id, full_text, cfg,
+        naics_code=naics_code, title=title, requirement_hint=requirement_hint,
+    )
 
 
 def seed_defaults() -> None:

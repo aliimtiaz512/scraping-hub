@@ -26,12 +26,17 @@ CREDENTIAL_FIELDS = (
 
 
 @pytest.fixture
-def env(monkeypatch):
+def env(monkeypatch, tmp_path):
     """Both accounts unset, with a setter for the fields under test.
 
     Patches Settings rather than os.environ: that is where accounts.py reads
-    from, and it keeps the developer's real .env out of the assertions.
+    from. `ENV_FILE` is pointed at a path that does not exist for the same
+    reason — the credential check compares a loaded value against the literal
+    `.env`, so without this every assertion here would depend on whatever the
+    developer happens to have in their own file. That comparison is what
+    test_credentials.py exists to cover, against files it writes itself.
     """
+    monkeypatch.setattr(accounts, "ENV_FILE", tmp_path / "absent.env")
     for field in CREDENTIAL_FIELDS:
         monkeypatch.setattr(settings, field, "", raising=False)
 
@@ -132,7 +137,9 @@ def test_require_returns_a_usable_account(env):
 # -- what the console is told ------------------------------------------------
 
 
-def test_the_catalog_reports_configuration_without_leaking_a_password(env):
+def test_the_catalog_reports_configuration_without_naming_the_login(env):
+    """The console identifies an account by label. The address is not sent —
+    not even masked — so it cannot end up on screen or in a network payload."""
     env(
         hoope_lab_username="raheel@hoopoelabs.com", hoope_lab_password="hoope-secret",
         fedpints_username="", fedpints_password="",
@@ -142,11 +149,12 @@ def test_the_catalog_reports_configuration_without_leaking_a_password(env):
 
     hoope, fed = catalog
     assert hoope["configured"] is True and fed["configured"] is False
-    assert hoope["username"] == "ra…@hoopoelabs.com"  # local part masked
-    assert fed["username"] == "(not set)"
-    # The keys to fix are named; no secret is anywhere in the payload.
+    # The keys to fix are named; the credentials and the address are not.
     assert fed["password_env"] == "FEDPINTS_PASSWORD"
-    assert "hoope-secret" not in str(catalog)
+    payload = str(catalog)
+    for secret in ("raheel@hoopoelabs.com", "hoopoelabs.com", "raheel", "hoope-secret"):
+        assert secret not in payload
+    assert "username" not in hoope
 
 
 def test_mask_keeps_the_domain_and_hides_the_local_part():
@@ -205,7 +213,8 @@ def test_a_started_run_records_which_account_it_uses(client, env, monkeypatch):
     assert body["account"] == "fedpints"
     assert run["account"] == "fedpints"
     assert run["account_label"] == "Fedpints"
-    assert run["account_username"] == "fe…@example.com"
+    # Run state is served to the console, so the address is not on it.
+    assert "fed@example.com" not in str(run)
     # The account is in the workspace name, so it reaches the archive filename —
     # two accounts' reports must not be told apart only by timestamp.
     assert "Fedpints" in Path(run["folder"]).name
@@ -228,10 +237,11 @@ def test_the_scraper_types_the_selected_accounts_credentials(env, monkeypatch):
     assert scraper.account.key == "fedpints"
     assert scraper.account.username == "fed@example.com"
     assert scraper.account.password == "fed-secret"
-    # …and the choice is published on the run, masked.
+    # …and the run publishes which account it is by name only.
     stored = run_manager.get_run(run["run_id"])
     assert stored["account_label"] == "Fedpints"
-    assert "fed-secret" not in str(stored)
+    for secret in ("fed-secret", "fed@example.com"):
+        assert secret not in str(stored)
 
 
 def test_a_run_whose_account_became_unusable_fails_before_the_browser_starts(env):

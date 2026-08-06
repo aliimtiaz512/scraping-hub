@@ -125,7 +125,15 @@ export function runTarget(run: RunStatus): string {
     const search = run.search?.trim();
     return !search || search === "all active solicitations" ? "All active solicitations" : search;
   }
-  if (run.scraper === "unison") return run.filter_by?.trim() || "All buyer requests";
+  // A Unison run takes no parameters, so every run has the same target. Older
+  // runs may still carry the filter they were launched with — show it, so the
+  // history stays truthful about how those were narrowed.
+  // The Filter By criterion is what a Unison run was launched with. Older runs
+  // carry the free-text filter the panel used to send — shown as-is so the
+  // history stays truthful about how those were narrowed.
+  if (run.scraper === "unison") {
+    return run.filter_label?.trim() || run.filter_by?.trim() || "All buyer requests";
+  }
   if (run.scraper === "naics") return "NAICS reference refresh";
 
   // BidNet: one niche per run — the niche is what the run was for, not the
@@ -142,14 +150,15 @@ const NO_DOWNLOAD = new Set(["naics", "caleprocure", "evalconfig"]);
 /**
  * Portals whose run output is only the spreadsheet, so the download is a bare
  * .xlsx with no ZIP around it. Mirrors EXCEL_ONLY_PORTALS in app/core/exports.py
- * — SAM discards each bid's attachments once their text has been evaluated, and
- * SEPTA and RideMetro download nothing at all (both read metadata-only lists).
+ * — SAM and Unison discard each bid's attachments once their text has been read
+ * into the decision, and SEPTA and RideMetro download nothing at all (both read
+ * metadata-only lists).
  *
  * Keep this in step with the Python set: it drives only the wording and the
  * button label, so when it drifts the endpoint quietly serves a .xlsx while the
  * whole UI still says ZIP.
  */
-const EXCEL_ONLY = new Set(["sam", "myflorida_sweep", "septa", "ridemetro"]);
+const EXCEL_ONLY = new Set(["sam", "myflorida_sweep", "septa", "ridemetro", "unison"]);
 
 /** True when this portal's runs produce something to download. */
 export function portalDownloadable(portal: string): boolean {

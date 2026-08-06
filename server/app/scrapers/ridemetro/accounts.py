@@ -9,9 +9,12 @@ Credentials come from `.env` through `Settings`, with the account's own keys
 first and (for Hoope Lab) the original `RIDEMETRO_*` keys as a fallback, so a
 deployment that predates the account switch keeps running unchanged.
 
-Nothing here logs or returns a password. `describe` gives the console a masked
-username and a `configured` flag, which is what lets the UI show an account that
-cannot run as unavailable instead of offering a button that fails.
+Nothing here returns a credential, and nothing sent to the console names the
+login address — an account is identified by its label. `describe` gives the UI a
+label and a `configured` flag, which is what lets it show an account that cannot
+run as unavailable instead of offering a button that fails. The address appears
+only in the run log, via `mask`, where knowing which one signed in is useful and
+is not on anyone's screen.
 """
 
 from __future__ import annotations
@@ -156,11 +159,16 @@ def require(key: str | None) -> Account:
 
 
 def describe(account: Account) -> dict:
-    """What the console needs to render the account picker. No secrets."""
+    """What the console needs to render the account picker.
+
+    Deliberately no username, not even the masked form: the console identifies
+    an account by its label, and the login address is of no use there. It stays
+    server-side, in the run log, where knowing which address signed in is worth
+    something.
+    """
     return {
         "key": account.key,
         "label": account.label,
-        "username": mask(account.username),
         "configured": account.is_configured,
         "username_env": account.username_env,
         "password_env": account.password_env,

@@ -514,8 +514,30 @@ def _check_rule_c(hay: str, naics_full: str = "") -> tuple[int, str] | None:
 
 
 # --- Fix 2: consumable-food words for the NAICS 311/312 hardware sub-check ---
+# Consulted ONLY for a bid whose NAICS is already food manufacturing (311/312),
+# which is why it can afford to be broad: the NAICS has established that the
+# buyer is procuring food, and this only has to recognise which food. A term
+# here cannot affect a bid under any other NAICS.
+#
+# It started at six terms, which left a food buyer's catalogue deciding by
+# whichever item a line happened to name: one agency's "NATIONAL MENU - TURKEY"
+# rejected under Rule B #15 while its "NATIONAL MENU - CHICKEN", "- FISH",
+# "- CHEESE", "- BEANS" and "- TOMATO" were pursued as hardware, all under the
+# same NAICS on the same day.
 _FOOD_PRODUCT_WORDS = (
-    r"milk", r"meats?", r"poultry", r"produce", r"subsistence", r"food items?",
+    # catalogue and category words
+    r"menus?", r"subsistence", r"provisions", r"foodstuffs?", r"food items?",
+    r"groceries", r"grocery", r"rations?", r"meals?",
+    # protein
+    r"meats?", r"poultry", r"chicken", r"turkey", r"beef", r"pork", r"ham",
+    r"fish", r"seafood", r"shrimp", r"tuna", r"salmon", r"eggs?",
+    # dairy
+    r"milk", r"dairy", r"cheese", r"yogh?urt", r"butter",
+    # produce and staples
+    r"produce", r"fruits?", r"vegetables?", r"tomato(?:es)?", r"potato(?:es)?",
+    r"beans?", r"rice", r"pasta", r"bread", r"cereals?", r"flour",
+    # prepared and drink
+    r"snacks?", r"beverages?", r"juice", r"coffee", r"tea",
 )
 
 
@@ -804,9 +826,10 @@ def evaluate_bid(
     config: dict,
     naics_code: str = "",
     title: str = "",
+    requirement_hint: str | None = None,
 ) -> dict:
     """
-    Evaluate a bid per evaluation_criteria_sam_bids.docx (company decision guide).
+    Evaluate a bid per Company_Bid_Selection_Criteria.docx (company decision guide).
 
     Parameters
     ----------
@@ -815,6 +838,25 @@ def evaluate_bid(
     config     : The ``sam`` section of config.yml (must contain ``evaluation``).
     naics_code : NAICS code string (primary hardware/service signal).
     title      : Notice title (most reliable categorisation signal).
+    requirement_hint :
+        Optional "HARDWARE" from a portal that has *structural* evidence of the
+        requirement type — evidence stronger than anything inferrable from a
+        title and a NAICS code. Unison passes it when a buy carries a Line
+        Item(s) table of physical products with quantities and units; SAM.gov
+        has no equivalent and never passes it, so omitting it leaves every
+        SAM decision exactly as it was.
+
+        It can only PROMOTE a bid to HARDWARE, never demote one to SERVICE, and
+        it is applied at STEP 1 only — after the kill-word, R&D, marine-vessel
+        and rental sieves, and before the food sub-check. A hinted bid is
+        therefore still rejected by every Rule B override that precedes or
+        follows classification; the hint decides *what* is being procured, it
+        does not decide the bid.
+
+        This exists because NAICS alone misreads reseller/distributor codes: a
+        buy for laptops and cables under 541519 ("IT Value Added Resellers")
+        classifies as SERVICE on its NAICS band, then rejects on location —
+        precisely the location-first outcome §1 of the guide forbids.
 
     Returns
     -------
@@ -894,6 +936,15 @@ def evaluate_bid(
 
     # ── STEP 1: Hardware vs Service ──────────────────────────────────────────
     req_type = _classify_requirement(hay, naics_code, full_text)
+    # A caller with structural evidence of a supply (see `requirement_hint`) may
+    # promote SERVICE to HARDWARE here, and only here: every Rule B sieve that
+    # rejects outright has already run, and the food sub-check below still does.
+    # The hint is deliberately one-way — nothing may demote HARDWARE to SERVICE,
+    # so it can never turn a Rule A pursue into a location-gated reject.
+    if requirement_hint == "HARDWARE" and req_type != "HARDWARE":
+        logger.info(f"[EVAL] {bid_id} -> requirement hint promoted SERVICE to HARDWARE")
+        req_type = "HARDWARE"
+        result["hinted"] = True
     result["requirement_type"] = req_type
 
     # ── STEP 2: Hardware → PURSUE (Rule A), STOP ─────────────────────────────

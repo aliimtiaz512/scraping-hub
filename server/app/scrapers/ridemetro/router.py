@@ -17,9 +17,9 @@ router = APIRouter(prefix="/ridemetro", tags=["ridemetro"])
 def list_accounts() -> dict:
     """The logins a run can use, for the console's account picker.
 
-    Each carries a masked username and whether it is configured, so an account
-    with no credentials in `.env` is shown as unavailable rather than offered as
-    a button that would fail.
+    Each carries its label and whether it is configured — no login address — so
+    an account with no credentials in `.env` is shown as unavailable rather than
+    offered as a button that would fail.
     """
     return {"accounts": accounts.catalog(), "default": accounts.DEFAULT_ACCOUNT}
 
@@ -52,12 +52,13 @@ def start_scrape(
     run = run_manager.create_run(
         "ridemetro",
         folder,
+        # The account's key and label only — the run state is served to the
+        # console, and the login address has no business being there.
         {
             "label": label,
             "live_preview": live_preview,
             "account": selected.key,
             "account_label": selected.label,
-            "account_username": accounts.mask(selected.username),
         },
     )
     background_tasks.add_task(execute_run, run["run_id"])

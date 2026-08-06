@@ -98,7 +98,7 @@ export default function RideMetroPanel() {
             value: option.key,
             label: option.label,
             hint: option.configured
-              ? option.username
+              ? "Credentials configured"
               : `Not configured — set ${option.username_env} and ${option.password_env} in server/.env`,
           }))}
           onChange={setAccount}
@@ -116,7 +116,7 @@ export default function RideMetroPanel() {
       <LaunchBar
         summary={
           selected?.configured
-            ? `Runs as ${selected.label} (${selected.username}) — sweeps every agency in that network whose registration is Complete, and captures their open public opportunities.`
+            ? `Runs as ${selected.label} — sweeps every agency in that network whose registration is Complete, and captures their open public opportunities.`
             : "Choose a configured account to run."
         }
       >

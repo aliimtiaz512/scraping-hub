@@ -52,7 +52,18 @@ results.
 - **SAM.gov** — searches active solicitations by updated-date range and NAICS
   code, extracts each notice with its attachments, and scores every bid through
   the evaluation funnel (see below). No credentials required.
-- **Unison Marketplace** — vendored engine; scrapes buyer requests.
+- **Unison Marketplace** — vendored engine, extended to a full pipeline: reads
+  the seller dashboard at **100 per page across every page**, opens each buy's
+  detail page, stores its **General Buy Information**, line items and shipping
+  (place of performance), **downloads every Buy Attachment**, and runs the bid
+  through the **same evaluator SAM uses** (Company_Bid_Selection_Criteria.docx)
+  for a PURSUE / REJECT / MANUAL_REVIEW verdict. The export carries the decision
+  and its reason; the evaluator's working-out stays in the database.
+  The one launch option is the portal's own **Filter By** criterion, picked in
+  the console (default "Select Criteria" — the whole listing). The
+  description-keyword exclusions and the shared 7-day close-date rule remain off
+  for the testing phase; each is a boolean in
+  `app/scrapers/unison/filters.py`.
 
 **Reference / support:**
 

@@ -181,11 +181,10 @@ export interface RunStatus {
   agencies_found?: number;
   agencies_scraped?: number;
   bids_closing_soon?: number;
-  /** Which login the run used, and its masked username — the two accounts sweep
-   *  different networks, so a finished run has to say which one it was. */
+  /** Which login the run used — the two accounts sweep different networks, so a
+   *  finished run has to say which one it was. Named, never addressed. */
   account?: string;
   account_label?: string;
-  account_username?: string;
   // BidNet: how the run's records broke down by completeness.
   bids_fully_extracted?: number;
   bids_partial?: number;
@@ -195,8 +194,20 @@ export interface RunStatus {
   date_to?: string | null;
   naics_codes?: string[];
   award_notice?: boolean;
-  // Unison-only.
+  // Unison-only. No longer set by new runs — a run takes no parameters and the
+  // scraper's filters are all off for testing (app/scrapers/unison/filters.py).
+  // Kept so runs recorded before that still render their filter in the history.
   filter_by?: string | null;
+  /** The portal's Filter By criterion this run used: the option value and its
+   *  label. `-1` / "Select Criteria" means the whole listing. */
+  filter_id?: string;
+  filter_label?: string;
+  pages_scraped?: number;
+  /** How the run's buys came out of the evaluator, e.g. `{PURSUE: 4, REJECT: 20}`. */
+  decisions?: Record<string, number>;
+  /** Which of the Unison scraper's filters ran, and a one-line rendering of
+   *  them. The keyword and close-date filters stay off for the testing phase. */
+  filters_active?: Record<string, boolean>;
   // BidNet-only: which niche the run is searching, and how many keywords it
   // owns. `keyword`/`keyword_progress` track the one being searched now.
   niche_label?: string;
@@ -312,14 +323,13 @@ export function startMyFloridaScrape({
 
 /** One of the two RideMetro logins a run can use. Separate accounts belong to
  *  separate Euna Supplier Networks, so the choice decides which agencies get
- *  swept — not just who signs in. Never carries a password; `username` arrives
- *  masked, and `configured` is false when either key is missing from the
- *  server's .env, which is what makes the option unselectable. */
+ *  swept — not just who signs in. Carries no credentials and no login address:
+ *  an account is identified by its label. `configured` is false when either key
+ *  is missing from the server's .env, which is what makes it unselectable, and
+ *  the `*_env` names say which keys to fill in. */
 export interface RideMetroAccount {
   key: string;
   label: string;
-  /** Masked, e.g. `Ra…@hoopoelabs.com`, or "(not set)". */
-  username: string;
   configured: boolean;
   username_env: string;
   password_env: string;
@@ -582,14 +592,27 @@ export function getRunScreenshot(runId: string): Promise<{ screenshot: string | 
 
 // -- Unison Marketplace ------------------------------------------------------
 
+/** One option of the portal's own "Filter By" dropdown. `value` is what the
+ *  scraper selects on the page (`-1` = "Select Criteria", i.e. no filter). */
+export interface UnisonFilter {
+  value: string;
+  label: string;
+}
+
+export function getUnisonFilters(): Promise<{ filters: UnisonFilter[]; default: string }> {
+  return request("/unison/filters");
+}
+
+/** Start a Unison run. The only choice is the portal's Filter By criterion —
+ *  everything else about how a run is narrowed lives server-side in
+ *  app/scrapers/unison/filters.py. */
 export function startUnisonScrape(
-  filterBy: string,
+  filterId: string,
   livePreview = false,
-): Promise<{ run_id: string; search: string; folder: string }> {
-  return request(`/unison/scrape${livePreviewQuery(livePreview)}`, {
-    method: "POST",
-    body: JSON.stringify({ filter_by: filterBy || null }),
-  });
+): Promise<{ run_id: string; search: string; filter_id: string; folder: string }> {
+  const query = new URLSearchParams({ filter_id: filterId });
+  if (livePreview) query.set("live_preview", "true");
+  return request(`/unison/scrape?${query}`, { method: "POST" });
 }
 
 // -- NAICS reference tool ----------------------------------------------------

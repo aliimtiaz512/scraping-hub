@@ -1,11 +1,25 @@
-"""Background-task runner for the vendored Unison engine.
+"""Background-task runner for the Unison pipeline.
 
-The vendored ``UnisonMarketplaceScraper.run_scraper`` logs in, scrapes the seller
-dashboard, and writes a CSV. This runner redirects that CSV into the run folder,
-reads it back into records, and stores them the hub way (DB-first + Excel).
+Two passes over one logged-in session:
+
+  1. **The listing.** The vendored engine signs in, sets Show to 100, applies
+     the run's Filter By criterion, and walks every page, returning one row per
+     buy with the link to its detail page.
+  2. **Each buy.** Its detail page is parsed (`detail`), its attachments fetched
+     and read (`documents`), and the whole thing put through the company
+     criteria (`evaluation`, over the shared SAM funnel). A buy that fails keeps
+     its listing fields, carries the error, and stays in the report.
+
+The run delivers **the spreadsheet and nothing else**. Attachments exist to be
+read into the decision, so they are fetched into a scratch directory outside the
+run's workspace and deleted with it at the end — see EXCEL_ONLY_PORTALS in
+app/core/exports.py. Their names survive in the report.
+
+The one thing a caller chooses is the portal's Filter By criterion. The
+description-keyword exclusions and the 7-day close-date rule stay off for the
+testing phase, in `filters`, which is also where each is switched back on.
 """
 
-import csv
 import logging
 import os
 import shutil
@@ -16,21 +30,23 @@ from typing import Any
 
 from app.config import ENV_FILE, settings
 from app.core import credentials, live, run_manager
-from app.core.closing_filter import MIN_DAYS_UNTIL_CLOSE, filter_records
+from app.core.closing_filter import MIN_DAYS_UNTIL_CLOSE
 from app.core.filenames import sanitize_filename
-from app.scrapers.unison import export
+from app.scrapers.unison import detail, documents, export, filters
+from app.scrapers.unison import evaluation as unison_evaluation
 from app.scrapers.unison.engine.unison_scraper import UnisonMarketplaceScraper
 from app.core.exports import archive_run
 from app.services.notifier import notify_scrape_completion
 
 logger = logging.getLogger(__name__)
 
-# CSV header -> model field.
-_CSV_MAP = {
+# Listing row key -> model field.
+_LISTING_MAP = {
     "Buyer#": "buyer_number",
     "Buyer Description": "buyer_description",
     "Buyer": "buyer",
     "End Date": "end_date",
+    "Detail URL": "detail_url",
 }
 
 
@@ -86,55 +102,199 @@ def _verify_credentials(run_id: str) -> None:
         raise RuntimeError(failures[0])
 
 
-def _read_records(csv_path: Path) -> list[dict[str, Any]]:
-    if not csv_path.exists():
-        return []
+def _listing_records(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The engine's listing rows in hub field names, with the Buy # split."""
     records: list[dict[str, Any]] = []
-    with open(csv_path, "r", newline="", encoding="utf-8") as f:
-        for row in csv.DictReader(f):
-            records.append({field: (row.get(header, "") or "") for header, field in _CSV_MAP.items()})
+    for row in rows:
+        record = {field: (row.get(key, "") or "") for key, field in _LISTING_MAP.items()}
+        record["buyer_number"], record["bid_upload_count"] = detail.split_buy_number(
+            record.get("buyer_number", "")
+        )
+        records.append(record)
     return records
 
 
-def execute_run(run_id: str, filter_by: str | None = None) -> None:
+def _scrape_detail(
+    scraper: Any,
+    session: Any,
+    record: dict[str, Any],
+    docs_root: Path,
+) -> dict[str, Any]:
+    """Open one buy's detail page, download its documents, and evaluate it.
+
+    Returns the record enriched in place-safe fashion: General Information
+    fields, line items, the sections kept for the record, the saved documents,
+    and the verdict. A buy whose detail page cannot be read keeps its listing
+    fields and is flagged, rather than being dropped from the report.
+    """
+    url = record.get("detail_url")
+    if not url:
+        record["error"] = "no detail link on the listing row"
+        return record
+
+    scraper.driver.get(url)
+    parsed = detail.parse(scraper.driver.page_source, url)
+    general = parsed["general_info"]
+
+    # The detail page's own values win over the listing's: its Buy Description
+    # is the clean one, and its End Date is a date rather than the dashboard's
+    # three-line "08/06/2026 15:00 ET 4hrs 13mins" blob.
+    for field in (
+        "solicitation_number", "category", "subcategory", "naics",
+        "naics_size_standard", "sam_contract_opportunity", "set_aside",
+        "end_time", "seller_question_deadline", "delivery", "repost_reason",
+    ):
+        record[field] = general.get(field)
+    if general.get("buy_description"):
+        record["buyer_description"] = general["buy_description"]
+    if general.get("end_date"):
+        record["end_date"] = general["end_date"]
+    if general.get("buyer"):
+        record["buyer"] = general["buyer"]
+
+    shipping = parsed["shipping"]
+    record["shipping_city"] = shipping.get("city")
+    record["shipping_state"] = shipping.get("state")
+    record["shipping_zip"] = shipping.get("zip")
+
+    record["line_items"] = parsed["line_items"]
+    record["line_item_count"] = len(parsed["line_items"])
+    record["seller_attachments_required"] = parsed["seller_attachments_required"]
+    # Kept for the record and for the evaluator's body text; never exported.
+    record["detail_sections"] = {
+        "bidding_requirements": parsed["bidding_requirements"],
+        "buy_terms": parsed["buy_terms"],
+        "general_info_extra": general.get("extra", {}),
+    }
+
+    # Documents: fetched into the run's scratch directory — outside the
+    # workspace, so nothing reaches the deliverable — read into the text the
+    # evaluator sees, and thrown away with that directory when the run ends.
+    # What the report keeps is their names.
+    document_text = ""
+    if parsed["attachments"]:
+        folder = docs_root / sanitize_filename(record.get("buyer_number") or "buy", max_length=80)
+        saved = documents.download(session, parsed["attachments"], folder)
+        record["attachments"] = saved
+        record["attachment_count"] = sum(1 for a in saved if a.get("file"))
+        document_text = documents.extract_text(folder)
+    else:
+        record["attachments"] = []
+        record["attachment_count"] = 0
+
+    # Evaluation — the shared funnel, over the description, the NAICS, and
+    # everything the page and its documents said.
+    verdict = unison_evaluation.evaluate(
+        {**record, "buy_description": record.get("buyer_description"),
+         "general_info": general, "bidding_requirements": parsed["bidding_requirements"],
+         "buy_terms": parsed["buy_terms"], "shipping": shipping,
+         "buy_number": record.get("buyer_number")},
+        document_text,
+    )
+    record["hint_evidence"] = verdict.pop("hint_evidence", "")
+    record.update(verdict)
+    return record
+
+
+def execute_run(run_id: str) -> None:
     run_manager.update_run(run_id, status="running", step="scraping")
     _save_run_row(run_id)
 
     run_dir = run_manager.run_folder(run_id)
     records: list[dict[str, Any]] = []
-    # The engine's CSV is an internal intermediate — keep it out of
-    # data/documents entirely (it is read back below, then discarded).
-    csv_dir = Path(tempfile.mkdtemp(prefix="unison_"))
+    run = run_manager.get_run(run_id) or {}
+    filter_id = str(run.get("filter_id") or filters.DEFAULT_FILTER_ID)
+    scraper = None
+    # Attachments are read for the decision and discarded with this directory.
+    # Deliberately outside the run's workspace: a run delivers the spreadsheet,
+    # and nothing that lands here can end up in it.
+    docs_root = Path(tempfile.mkdtemp(prefix="unison_docs_"))
     try:
         _verify_credentials(run_id)
-        run_manager.update_run(run_id, step="scraping")
+        run_manager.update_run(run_id, step="reading_listing")
 
+        logger.info("[run %s] filters active: %s", run_id, filters.summary(filter_id))
         scraper = UnisonMarketplaceScraper()
         # Hidden by default; show the browser only for a live-preview run.
-        scraper.headless = not (run_manager.get_run(run_id) or {}).get("live_preview", False)
-        scraper.csv_file = str(csv_dir / "unison_requests.csv")
+        scraper.headless = not run.get("live_preview", False)
+        # The engine drops a request whose description matches one of these;
+        # empty while the exclusions are off, so nothing is dropped.
+        scraper.keywords_to_exclude = filters.excluded_keywords()
         live.register(run_id, scraper)  # shared live-screenshot endpoint
-        scraper.run_scraper(filter_by=filter_by)
 
-        records = _read_records(Path(scraper.csv_file))
-
-        # Keep only requests still at least MIN_DAYS_UNTIL_CLOSE days from their
-        # End Date; unreadable end dates are kept and tallied (see closing_filter).
-        records, skipped_soon, unreadable_close = filter_records(records, lambda r: r.get("end_date"))
+        # Pass 1 — the listing: Show 100, the chosen Filter By, every page. The
+        # session is left open for the detail pass that follows.
+        rows = scraper.open_listing(filter_id=filter_id, page_size=filters.PAGE_SIZE)
+        records = _listing_records(rows)
         run_manager.update_run(
-            run_id,
-            min_days_until_close=MIN_DAYS_UNTIL_CLOSE,
-            bids_skipped_closing_soon=skipped_soon,
-            bids_kept_unreadable_close=unreadable_close,
+            run_id, bids_found=len(records), pages_scraped=scraper.pages_scraped,
         )
         logger.info(
-            "[run %s] close-date filter (≥%sd): kept %s, skipped %s closing soon, %s unreadable kept",
-            run_id, MIN_DAYS_UNTIL_CLOSE, len(records), skipped_soon, unreadable_close,
+            "[run %s] listing: %d buys across %d page(s)",
+            run_id, len(records), scraper.pages_scraped,
         )
+
+        # Pass 2 — each buy's detail page, documents and verdict. One failure
+        # costs that buy; the row stays in the report carrying its error.
+        session = documents.session_from_driver(scraper.driver)
+        for index, record in enumerate(records, start=1):
+            run_manager.update_run(
+                run_id,
+                step=f"detail ({index}/{len(records)}): {record.get('buyer_number', '')}",
+            )
+            try:
+                _scrape_detail(scraper, session, record, docs_root)
+            except Exception as exc:  # noqa: BLE001 — one buy must not sink the run
+                record["error"] = str(exc)[:300]
+                logger.exception("[run %s] %s failed", run_id, record.get("buyer_number"))
+                run_manager.add_error(run_id, f"{record.get('buyer_number')}: {str(exc)[:200]}")
+            run_manager.update_run(run_id, bids_processed=index)
+
+        documents_downloaded = sum(int(r.get("attachment_count") or 0) for r in records)
+        decisions: dict[str, int] = {}
+        for record in records:
+            decisions[record.get("decision") or "NOT_EVALUATED"] = (
+                decisions.get(record.get("decision") or "NOT_EVALUATED", 0) + 1
+            )
+        run_manager.update_run(
+            run_id, documents_downloaded=documents_downloaded, decisions=decisions,
+        )
+        logger.info("[run %s] decisions: %s | %d document(s) downloaded",
+                    run_id, decisions, documents_downloaded)
+
+        # The close-date rule is off for testing, so this passes every record
+        # through. The tallies are only published when it actually ran —
+        # reporting a filter that did nothing would put a note in the console
+        # claiming records were dropped.
+        records, skipped_soon, unreadable_close, applied = filters.apply_close_date_filter(
+            records, lambda r: r.get("end_date")
+        )
+        if applied:
+            run_manager.update_run(
+                run_id,
+                min_days_until_close=MIN_DAYS_UNTIL_CLOSE,
+                bids_skipped_closing_soon=skipped_soon,
+                bids_kept_unreadable_close=unreadable_close,
+            )
+            logger.info(
+                "[run %s] close-date filter (≥%sd): kept %s, skipped %s closing soon, %s unreadable kept",
+                run_id, MIN_DAYS_UNTIL_CLOSE, len(records), skipped_soon, unreadable_close,
+            )
 
         run_manager.update_run(run_id, bids_found=len(records), bids_processed=len(records))
         for rec in records[:100]:  # mirror a preview into the live run state
-            run_manager.add_bid_result(run_id, {**rec, "documents": [], "error": None})
+            run_manager.add_bid_result(run_id, {
+                "buyer_number": rec.get("buyer_number"),
+                "buyer_description": rec.get("buyer_description"),
+                "buyer": rec.get("buyer"),
+                "end_date": rec.get("end_date"),
+                "decision": rec.get("decision"),
+                "reason": rec.get("reason"),
+                # The console shows how many files a buy carried, not the
+                # evaluator's working-out.
+                "documents": [a.get("file") for a in (rec.get("attachments") or []) if a.get("file")],
+                "error": rec.get("error"),
+            })
         if not records:
             run_manager.update_run(run_id, no_results=True)
 
@@ -180,7 +340,14 @@ def execute_run(run_id: str, filter_by: str | None = None) -> None:
         run_manager.update_run(run_id, status="failed", step="failed")
     finally:
         live.unregister(run_id)
-        shutil.rmtree(csv_dir, ignore_errors=True)
+        # The engine leaves its browser open for the detail pass, so closing it
+        # is this runner's job — including when the run failed part-way.
+        shutil.rmtree(docs_root, ignore_errors=True)
+        if scraper is not None and getattr(scraper, "driver", None) is not None:
+            try:
+                scraper.driver.quit()
+            except Exception:  # noqa: BLE001 — the browser may already be gone
+                logger.debug("[run %s] browser already closed", run_id, exc_info=True)
         run_manager.update_run(run_id, finished_at=datetime.now().isoformat())
         _save_run_row(run_id)
         run_manager.remove_empty_folder(run_id)

@@ -29,7 +29,11 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin
 
-from selenium.common.exceptions import TimeoutException, WebDriverException
+from selenium.common.exceptions import (
+    StaleElementReferenceException,
+    TimeoutException,
+    WebDriverException,
+)
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support import expected_conditions as EC
@@ -286,12 +290,28 @@ class RideMetroScraper(BaseScraper):
         keeps the roster's elements alive across the sweep. When the click is
         swallowed (a re-render between reading the roster and clicking it) we
         fall back to opening the agency's URL ourselves, in this same tab.
+
+        The button is looked up again on a stale reference rather than given up
+        on: this list is a React component that re-renders on focus, and on a
+        network with a dozen agencies it does so often enough that a single
+        stale element would otherwise cost that agency's whole opportunity list.
         """
-        try:
-            button = self.wait(20).until(
-                EC.element_to_be_clickable(network.go_to_selector(agency.name))
-            )
-        except TimeoutException:
+        button = None
+        for attempt in (1, 2):
+            try:
+                button = self.wait(20).until(
+                    EC.element_to_be_clickable(network.go_to_selector(agency.name))
+                )
+                break
+            except StaleElementReferenceException:
+                logger.info(
+                    "[run %s] the My Network list re-rendered while opening %s — "
+                    "looking the button up again", self.run_id, agency.name,
+                )
+            except TimeoutException:
+                break
+
+        if button is None:
             logger.warning(
                 "[run %s] no 'Go to Agency' button for %s any more — opening %s directly",
                 self.run_id, agency.name, agency.url,
@@ -299,7 +319,18 @@ class RideMetroScraper(BaseScraper):
             self.navigate(agency.url)
             return False
 
-        handle = self._click_into_new_tab(button)
+        try:
+            handle = self._click_into_new_tab(button)
+        except StaleElementReferenceException:
+            # It went stale between the lookup and the click; the href is the
+            # same thing the button would have opened.
+            logger.warning(
+                "[run %s] 'Go to Agency' for %s went stale on click — opening %s directly",
+                self.run_id, agency.name, agency.url,
+            )
+            self.navigate(agency.url)
+            return False
+
         if handle:
             self.driver.switch_to.window(handle)
             return True
@@ -352,6 +383,10 @@ class RideMetroScraper(BaseScraper):
         self.scroll_into_view(element)
         try:
             element.click()
+        except StaleElementReferenceException:
+            # The element is gone from the DOM — a JS click on it cannot work
+            # either. The caller re-finds it or falls back to the URL.
+            raise
         except WebDriverException:
             # An overlay (cookie bar, sticky header) can intercept the click;
             # the DOM-level click is not subject to hit-testing.
@@ -427,11 +462,12 @@ class RideMetroScraper(BaseScraper):
         self.set_step("selecting_account")
         requested = (run_manager.get_run(self.run_id) or {}).get("account")
         self.account = accounts.require(requested)
+        # Key and label only: the run state goes to the console. The address is
+        # logged instead, where it helps and is not on screen.
         run_manager.update_run(
             self.run_id,
             account=self.account.key,
             account_label=self.account.label,
-            account_username=accounts.mask(self.account.username),
         )
         logger.info(
             "[run %s] signing in as %s (%s)",
