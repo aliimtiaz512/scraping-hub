@@ -1,11 +1,11 @@
 """NAICS reference tool routes — list, search, and a refresh scrape."""
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, or_, select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
-from app.core import run_manager
+from app.core import jobs, run_manager
 from app.db import get_session
 from app.scrapers.naics import runner
 from app.scrapers.naics.models import NaicsCode
@@ -55,11 +55,11 @@ def search_naics(
 
 
 @router.post("/scrape")
-def start_scrape(background_tasks: BackgroundTasks) -> dict:
+def start_scrape() -> dict:
     """Refresh the NAICS reference table from the source index page."""
     folder = run_manager.make_run_folder("Naics")
     run = run_manager.create_run("naics", folder, {"search": "NAICS reference refresh"})
-    background_tasks.add_task(runner.execute_run, run["run_id"])
+    jobs.submit(run["run_id"], runner.execute_run, run["run_id"])
     return {"run_id": run["run_id"]}
 
 

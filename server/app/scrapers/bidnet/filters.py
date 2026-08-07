@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
@@ -426,6 +427,11 @@ class SidebarFilterRequest(BaseModel):
     """
 
     status: str = DEFAULT_STATUS
+    # Terms BidNet should drop from the results, typed into the sidebar's
+    # Keywords panel. Free text rather than a catalog value — there is nothing
+    # to validate against, so it is normalised (see `excluded_keyword_list`) and
+    # passed through. Blank means the panel is never opened.
+    excluded_keywords: str = ""
     nigp_categories: list[str] = Field(default_factory=list)
     organizations: list[str] = Field(default_factory=list)
     locations: list[str] = Field(default_factory=list)
@@ -456,6 +462,41 @@ class SidebarFilterRequest(BaseModel):
             return None
         return cleaned
 
+    def excluded_keyword_list(self) -> list[str]:
+        """The excluded terms, however the user chose to separate them.
+
+        Commas, newlines and semicolons all separate; spaces do not, so a
+        multi-word term stays one term ("fire alarm" is a phrase, not two
+        exclusions). Duplicates and blanks are dropped, order kept.
+        """
+        raw = re.split(r"[,;\n\r]+", self.excluded_keywords or "")
+        return list(dict.fromkeys(term.strip() for term in raw if term.strip()))
+
+    def excluded_keywords_expression(self) -> str:
+        """The terms as BidNet's Keywords box actually reads them.
+
+        That box is a **boolean query field, not a list** — measured against the
+        live portal, where a search returning 1371 solicitations excluded:
+
+            software                 -> 1292   (79 dropped)
+            training                 -> 1316   (55 dropped)
+            software training        -> 1369   ) all three read as the single
+            software, training       -> 1369   ) phrase "software training",
+            software\\ntraining       -> 1369   ) which almost nothing matches
+            software OR training     -> 1251   (120 dropped — the union)
+
+        So separators have to become `OR`, or a multi-term exclusion silently
+        filters almost nothing while looking like it worked. Multi-word terms
+        are quoted so the phrase boundary is explicit inside the expression;
+        the portal treats `"fire alarm" OR training` and `fire alarm OR
+        training` identically, and a term the user already quoted is left alone.
+        """
+        parts = []
+        for term in self.excluded_keyword_list():
+            quoted = term.startswith('"') and term.endswith('"') and len(term) > 1
+            parts.append(term if quoted or " " not in term else f'"{term}"')
+        return " OR ".join(parts)
+
     def dates(self) -> list[tuple[str, DateFilter]]:
         """The date panels this request actually sets, as (api name, filter)."""
         return [
@@ -470,6 +511,9 @@ class SidebarFilterRequest(BaseModel):
     def summary(self) -> str:
         """One-line description for the run record / logs."""
         parts = [f"status={self.status}"]
+        excluded = self.excluded_keyword_list()
+        if excluded:
+            parts.append(f"excluded_keywords={len(excluded)}")
         for section in SECTIONS:
             chosen = self.selection_for(section)
             if chosen is not None:

@@ -165,6 +165,7 @@ class SAMGovScraper:
         date_to: str = None,
         naics_codes: list[str] | None = None,
         award_notice: bool = False,
+        run_id: str | None = None,
     ):
         self.award_notice = award_notice     # must be set BEFORE _load_config() reads it
         self._load_config()
@@ -251,9 +252,15 @@ class SAMGovScraper:
             if not self.base_url:
                 raise ValueError("urls.sam.base_url is missing from config.yml")
 
-        # temp_docs directory — one sub-folder per notice ID
-        self._temp_docs_dir = _SAM_DIR / "temp_docs"
-        self._temp_docs_dir.mkdir(exist_ok=True)
+        # temp_docs directory — one sub-folder per notice ID, under a folder of
+        # this scraper's own. Two concurrent SAM runs can hit the same notice,
+        # and each deletes a notice's folder once it has read the text out of
+        # it; sharing one directory meant the first to finish deleted the
+        # documents the second was still reading. A per-instance root keeps
+        # them apart. `run_id` is set by the hub's runner; a standalone run
+        # falls back to the object's id, which is equally unique in-process.
+        self._temp_docs_dir = _SAM_DIR / "temp_docs" / str(run_id or f"local-{id(self)}")
+        self._temp_docs_dir.mkdir(parents=True, exist_ok=True)
 
         # Convenience shortcuts
         self._timeouts       = self._cfg.get("timeouts", {})

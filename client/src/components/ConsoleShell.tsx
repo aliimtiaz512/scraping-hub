@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
+import ActiveJobs from "@/components/ActiveJobs";
+
 import Logo from "@/components/Logo";
 import PortalIcon from "@/components/PortalIcon";
 import { LinkButton } from "@/components/ui";
@@ -145,6 +147,11 @@ export default function ConsoleShell({ children }: { children: React.ReactNode }
           </div>
 
           <main className="mx-auto w-full max-w-5xl flex-1 px-5 py-8 sm:px-8">{children}</main>
+
+          {/* Every in-flight scrape, on every portal. Lives in the shell, not
+              on a page, so moving between portals never loses sight of a run —
+              the run belongs to the server, not to the page that started it. */}
+          <ActiveJobs />
 
           <footer className="border-t border-ink-200/70 px-5 py-5 sm:px-8">
             <p className="mx-auto max-w-5xl text-xs text-ink-400">

@@ -1,10 +1,10 @@
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import or_, select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
-from app.core import run_manager
+from app.core import jobs, run_manager
 from app.core.filenames import timestamp
 from app.db import get_session
 from app.scrapers.sam import runner
@@ -30,7 +30,7 @@ class EvaluateRequest(BaseModel):
 
 
 @router.post("/scrape")
-def start_scrape(request: ScrapeRequest, background_tasks: BackgroundTasks, live_preview: bool = False) -> dict:
+def start_scrape(request: ScrapeRequest, live_preview: bool = False) -> dict:
     date_from = (request.date_filter or "").strip() or None
     date_to = (request.date_to or "").strip() or None
     naics_codes = [c.strip() for c in (request.naics_codes or []) if c.strip()]
@@ -61,8 +61,7 @@ def start_scrape(request: ScrapeRequest, background_tasks: BackgroundTasks, live
             "live_preview": live_preview,
         },
     )
-    background_tasks.add_task(
-        runner.execute_run,
+    jobs.submit(run["run_id"], runner.execute_run,
         run["run_id"],
         date_from,
         date_to,

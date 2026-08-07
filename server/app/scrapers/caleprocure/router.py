@@ -6,9 +6,9 @@ search request body, the `/bids` listing, and the Excel export are added with
 the scraping flow, following the SEPTA router.
 """
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi import APIRouter, HTTPException
 
-from app.core import run_manager
+from app.core import jobs, run_manager
 from app.core.filenames import timestamp
 from app.scrapers.caleprocure.scraper import execute_run
 
@@ -16,13 +16,13 @@ router = APIRouter(prefix="/caleprocure", tags=["caleprocure"])
 
 
 @router.post("/scrape")
-def start_scrape(background_tasks: BackgroundTasks, live_preview: bool = False) -> dict:
+def start_scrape(live_preview: bool = False) -> dict:
     """Start a run. For now this signs in and verifies the session; the
     post-login scraping flow is added next."""
     label = timestamp()  # e.g. 2026-07-21 14-30-05
     folder = run_manager.make_run_folder(f"CalEProcure ({label})")
     run = run_manager.create_run("caleprocure", folder, {"label": label, "live_preview": live_preview})
-    background_tasks.add_task(execute_run, run["run_id"])
+    jobs.submit(run["run_id"], execute_run, run["run_id"])
     return {"run_id": run["run_id"], "folder": run["folder"]}
 
 

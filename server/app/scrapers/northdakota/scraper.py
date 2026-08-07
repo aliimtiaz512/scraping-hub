@@ -15,6 +15,8 @@ message rather than a bare timeout.
 """
 
 import logging
+import shutil
+import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
@@ -514,6 +516,57 @@ class NorthDakotaScraper(BaseScraper):
 
     # -- orchestration ------------------------------------------------------
 
+    def _profile_for_this_run(self) -> str:
+        """A private copy of the ND Chrome profile, for this run alone.
+
+        The saved profile is what lets a later run skip the B2C reCAPTCHA, so it
+        has to persist — but Chrome takes an exclusive lock on a `--user-data-dir`,
+        so two concurrent North Dakota runs pointed at the same directory means
+        the second browser refuses to start (and, worse, can corrupt the session
+        the first one is relying on). Every other portal gets a throwaway
+        profile and is unaffected; this is the one that shares.
+
+        So: copy the saved profile aside, run against the copy, and copy it back
+        at the end (`_save_profile`) if this run got further than the last. Two
+        runs can then overlap; the later finisher's session wins, which is the
+        same outcome as running them one after the other.
+        """
+        working = Path(tempfile.mkdtemp(prefix=f"nd_profile_{self.run_id}_"))
+        self._profile_copy = working / "profile"
+        source = settings.northdakota_profile_path
+        try:
+            if any(source.iterdir()):
+                shutil.copytree(source, self._profile_copy, dirs_exist_ok=True)
+                logger.info("[run %s] using a private copy of the ND Chrome profile", self.run_id)
+            else:
+                self._profile_copy.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            logger.warning(
+                "[run %s] could not copy the ND profile — starting from a blank one; "
+                "the B2C challenge will need solving again",
+                self.run_id, exc_info=True,
+            )
+            self._profile_copy.mkdir(parents=True, exist_ok=True)
+        return str(self._profile_copy)
+
+    def _save_profile(self) -> None:
+        """Copy this run's profile back over the saved one, then clean up.
+
+        Best-effort in both directions: a failed copy costs the next run its
+        saved session (it solves the challenge again), never the run's results.
+        """
+        copy = getattr(self, "_profile_copy", None)
+        if copy is None:
+            return
+        try:
+            if copy.is_dir() and any(copy.iterdir()):
+                shutil.copytree(copy, settings.northdakota_profile_path, dirs_exist_ok=True)
+        except OSError:
+            logger.warning("[run %s] could not save the ND Chrome profile", self.run_id, exc_info=True)
+        finally:
+            shutil.rmtree(copy.parent, ignore_errors=True)
+            self._profile_copy = None
+
     def run(self) -> None:
         run_manager.update_run(self.run_id, status="running")
         self._save_run_row()
@@ -522,7 +575,7 @@ class NorthDakotaScraper(BaseScraper):
             # B2C reCAPTCHA, and use a persistent profile so the session survives
             # between runs (later runs usually skip the challenge entirely).
             if settings.northdakota_manual_login:
-                self.start_driver(headless=False, user_data_dir=str(settings.northdakota_profile_path))
+                self.start_driver(headless=False, user_data_dir=self._profile_for_this_run())
             else:
                 self.start_driver()
             self.login()
@@ -592,6 +645,8 @@ class NorthDakotaScraper(BaseScraper):
             run_manager.update_run(self.run_id, status="failed", step="failed")
         finally:
             self.cleanup()
+            # After the browser is closed, so Chrome has flushed its profile.
+            self._save_profile()
             run_manager.update_run(self.run_id, finished_at=datetime.now().isoformat())
             self._save_run_row()
             run_manager.remove_empty_folder(self.run_id)

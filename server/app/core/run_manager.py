@@ -32,6 +32,9 @@ _stopped: set[str] = set()
 
 # Terminal statuses — a run in any of these is finished and no longer active.
 TERMINAL_STATUSES = ("completed", "failed", "stopped")
+# Statuses a run can be stopped from: queued (waiting for a slot — see
+# app/core/jobs) and everything up to and including execution.
+STOPPABLE_STATUSES = ("pending", "queued", "running")
 
 
 def _persist(run: dict[str, Any]) -> None:
@@ -89,7 +92,7 @@ def load_persisted_runs() -> None:
             run_id = run.get("run_id")
             if not run_id:
                 continue
-            if run.get("status") in ("pending", "running"):
+            if run.get("status") in STOPPABLE_STATUSES:
                 run["status"] = "failed"
                 run["step"] = "interrupted"
                 run["finished_at"] = run.get("finished_at") or datetime.now().isoformat()
@@ -122,7 +125,9 @@ def create_run(scraper: str, folder: Path, fields: dict[str, Any] | None = None)
     run = {
         "run_id": run_id,
         "scraper": scraper,
-        "status": "pending",  # pending | running | completed | failed
+        # pending -> queued (waiting for a slot) -> running -> completed |
+        # failed | stopped. See app/core/jobs for who moves it between them.
+        "status": "pending",
         "step": "queued",
         "started_at": datetime.now().isoformat(),
         "finished_at": None,
@@ -173,7 +178,7 @@ def request_stop(run_id: str) -> bool:
     """
     with _lock:
         run = _runs.get(run_id)
-        if not run or run.get("status") not in ("pending", "running"):
+        if not run or run.get("status") not in STOPPABLE_STATUSES:
             return False
         _stopped.add(run_id)
         run["status"] = "stopped"

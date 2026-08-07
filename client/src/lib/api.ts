@@ -134,12 +134,65 @@ export interface RideMetroAgency {
   error?: string | null;
 }
 
+/** One row of the Active Jobs panel: a run on any portal, trimmed to what the
+ *  panel shows. Deliberately not the whole run — that carries every scraped bid.
+ *  Served by `GET /runs`, which spans every portal in one request. */
+export interface Job {
+  run_id: string;
+  scraper: Portal | typeof SWEEP_SCRAPER;
+  status: RunStatus["status"];
+  step: string;
+  started_at: string;
+  finished_at: string | null;
+  bids_found: number;
+  bids_processed: number;
+  documents_downloaded: number;
+  /** 0 while running; 1 = next in line, 2 = behind one other, and so on. */
+  queue_position?: number;
+  errors: number;
+  warnings: number;
+  /** The most recent log line's sequence number, for the tail poller. */
+  log_seq: number;
+  // Whichever of these the owning portal sets — the job's subtitle.
+  label?: string;
+  search?: string;
+  account_label?: string;
+  niche_label?: string;
+  filter_label?: string;
+  module?: string;
+}
+
+/** How many runs are executing, waiting, and allowed at once. */
+export interface JobCapacity {
+  running: number;
+  queued: number;
+  capacity: number;
+}
+
+export interface JobLogLine {
+  seq: number;
+  ts: number | null;
+  level: string;
+  logger: string;
+  message: string;
+}
+
+export function getJobs(activeOnly = true): Promise<{ jobs: Job[]; capacity: JobCapacity }> {
+  return request(`/runs?active=${activeOnly}`);
+}
+
+export function getJobLogs(runId: string, after = 0): Promise<{ lines: JobLogLine[]; seq: number }> {
+  return request(`/runs/${runId}/logs?after=${after}`);
+}
+
 export interface RunStatus {
   run_id: string;
   // The sweep runs under its own key rather than a `Portal` — see the sweep
   // section below for why it isn't one.
   scraper?: Portal | typeof SWEEP_SCRAPER;
-  status: "pending" | "running" | "completed" | "failed" | "stopped";
+  // queued = accepted and waiting for a slot in the scrape pool
+  // (app/core/jobs.py); it has not started and no browser exists yet.
+  status: "pending" | "queued" | "running" | "completed" | "failed" | "stopped";
   step: string;
   // MyFlorida-only
   category?: string;
@@ -425,6 +478,10 @@ export interface BidnetFilters {
   general_requirements?: string[];
   published_date?: BidnetDateFilter | null;
   closing_date?: BidnetDateFilter | null;
+  /** Free text typed into BidNet's own Keywords panel — terms to drop from the
+   *  results. Comma, semicolon or newline separated; spaces do not separate, so
+   *  a multi-word entry stays one phrase. Blank leaves the panel untouched. */
+  excluded_keywords?: string;
 }
 
 export function getBidnetFilters(): Promise<BidnetFilterCatalog> {

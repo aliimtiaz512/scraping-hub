@@ -153,6 +153,10 @@ def execute_run(
             date_to=date_to,
             naics_codes=naics_codes or [],
             award_notice=award_notice,
+            # Keeps this run's downloaded attachments in a folder of its own —
+            # two concurrent SAM runs can otherwise delete each other's while
+            # extracting text from the same notice.
+            run_id=run_id,
         )
         scraper._stop_event = stop_event
         scraper.skip_csv = True            # DB-only; no CSV files

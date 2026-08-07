@@ -337,16 +337,20 @@ export function DataTable({
 export function RunBadge({
   status,
 }: {
-  status: "pending" | "running" | "completed" | "failed" | "stopped";
+  status: "pending" | "queued" | "running" | "completed" | "failed" | "stopped";
 }) {
   const map = {
+    // pending is the instant between the run being registered and the pool
+    // accepting it; queued is waiting for a slot. Both read as "Queued" to a
+    // user — the distinction only matters inside the server.
     pending: { cls: "border-ink-200 bg-ink-50 text-ink-600", label: "Queued" },
+    queued: { cls: "border-ink-200 bg-ink-50 text-ink-600", label: "Queued" },
     running: { cls: "border-gold-300 bg-gold-50 text-gold-700", label: "Running" },
     completed: { cls: "border-emerald-200 bg-emerald-50 text-emerald-700", label: "Completed" },
     failed: { cls: "border-red-200 bg-red-50 text-red-700", label: "Failed" },
     stopped: { cls: "border-ink-300 bg-ink-100 text-ink-700", label: "Stopped" },
   }[status];
-  const live = status === "running" || status === "pending";
+  const live = status === "running" || status === "pending" || status === "queued";
   return (
     <span className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded-full border px-2.5 py-0.5 text-xs font-medium ${map.cls}`}>
       {live && <span className="status-pulse h-1.5 w-1.5 rounded-full bg-current" />}

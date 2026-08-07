@@ -113,6 +113,51 @@ Three DOM facts drive how these are set:
    Every toggle goes through `execute_script("arguments[0].click()")`, which
    reaches the input and still fires the page's handlers.
 
+### The Keywords panel (Excluded Keywords)
+
+The one free-text panel. No catalog, no hidden field — a textarea and the
+panel's own Apply button:
+
+| Control | Selector |
+| --- | --- |
+| Excluded keywords | `#excludedKeywords` (`name="excludedKeywords"`, inside `#panel_keywords-body`, `data-filter-section="keywords"`) |
+| Apply | `#keywordsSearchButton` |
+| Clear | `#clearIncludedExcludedKeywords` |
+
+Two facts, both measured against the live portal rather than assumed:
+
+1. **The panel is collapsed by default** — the textarea reports
+   `offsetParent: null`, so `send_keys` raises "element not interactable". The
+   value is assigned through the DOM and followed by `input`/`change` events,
+   which reaches it whether or not the accordion happens to be open.
+2. **The box is a boolean query, not a list.** Against a search returning 1371
+   solicitations:
+
+   | typed into the box | results | excluded |
+   | --- | --- | --- |
+   | `software` | 1292 | 79 |
+   | `training` | 1316 | 55 |
+   | `software training` | 1369 | 2 |
+   | `software, training` | 1369 | 2 |
+   | `software\ntraining` | 1369 | 2 |
+   | **`software OR training`** | **1251** | **120** |
+
+   Spaces, commas and newlines all collapse into a single *phrase*, which
+   almost nothing matches — so a multi-term exclusion entered any of those ways
+   silently filters nothing while looking like it worked. The frontend accepts
+   commas/newlines because that is how people write lists;
+   `SidebarFilterRequest.excluded_keywords_expression()` translates them into
+   the `OR` form, quoting multi-word terms so the phrase boundary is explicit
+   (`"fire alarm" OR training`, which the portal treats identically to the
+   unquoted form).
+
+Applied last in `SidebarDriver.apply()`, so the exclusions bite on whatever the
+other panels narrowed to. Blank means the panel is never touched. The wait after
+Apply is anchored on a current results row going **stale**, not on rows being
+present: the old rows stay in the DOM until the postback swaps them, so a
+presence wait returns instantly and the caller reads the previous page — which
+is exactly what happened when re-reading the count straight after an apply.
+
 ### Reading the options ("View All")
 
 Each panel renders only its ~12 highest-count options inline. The rest are behind

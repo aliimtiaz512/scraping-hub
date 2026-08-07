@@ -163,6 +163,12 @@ class Settings(BaseSettings):
     # so downloads of runs made before the switch still resolve.
     download_dir: str = "../data/documents"
 
+    # How many scrapes may run at once; the rest queue (see app/core/jobs.py).
+    # Chrome is what sets this — each run drives its own browser at roughly
+    # 300–500 MB, and an over-subscribed host loses one to the OOM killer
+    # mid-run rather than running them all slowly. Raise it on a bigger box.
+    scrape_concurrency: int = 3
+
     # Scratch workspace for in-flight runs: bid documents (and the browser's
     # download staging) land here while a run is going, get zipped into the
     # run's archive on completion, and the whole folder is deleted. Defaults to

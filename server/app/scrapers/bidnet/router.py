@@ -1,7 +1,7 @@
 import tempfile
 from pathlib import Path
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
@@ -10,7 +10,7 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.core import run_manager
+from app.core import jobs, run_manager
 from app.core.filenames import timestamp
 from app.db import get_session
 from app.scrapers.bidnet import export, filters, niches as niche_catalog, storage
@@ -46,7 +46,7 @@ def filter_catalog() -> dict:
 
 
 @router.post("/filters/refresh")
-def refresh_filters(background_tasks: BackgroundTasks, live_preview: bool = False) -> dict:
+def refresh_filters(live_preview: bool = False) -> dict:
     """Re-harvest the full option lists from the portal's "View All" dialogs.
 
     Runs as a normal background run (poll it on /scrape/status/{run_id}) because
@@ -58,7 +58,7 @@ def refresh_filters(background_tasks: BackgroundTasks, live_preview: bool = Fals
         folder,
         {"label": "filter options", "keyword": "filter option discovery", "live_preview": live_preview},
     )
-    background_tasks.add_task(execute_discovery, run["run_id"])
+    jobs.submit(run["run_id"], execute_discovery, run["run_id"])
     return {"run_id": run["run_id"]}
 
 
@@ -93,7 +93,6 @@ def list_niches(session: Session = Depends(get_session)) -> dict:
 @router.post("/scrape")
 def start_scrape(
     request: ScrapeRequest,
-    background_tasks: BackgroundTasks,
     live_preview: bool = False,
     session: Session = Depends(get_session),
 ) -> dict:
@@ -154,7 +153,7 @@ def start_scrape(
             "filters_summary": sidebar.summary(),
         },
     )
-    background_tasks.add_task(execute_run, run["run_id"], niche.key, sidebar)
+    jobs.submit(run["run_id"], execute_run, run["run_id"], niche.key, sidebar)
     return {
         "run_id": run["run_id"],
         "niche": niche.key,

@@ -35,6 +35,25 @@ interface Props {
 /** Options above this get a filter box rather than an unusable wall of chips. */
 const SEARCHABLE_THRESHOLD = 20;
 
+/** Row key for the Keywords panel — free text, so it has no catalog section. */
+const EXCLUDED_KEYWORDS = "excluded_keywords";
+
+/** The terms as the backend will read them: commas, semicolons and newlines
+ *  separate, spaces do not (so "fire alarm" stays one phrase). */
+function excludedTerms(value?: string): string[] {
+  return (value ?? "")
+    .split(/[,;\n\r]+/)
+    .map((term) => term.trim())
+    .filter(Boolean);
+}
+
+function excludedSummary(value?: string): string {
+  const terms = excludedTerms(value);
+  if (terms.length === 0) return "None";
+  if (terms.length <= 2) return terms.join(", ");
+  return `${terms.slice(0, 2).join(", ")} +${terms.length - 2}`;
+}
+
 function toggle(list: string[], value: string): string[] {
   return list.includes(value) ? list.filter((item) => item !== value) : [...list, value];
 }
@@ -59,7 +78,8 @@ export default function BidnetFilters({
 
   const activeCount =
     catalog.sections.filter((section) => isNarrowed(section, selectionFor(section))).length +
-    catalog.dates.filter((section) => filters[section.name]).length;
+    catalog.dates.filter((section) => filters[section.name]).length +
+    (excludedTerms(filters.excluded_keywords).length > 0 ? 1 : 0);
 
   const toggleRow = (name: string) => setOpen((current) => (current === name ? null : name));
 
@@ -98,6 +118,20 @@ export default function BidnetFilters({
       </div>
 
       <div className="divide-y divide-ink-100 border-t border-ink-100">
+        <FilterRow
+          label="Excluded Keywords"
+          summary={excludedSummary(filters.excluded_keywords)}
+          narrowed={excludedTerms(filters.excluded_keywords).length > 0}
+          open={open === EXCLUDED_KEYWORDS}
+          onToggle={() => toggleRow(EXCLUDED_KEYWORDS)}
+        >
+          <ExcludedKeywords
+            value={filters.excluded_keywords ?? ""}
+            disabled={disabled}
+            onChange={(next) => onChange({ ...filters, excluded_keywords: next })}
+          />
+        </FilterRow>
+
         {catalog.sections.map((section) => {
           const selected = selectionFor(section);
           return (
@@ -198,6 +232,63 @@ function Chevron({ open }: { open: boolean }) {
     >
       <path d="M5.7 3.3a1 1 0 0 1 1.4 0l4 4a1 1 0 0 1 0 1.4l-4 4a1 1 0 1 1-1.4-1.4L9 8 5.7 4.7a1 1 0 0 1 0-1.4Z" />
     </svg>
+  );
+}
+
+/**
+ * BidNet's Keywords panel: terms to drop from the results.
+ *
+ * Free text rather than a chip list — there is no catalog to pick from, and the
+ * portal's own control is a textarea. What is typed here is written into that
+ * textarea and applied with the panel's Apply button during the run.
+ */
+function ExcludedKeywords({
+  value,
+  disabled,
+  onChange,
+}: {
+  value: string;
+  disabled?: boolean;
+  onChange: (value: string) => void;
+}) {
+  const terms = excludedTerms(value);
+
+  return (
+    <div>
+      <textarea
+        value={value}
+        disabled={disabled}
+        rows={3}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={"training, janitorial\nfire alarm inspection"}
+        aria-label="Excluded keywords"
+        className="w-full rounded-lg border border-ink-200 bg-white px-3 py-2 text-sm text-ink-900 shadow-sm transition placeholder:text-ink-300 focus:border-gold-400 focus:outline-none focus:ring-2 focus:ring-gold-400/30 disabled:cursor-not-allowed disabled:opacity-60"
+      />
+      <div className="mt-1.5 flex items-start justify-between gap-3">
+        <p className="text-xs leading-relaxed text-ink-500">
+          One term per line, or separated by commas. Spaces don&apos;t split a term, so{" "}
+          <span className="font-mono text-ink-600">fire alarm</span> stays one phrase. A
+          solicitation matching <em>any</em> term is dropped.
+        </p>
+        {terms.length > 0 && (
+          <MiniButton disabled={disabled} onClick={() => onChange("")}>
+            Clear
+          </MiniButton>
+        )}
+      </div>
+      {terms.length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {terms.map((term) => (
+            <span
+              key={term}
+              className="rounded-full border border-ink-200 bg-ink-50 px-2 py-0.5 font-mono text-xs text-ink-600"
+            >
+              {term}
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 

@@ -91,6 +91,29 @@ editable at runtime via the `/eval-config` endpoints. The generated SAM
 workbook uses the same styling as the source portal (navy header, REJECT rows
 tinted red, auto-fit columns).
 
+## Running jobs
+
+Every scrape runs on a dedicated thread pool (`app/core/jobs.py`), not on the
+request that started it — so a run belongs to the server, and navigating the
+console, closing the tab or switching portals has no effect on it.
+
+- **Concurrency is capped** at `SCRAPE_CONCURRENCY` (default 3). Each run drives
+  its own Chrome at roughly 300–500 MB; past the cap, runs wait as `queued`
+  rather than all starting and one being OOM-killed mid-flight.
+- **The pool is separate from the API's.** FastAPI dispatches sync endpoints
+  into anyio's shared 40-thread pool; a scrape parked there for ten minutes
+  holds a thread the API needs. Scrapes never touch it.
+- **Active Jobs** — a bar in the console footer, on every page, listing every
+  in-flight run across all portals with its step, elapsed time, live log tail
+  and a Stop control. Backed by `GET /runs?active=true` (one request covers
+  every portal) and `GET /runs/{id}/logs?after=N`.
+- **Stopping**: a queued run is cancelled outright and never starts a browser; a
+  running one is interrupted cooperatively as before. Both end as `stopped`.
+- **Isolation**: each run gets its own workspace, Chrome profile and download
+  directory. North Dakota's persistent profile is copied per run and saved back
+  (Chrome locks a `--user-data-dir`), and SAM's attachment scratch space is
+  per-run.
+
 ## Results delivery
 
 Nothing accumulates in `data/documents`. A run works inside a temporary
@@ -202,6 +225,7 @@ The check logs only a length/character-class/SHA-8 fingerprint, never a value.
 
 Storage & delivery (all optional — sensible defaults):
 
+- `SCRAPE_CONCURRENCY` — how many scrapes may run at once; the rest queue (default 3, set by Chrome's memory footprint)
 - `WORK_DIR` — scratch workspace for in-flight runs (default: system temp dir)
 - `ARCHIVE_DIR` — where finished-run ZIPs are stored (default `../data/archives`)
 - `PUBLIC_BASE_URL` — base URL for the download link in emails (default `http://localhost:8000`)

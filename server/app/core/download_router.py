@@ -15,9 +15,56 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse, Response
 from starlette.background import BackgroundTask
 
-from app.core import exports, live, run_manager
+from app.core import exports, jobs, live, run_logs, run_manager
 
 router = APIRouter(tags=["downloads"])
+
+# What the Active Jobs panel needs per run. Deliberately not the whole run dict:
+# that carries every scraped bid, which is megabytes on a large run and is
+# already served per portal to the panel that actually shows rows.
+_JOB_FIELDS = (
+    "run_id", "scraper", "status", "step", "started_at", "finished_at",
+    "bids_found", "bids_processed", "documents_downloaded", "queue_position",
+    # How each portal names the thing it is working on, for the job's subtitle.
+    "label", "search", "account_label", "niche_label", "filter_label", "module",
+)
+
+
+def _job(run: dict) -> dict:
+    """One row of the jobs list."""
+    job = {field: run.get(field) for field in _JOB_FIELDS}
+    job["errors"] = len(run.get("errors") or [])
+    job["warnings"] = len(run.get("warnings") or [])
+    job["log_seq"] = run_logs.latest_seq(run.get("run_id", ""))
+    return job
+
+
+@router.get("/runs")
+def list_all_runs(active: bool = False, portal: str | None = None, limit: int = 50) -> dict:
+    """Every portal's runs in one call — what the Active Jobs panel polls.
+
+    `active=true` narrows to the ones still going (queued or running), which is
+    the panel's normal mode: one request covers every portal, so the panel can
+    live in the console's layout and keep reporting while the user moves
+    between portals.
+    """
+    runs = run_manager.list_runs(portal)
+    if active:
+        runs = [r for r in runs if r.get("status") not in run_manager.TERMINAL_STATUSES]
+    return {"jobs": [_job(r) for r in runs[:limit]], "capacity": jobs.stats()}
+
+
+@router.get("/runs/{run_id}/logs")
+def run_log_tail(run_id: str, after: int = 0) -> dict:
+    """This run's recent log lines, newer than `after`.
+
+    The panel passes back the last `seq` it saw, so each poll carries only what
+    has happened since — see app/core/run_logs.
+    """
+    if not run_manager.get_run(run_id):
+        raise HTTPException(status_code=404, detail=f"Unknown run: {run_id}")
+    lines = run_logs.tail(run_id, after=after)
+    return {"lines": lines, "seq": lines[-1]["seq"] if lines else after}
 
 
 @router.get("/runs/{run_id}/screenshot")
@@ -32,16 +79,27 @@ def run_screenshot(run_id: str) -> dict:
 def stop_run(run_id: str) -> dict:
     """Stop an in-flight run, whichever scraper owns it.
 
-    SAM runs on its own threaded engine with a cooperative stop event, so those
-    are routed to it. Every other scraper is a BaseScraper: locking its run state
-    to "stopped" (run_manager) plus interrupting its browser (live.stop) unwinds
-    it cleanly. 409 if the run isn't in progress — there is nothing to stop.
+    A run still waiting for a slot is cancelled outright — its work is dropped
+    before it begins, and no browser is ever started. A run already executing is
+    stopped the cooperative way: SAM runs on its own threaded engine with a stop
+    event, so those are routed to it; every other scraper is a BaseScraper, where
+    locking the run state to "stopped" (run_manager) plus interrupting its
+    browser (live.stop) unwinds it cleanly. 409 if the run isn't in progress —
+    there is nothing to stop.
     """
     run = run_manager.get_run(run_id)
     if not run:
         raise HTTPException(status_code=404, detail=f"Unknown run: {run_id}")
-    if run.get("status") not in ("pending", "running"):
+    if run.get("status") not in run_manager.STOPPABLE_STATUSES:
         raise HTTPException(status_code=409, detail="Run is not in progress — nothing to stop.")
+
+    # Queued and not yet started: drop it from the pool. request_stop below then
+    # records the terminal status, so a cancelled job reads as "stopped" like
+    # any other — the user asked for it to not run, and it did not run.
+    cancelled = jobs.cancel(run_id)
+    if cancelled:
+        run_manager.request_stop(run_id)
+        return {"stopped": True, "run_id": run_id, "cancelled_before_start": True}
 
     if run.get("scraper") == "sam":
         # Lazy import to avoid a heavy engine import at module load.
@@ -51,7 +109,7 @@ def stop_run(run_id: str) -> dict:
     else:
         run_manager.request_stop(run_id)
         live.stop(run_id)
-    return {"stopped": True, "run_id": run_id}
+    return {"stopped": True, "run_id": run_id, "cancelled_before_start": False}
 
 
 @router.get("/runs/{run_id}/download")

@@ -1,9 +1,9 @@
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import or_, select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
-from app.core import run_manager
+from app.core import jobs, run_manager
 from app.core.filenames import timestamp
 from app.db import get_session
 from app.scrapers.unison import filters, runner
@@ -24,7 +24,6 @@ def list_filters() -> dict:
 
 @router.post("/scrape")
 def start_scrape(
-    background_tasks: BackgroundTasks,
     filter_id: str = Query(
         filters.DEFAULT_FILTER_ID,
         description="Portal 'Filter By' option value; -1 (Select Criteria) reads the whole listing",
@@ -67,7 +66,7 @@ def start_scrape(
             "filters_summary": filters.summary(filter_id),
         },
     )
-    background_tasks.add_task(runner.execute_run, run["run_id"])
+    jobs.submit(run["run_id"], runner.execute_run, run["run_id"])
     return {
         "run_id": run["run_id"], "search": search,
         "filter_id": filter_id, "folder": run["folder"],

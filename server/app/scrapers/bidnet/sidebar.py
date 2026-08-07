@@ -62,6 +62,17 @@ SETTLE_SECONDS = 3
 # that legitimately matches nothing has no rows, so waits on it are best-effort.
 RESULTS_ROW = "table tbody tr.mets-table-row"
 
+# The sidebar's Keywords panel. Unlike the list panels this is free text, so
+# there is no hidden field to write and no catalog to pick from: the terms are
+# typed into the textarea and the panel's own Apply button posts them.
+#
+#   <textarea id="excludedKeywords" name="excludedKeywords" rows="3" cols="25">
+#   <button id="keywordsSearchButton"  … >Apply</button>
+#   <button id="clearIncludedExcludedKeywords" … >Clear</button>
+EXCLUDED_KEYWORDS_ID = "excludedKeywords"
+KEYWORDS_APPLY_ID = "keywordsSearchButton"
+KEYWORDS_CLEAR_ID = "clearIncludedExcludedKeywords"
+
 # Reads a panel's <li data-filter-item-value> entries as {value, label}. Labels
 # come from the `title` attribute on <element> (the untruncated text) and fall
 # back to the checkbox's own .inputText.
@@ -192,6 +203,14 @@ class SidebarDriver:
             if self._apply_date(name, value):
                 applied_dates.append(f"{name}:{value.type}")
         report["dates"] = applied_dates
+
+        # Last, so the exclusions are applied to whatever the other panels
+        # narrowed the search to. No terms means the panel is never touched and
+        # the search stays exactly as it was.
+        expression = request.excluded_keywords_expression()
+        if expression and self._apply_excluded_keywords(expression):
+            report["excluded_keywords"] = request.excluded_keyword_list()
+            report["excluded_expression"] = expression
         return report
 
     def harvest(self) -> dict[str, list[dict[str, str]]]:
@@ -394,13 +413,89 @@ class SidebarDriver:
             text,
         )
 
-    def _click_apply(self, button_id: str) -> None:
-        """Press a date panel's Apply button, un-disabling it first.
+    def _apply_excluded_keywords(self, expression: str) -> bool:
+        """Write the exclusion expression into the Keywords panel and apply it.
 
-        It ships `class="… disabled"` / `aria-disabled="true"` and the page only
-        enables it once its own validation is happy; since we set the fields
-        programmatically that never fires, so the flags are cleared before the
-        click.
+        `expression` is already in the portal's own syntax — terms joined with
+        `OR`, phrases quoted — because the box is a boolean query field rather
+        than a list; see `SidebarFilterRequest.excluded_keywords_expression`.
+
+        Returns False, with a note, when the panel is not on the page — a
+        partial filter still yields usable (if broader) results, same as every
+        other panel here, and the run carries on.
+
+        The value is set through the DOM followed by `input`/`change` events,
+        not typed. The panel is **collapsed by default** — on the live portal the
+        textarea reports `offsetParent: null` — so `send_keys` raises
+        "element not interactable"; assigning the value reaches it regardless of
+        whether the accordion happens to be open.
+        """
+        text = expression
+        applied = self.driver.execute_script(
+            """
+            const box = document.getElementById(arguments[0]);
+            if (!box) return false;
+            box.value = arguments[1];
+            box.dispatchEvent(new Event('input', {bubbles: true}));
+            box.dispatchEvent(new Event('change', {bubbles: true}));
+            return true;
+            """,
+            EXCLUDED_KEYWORDS_ID,
+            text,
+        )
+        if not applied:
+            self.note(
+                "BidNet's sidebar had no Excluded Keywords box on this page — "
+                "the search ran without excluding those terms."
+            )
+            return False
+
+        # Hold a node from the *current* results before applying, so the wait can
+        # key off it being replaced. Waiting for rows to be "present" is not
+        # enough here: the old rows stay in the DOM until the postback swaps
+        # them, so that wait returns instantly and the caller reads the
+        # unfiltered page — measured on the live portal, where re-reading the
+        # count straight after an apply returned the previous filter's number.
+        anchor = self._results_anchor()
+        self._click_apply(KEYWORDS_APPLY_ID)
+        self._await_refresh(anchor)
+        logger.info("applied excluded keywords: %s", expression)
+        return True
+
+    def _results_anchor(self):
+        """A node from the current results, to watch for replacement. None if the
+        page has no rows yet (an empty search), where there is nothing to wait on."""
+        try:
+            return self.driver.find_element(By.CSS_SELECTOR, RESULTS_ROW)
+        except (WebDriverException, TimeoutException):
+            return None
+
+    def _await_refresh(self, anchor) -> None:
+        """Wait for the results to actually be replaced, then settle.
+
+        Falls back to the plain postback wait when there was no anchor to watch
+        — a search that matched nothing has no rows to go stale, and that is a
+        valid state rather than a failure.
+        """
+        if anchor is None:
+            self._await_postback()
+            return
+        try:
+            WebDriverWait(self.driver, POSTBACK_TIMEOUT).until(EC.staleness_of(anchor))
+        except (TimeoutException, WebDriverException):
+            # The portal can answer a filter that changes nothing without
+            # re-rendering; the settle below still gives the DOM time to catch up.
+            pass
+        self._await_postback()
+
+    def _click_apply(self, button_id: str) -> None:
+        """Press a panel's Apply button, un-disabling it first.
+
+        A date panel's button ships `class="… disabled"` / `aria-disabled="true"`
+        and the page only enables it once its own validation is happy; since we
+        set the fields programmatically that never fires, so the flags are
+        cleared before the click. The Keywords panel's button is not disabled to
+        begin with, and clearing flags it does not carry is harmless.
         """
         self.driver.execute_script(
             """

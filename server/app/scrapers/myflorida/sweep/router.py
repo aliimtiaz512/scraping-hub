@@ -7,13 +7,13 @@ flow so run history, downloads and the exports page never mix the two.
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
-from app.core import run_manager
+from app.core import jobs, run_manager
 from app.core.filenames import sanitize_filename
 from app.db import get_session
 from app.scrapers.myflorida.scraper import AD_STATUS_LABELS
@@ -71,7 +71,7 @@ def reload_niches() -> dict:
 
 @router.post("/scrape")
 def start_scrape(
-    request: SweepRequest, background_tasks: BackgroundTasks, live_preview: bool = False
+    request: SweepRequest, live_preview: bool = False
 ) -> dict:
     statuses = list(dict.fromkeys(request.ad_statuses))
     unknown = [s for s in statuses if s not in AD_STATUS_LABELS]
@@ -102,7 +102,7 @@ def start_scrape(
             "live_preview": live_preview,
         },
     )
-    background_tasks.add_task(execute_run, run["run_id"], statuses, request.max_bids)
+    jobs.submit(run["run_id"], execute_run, run["run_id"], statuses, request.max_bids)
     return {"run_id": run["run_id"], "search": search, "folder": run["folder"]}
 
 

@@ -1,10 +1,10 @@
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import or_, select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
-from app.core import run_manager
+from app.core import jobs, run_manager
 from app.core.filenames import timestamp
 from app.db import get_session
 from app.scrapers.northdakota.models import EXCEL_COLUMNS, NorthDakotaBid
@@ -20,7 +20,7 @@ class ScrapeRequest(BaseModel):
 
 
 @router.post("/scrape")
-def start_scrape(request: ScrapeRequest, background_tasks: BackgroundTasks, live_preview: bool = False) -> dict:
+def start_scrape(request: ScrapeRequest, live_preview: bool = False) -> dict:
     keyword = request.keyword.strip()
     commodity = request.commodity.strip()
     search = ", ".join(
@@ -44,7 +44,7 @@ def start_scrape(request: ScrapeRequest, background_tasks: BackgroundTasks, live
             "live_preview": live_preview,
         },
     )
-    background_tasks.add_task(execute_run, run["run_id"], keyword, commodity)
+    jobs.submit(run["run_id"], execute_run, run["run_id"], keyword, commodity)
     return {"run_id": run["run_id"], "search": search, "folder": run["folder"]}
 
 

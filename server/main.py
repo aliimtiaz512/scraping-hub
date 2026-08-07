@@ -3,7 +3,7 @@ import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.core import run_manager
+from app.core import run_logs, run_manager
 from app.core.download_router import router as download_router
 from app.db import init_db
 from app.scrapers.bidnet.router import router as bidnet_router
@@ -28,6 +28,9 @@ app = FastAPI(title="MFMP Bid Scraper", version="0.1.0")
 
 @app.on_event("startup")
 def _startup() -> None:
+    # Capture each run's log lines into its own tail, for the Active Jobs panel.
+    # Installed once, on the root logger: the scrapers log as they always have.
+    run_logs.install()
     try:
         init_db()
         logger.info("Database tables ready")

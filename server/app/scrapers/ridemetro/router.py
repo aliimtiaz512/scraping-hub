@@ -1,9 +1,9 @@
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
-from app.core import run_manager
+from app.core import jobs, run_manager
 from app.core.filenames import timestamp
 from app.db import get_session
 from app.scrapers.ridemetro import accounts
@@ -26,7 +26,6 @@ def list_accounts() -> dict:
 
 @router.post("/scrape")
 def start_scrape(
-    background_tasks: BackgroundTasks,
     account: str = Query(
         accounts.DEFAULT_ACCOUNT,
         description="Which login to run as: hoope_lab | fedpints",
@@ -61,7 +60,7 @@ def start_scrape(
             "account_label": selected.label,
         },
     )
-    background_tasks.add_task(execute_run, run["run_id"])
+    jobs.submit(run["run_id"], execute_run, run["run_id"])
     return {"run_id": run["run_id"], "folder": run["folder"], "account": selected.key}
 
 
