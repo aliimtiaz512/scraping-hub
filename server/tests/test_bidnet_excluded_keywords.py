@@ -100,8 +100,9 @@ def test_the_run_summary_counts_the_exclusions():
 class FakeDriver:
     """Records the script calls the sidebar makes, and answers them."""
 
-    def __init__(self, textarea_present: bool = True):
+    def __init__(self, textarea_present: bool = True, button_present: bool = True):
         self.textarea_present = textarea_present
+        self.button_present = button_present
         self.scripts: list[tuple[str, tuple]] = []
         self.typed: str | None = None
         self.clicked: list[str] = []
@@ -114,7 +115,13 @@ class FakeDriver:
             self.typed = args[1]
             return True
         if args and isinstance(args[0], str) and "Button" in args[0]:
+            # The page's own script returns null when the button is not there and
+            # a state object when it is — the caller relies on the difference to
+            # tell "applied" from "typed but never submitted".
+            if not self.button_present:
+                return None
             self.clicked.append(args[0])
+            return {"was_disabled": False}
         return None
 
     # The driver looks for a results row to watch for replacement. Report none —
@@ -171,3 +178,15 @@ def test_apply_reports_the_terms_it_applied(monkeypatch):
     assert report["excluded_keywords"] == ["training", "fire alarm"]
     assert report["excluded_expression"] == 'training OR "fire alarm"'
     assert fake.typed == 'training OR "fire alarm"' 
+
+
+def test_terms_typed_but_never_submitted_are_reported_not_claimed(monkeypatch):
+    """The Apply click was fire-and-forget: with no button on the page the terms
+    were written into the box, never posted, and the panel still reported the
+    exclusions as applied."""
+    monkeypatch.setattr(sidebar_module.SidebarDriver, "_await_postback", lambda self: None)
+    fake, notes, driver = driver_for(button_present=False)
+
+    assert driver._apply_excluded_keywords("training") is False
+    assert fake.typed == "training", "the box was still written"
+    assert any("never submitted" in note for note in notes)

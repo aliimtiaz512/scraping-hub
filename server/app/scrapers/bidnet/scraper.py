@@ -10,16 +10,34 @@ in sequence is what makes the bid count whole. Keywords come from the database
 Flow, per run:
 
     login
+    open_filtered_session                   <- ONCE: sidebar filters incl. the
+                                               Published/Closing Date panels
     for each keyword of the niche:          <- sequential, same session
         ensure_logged_in                    <- re-login if the session expired
-        search(keyword)
+        search(keyword)                     <- typed into the box in place; the
+                                               session's filters ride along
         result_count() == 0 ?  -> skip      <- fast-fail, no waiting on empty results
         filter to "Member Agency Bids"
-        apply the frontend's sidebar filters
+        confirm_filters_active              <- read-only; re-applies only on drift
         paginate, collecting solicitation links
     for each distinct solicitation link:    <- deduplicated across all keywords
         open it, scrape its fields, download every document
     write one master Excel, persist to the DB, package the run
+
+**The sidebar filters are applied once per run, not once per keyword.** They
+belong to the search form rather than to a keyword's results, so a new keyword
+typed into the box is searched *with them already in force* — which is both
+faster (one set of filter postbacks per run instead of one per keyword, on a
+portal where each is a full page round-trip) and safer: there is no longer a
+window in which a keyword's results are read before its date window landed.
+
+The cost of keeping them is that the page is no longer reloaded between
+keywords — a reload is what used to clear them. So the two things the reload was
+also doing are done explicitly instead: the keyword box is cleared through the
+DOM before the next term is typed (`search`), and the results are put back on
+page 1 before they are harvested (`_ensure_first_result_page`). Anything that
+does navigate — a re-login, a keyword that failed mid-page — marks the filters
+lost, and the next keyword re-establishes them before it searches.
 
 Everything lands in **one project folder** — per-bid document subfolders and the
 master spreadsheet at its root — because a run is a single niche and there is
@@ -29,6 +47,7 @@ nothing to split apart.
 import logging
 import time
 from collections import Counter
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -45,7 +64,7 @@ from app.core.base_scraper import BaseScraper, StopRequested
 from app.core.closing_filter import MIN_DAYS_UNTIL_CLOSE, days_until_close
 from app.core.filenames import sanitize_filename
 from app.db import SessionLocal
-from app.scrapers.bidnet import documents, export, niches, storage
+from app.scrapers.bidnet import documents, export, niches, selectors, storage
 from app.scrapers.bidnet.filters import SidebarFilterRequest
 from app.scrapers.bidnet.sidebar import SidebarDriver
 from app.core.exports import archive_run
@@ -69,6 +88,42 @@ SEARCH_SETTLE_SECONDS = 5  # after switching result group / paging results
 # and fetches the files over HTTP instead of clicking them one at a time.
 MAX_PAGES = 100  # pagination safety guard, same as the original
 
+# The shared close-date rule (app/core/closing_filter): keep only solicitations
+# still at least MIN_DAYS_UNTIL_CLOSE days from closing. **Off for the testing
+# phase** — a run collects every active opportunity the portal returns, whatever
+# its closing date, so what the scraper reports can be compared against what a
+# manual search shows without a date window in between.
+#
+# Switched rather than deleted: the rule, its tallies and its reporting are all
+# still here, and flipping this back to True restores them with no other change.
+APPLY_CLOSE_DATE_FILTER = False
+
+# ---------------------------------------------------------------------------
+# Testing-phase switches. Three lines, each independently revertible.
+# ---------------------------------------------------------------------------
+
+# Show the browser and slow the flow down so form interactions, date-picker
+# overlays and page reloads can be watched as they happen.
+#
+# **Set to True for production.** That is the only edit needed: with it back on,
+# runs are headless again and every `[LIVE DEBUG]` line and pacing pause below
+# disappears, because both hang off this flag alone. Per-run visibility does not
+# need this switch at all — the console's "Live preview" button already shows the
+# browser for a single run (see BaseScraper.start_driver); this is the blunt
+# always-on version for a debugging session.
+HEADLESS_MODE = False
+
+# Seconds to pause after a form interaction while HEADLESS_MODE is False, so a
+# watched step is readable rather than a flicker. Zero cost when headless.
+DEBUG_PAUSE_SECONDS = 1.5
+
+# Apply the sidebar's Published/Closing Date panels at all. Off skips them
+# entirely and searches on keyword + status alone — the fastest way to establish
+# whether a date panel is what is emptying a result set, since it removes the
+# panel from the run rather than trying to read its state. The panels themselves
+# are untouched; flipping this back to True restores them.
+APPLY_DATE_FILTERS = True
+
 # The result-group tab the scraper scrapes ("Member Agency Bids"). Its header
 # carries the authoritative hit count for the current search:
 #
@@ -79,6 +134,43 @@ MAX_PAGES = 100  # pagination safety guard, same as the original
 # that are never coming. See `result_count`.
 MEMBER_AGENCY_GROUP_ID = "2085061601"
 RESULTS_ROW = "table tbody tr.mets-table-row"
+
+# One results row. Counted independently of the links read out of it: the badge
+# above is the portal's *pre-filter* number, so "rows the portal rendered" and
+# "rows we could parse" are different questions, and a run that answers only the
+# first cannot tell a genuinely empty search from a title cell it can no longer
+# read. `_harvest_page` reports both.
+#
+# Every handle below is defined once in `selectors.py`, measured against a live
+# results page. See there for what the portal actually serves.
+ROW_SELECTOR = selectors.RESULTS_ROW
+ROW_LINK_SELECTORS = selectors.ROW_LINK_SELECTORS
+
+
+@dataclass
+class LinkHarvest:
+    """One keyword's search results, counted at every stage.
+
+    The counts are the point: `links` alone cannot distinguish a keyword that
+    matched nothing from one whose rows were all dropped in parsing, and that
+    ambiguity is what let a run report hits for several keywords and export
+    nothing at all.
+    """
+
+    links: list[str] = field(default_factory=list)
+    rows_detected: int = 0   # <tr> the portal rendered, across every page
+    rows_parsed: int = 0     # rows a solicitation link was read from
+    rows_failed: int = 0     # rows no selector could read a link out of
+    duplicates: int = 0      # rows whose link this keyword had already collected
+
+    @property
+    def rows_dropped(self) -> int:
+        return self.rows_failed + self.duplicates
+
+
+def _shown(value: int | None) -> str:
+    """A count for a log line, distinguishing zero from unreadable."""
+    return "unknown" if value is None else str(value)
 
 # How long to let the search's own AJAX finish before reading that count. Until
 # it does, the tab still shows the *previous* keyword's number, so reading early
@@ -165,10 +257,42 @@ class BidnetScraper(BaseScraper):
         # pre-filter scraper did.
         self.filters = filters or SidebarFilterRequest()
         self._sidebar_report: dict | None = None
+        # True while the page on screen is one this run filtered. The sidebar is
+        # driven once, before the first keyword, and every later search inherits
+        # it — so this is the flag that says whether that inheritance is still
+        # believable. Anything that navigates (a re-login, a keyword that failed
+        # mid-page) clears it, and the next keyword re-establishes the filters
+        # before it searches. See `open_filtered_session`.
+        self._filters_live = False
+        # Keywords whose search found the filters had drifted, so they had to be
+        # re-applied mid-run. Empty is the expected outcome; a long list means
+        # the session is not holding them and the per-keyword re-apply is what is
+        # actually filtering the run.
+        self._filters_reapplied_for: list[str] = []
+        # The date bypass warning is reported once per run, and the request is
+        # now built per keyword rather than once — so the reporting cannot hang
+        # off "is this the first sidebar report?" any more.
+        self._bypass_reported = False
         # Sidebar problems already reported. The filters are re-applied for every
         # keyword, so a persistent one (an option the portal stopped offering)
         # would otherwise be logged once per search.
         self._sidebar_notes: set[str] = set()
+        # Fallback row-link selectors already reported (see ROW_LINK_SELECTORS).
+        # Reported once per run: the portal's markup either changed or it didn't.
+        self._link_fallbacks_used: set[str] = set()
+        # Run-wide parsing funnel, summed across every keyword. Reconciled against
+        # the exported record count at the end of the run.
+        self._rows_detected = 0
+        self._rows_parsed = 0
+        self._rows_failed = 0
+        # True once a date panel has been applied *and read back off the page*.
+        # An emptied result set means something different either side of this.
+        self._dates_verified = False
+        # Which keywords the requested date filter actually reached. Per keyword,
+        # because the sidebar is re-driven for each one and a miss on any of them
+        # lets out-of-window bids into the export.
+        self._dates_applied_for: list[str] = []
+        self._dates_missed_for: list[str] = []
         # This run's niche folder inside the day's session root, and the
         # `documents/` folder within it that every bid's attachments land in
         # (per-bid subfolders — see storage.py). The spreadsheet sits beside
@@ -211,6 +335,18 @@ class BidnetScraper(BaseScraper):
         self._accepted_acknowledgements: list[dict[str, str]] = []
         # One pooled HTTP session for the whole run, cookies refreshed per bid.
         self._session: requests.Session | None = None
+
+    # -- live debugging -----------------------------------------------------
+
+    def live_debug(self, message: str, *args) -> None:
+        """Announce the step that is about to happen, then pause long enough to
+        watch it. Both halves are off unless HEADLESS_MODE is False, so these
+        calls cost nothing in production and need no unpicking to get there."""
+        if HEADLESS_MODE:
+            return
+        logger.info("[LIVE DEBUG]: " + message, *args)
+        if DEBUG_PAUSE_SECONDS:
+            time.sleep(DEBUG_PAUSE_SECONDS)
 
     # -- helpers ------------------------------------------------------------
 
@@ -264,22 +400,32 @@ class BidnetScraper(BaseScraper):
 
     def login(self) -> None:
         self.set_step("logging_in")
-        self.driver.get(settings.bidnet_direct_link or BASE_URL)
+        # Signing in lands on the dashboard, which has no sidebar and no search
+        # results — whatever this run had filtered is gone. Said here rather than
+        # at the call sites because the mid-run re-login (`ensure_logged_in`) is
+        # the one that matters and is the easiest to forget.
+        self._filters_live = False
+        self.live_debug("Opening BidNet Direct login page...")
+        # `navigate`, not a bare `driver.get`: this is also the session-recovery
+        # path mid-run, and a transient DNS/socket failure there would otherwise
+        # fail the keyword outright while every other navigation in the run
+        # retries through it.
+        self.navigate(settings.bidnet_direct_link or BASE_URL)
         self._guard_not_blocked()
 
         # Each wait re-checks for a bot-block first, then screenshots and raises a
         # clear message on timeout — otherwise BidNet's interstitial (which appears
         # a beat after load) just makes the element wait die with an empty-message
         # Selenium stacktrace that says nothing about why.
-        self._await_login_element((By.ID, "header_btnLogin"), "the Login button", clickable=True).click()
+        self._await_login_element((By.ID, selectors.LOGIN_BUTTON), "the Login button", clickable=True).click()
 
-        self._await_login_element((By.ID, "j_username"), "the username field")
-        self.driver.find_element(By.ID, "j_username").send_keys(settings.bidnet_username)
-        self.driver.find_element(By.ID, "j_password").send_keys(settings.bidnet_password)
-        self.driver.find_element(By.ID, "loginButton").click()
+        self._await_login_element((By.ID, selectors.USERNAME), "the username field")
+        self.driver.find_element(By.ID, selectors.USERNAME).send_keys(settings.bidnet_username)
+        self.driver.find_element(By.ID, selectors.PASSWORD).send_keys(settings.bidnet_password)
+        self.driver.find_element(By.ID, selectors.LOGIN_SUBMIT).click()
 
         self._await_login_element(
-            (By.ID, "btnSolicitations"),
+            (By.ID, selectors.SIGNED_IN_MARKER),
             "the post-login dashboard (Solicitations menu)",
         )
 
@@ -316,7 +462,7 @@ class BidnetScraper(BaseScraper):
         for the post-login menu), so it runs before every keyword.
         """
         try:
-            if self.driver.find_elements(By.ID, "btnSolicitations"):
+            if self.driver.find_elements(By.ID, selectors.SIGNED_IN_MARKER):
                 return  # still signed in
         except WebDriverException:
             pass  # fall through and try to recover
@@ -325,21 +471,217 @@ class BidnetScraper(BaseScraper):
         run_manager.add_error(self.run_id, "BidNet session expired mid-run; signed in again")
         self.login()
 
+    def reset_search_state(self) -> None:
+        """Reload the search page to get back to a known-clean slate.
+
+        A reload clears *everything* the portal was holding — the result page the
+        last harvest walked to, the result group, and the sidebar's applied
+        filters. That last one is why this is no longer run between keywords: the
+        filters are applied once for the session and a reload is precisely what
+        destroys them.
+
+        So it is now the entry point to `open_filtered_session` and the recovery
+        path when the page can no longer be trusted (a failed keyword, results
+        stuck past page 1). Every use of it is followed by re-applying the
+        session's filters, and nothing else should call it.
+        """
+        self.set_step("resetting search")
+        # Fewer retries than the default here: `ensure_logged_in` runs straight
+        # after and navigates (with the full budget) if this left us anywhere
+        # but the search page, so a blip is still covered — while a portal that
+        # is genuinely unreachable costs one short backoff per keyword instead
+        # of fifteen seconds times the whole niche.
+        self.navigate(settings.bidnet_direct_link or BASE_URL, attempts=2)
+        try:
+            self.wait(ELEMENT_TIMEOUT).until(
+                EC.presence_of_element_located((By.ID, selectors.SEARCH_INPUT))
+            )
+        except TimeoutException:
+            # Not fatal on its own: `ensure_logged_in` runs next and recovers a
+            # dropped session, and `search` waits for the box again anyway.
+            logger.info("[run %s] search box not present after reset", self.run_id)
+        self._await_ajax_idle()
+
     def search(self, keyword: str) -> None:
-        self.set_step(f"searching: {keyword}")
+        """Run one keyword search and wait until *this* keyword's results are on
+        the page.
+
+        The waiting is the whole point of this method. Both of the obvious
+        conditions return instantly on the second and later keywords:
+
+        * `.searchContentGroupContainer` is already visible — it belongs to the
+          previous keyword's results and is never removed, so a visibility wait
+          passes before the new search has even been sent.
+        * `jQuery.active == 0` is still true in the moment between the click and
+          the request leaving, so an idle-wait can pass on the *pre-search* page.
+
+        The result was a scraper that spent real time on a niche's first keyword
+        and then raced through the rest reading the previous keyword's DOM: a
+        stale count of 0 skipped the keyword as empty, and a stale non-zero count
+        re-collected links already seen, which deduplication then swallowed. Both
+        look identical from the outside — "no bids" for keywords that return
+        results when searched by hand.
+
+        So the wait is anchored on the old results being *replaced*: hold a node
+        from the current group container, submit, and wait for it to go stale
+        before believing anything on the page.
+
+        An empty `keyword` is the run's bootstrap search: it opens the portal's
+        whole open list purely so the sidebar renders and can be filtered (see
+        `open_filtered_session`). Nothing is collected from that page.
+
+        Since the sidebar's filters are applied once for the whole session, this
+        is also where a keyword *replaces* the previous one rather than the page
+        being reloaded to be rid of it — hence the two-way clear below, which
+        matters more now than it did: the portal's own model holding the previous
+        term would search `alpha beta` instead of `beta`, and nothing downstream
+        could tell.
+        """
+        self.set_step(f"searching: {keyword}" if keyword else "opening the search page")
+        anchor = self._results_anchor()
+
         box = self.wait(ELEMENT_TIMEOUT).until(
-            EC.presence_of_element_located((By.ID, "solicitationSingleBoxSearch"))
+            EC.presence_of_element_located((By.ID, selectors.SEARCH_INPUT))
         )
+        # Clear through the DOM as well as through Selenium: `clear()` alone can
+        # leave the portal's own model holding the old term (it binds on input
+        # events), which appends rather than replaces on the next search.
         box.clear()
-        box.send_keys(keyword)
-        self.driver.find_element(By.ID, "topSearchButton").click()
+        self.driver.execute_script(
+            "arguments[0].value = '';"
+            "arguments[0].dispatchEvent(new Event('input', {bubbles: true}));",
+            box,
+        )
+        if keyword:
+            self.live_debug('Applying keyword "%s"...', keyword)
+            box.send_keys(keyword)
+        self.live_debug("Triggering Search button...")
+        self.driver.find_element(By.ID, selectors.SEARCH_BUTTON).click()
+
+        self._await_results_replaced(anchor)
         self.wait(ELEMENT_TIMEOUT).until(
-            EC.visibility_of_element_located((By.CSS_SELECTOR, ".searchContentGroupContainer"))
+            EC.visibility_of_element_located((By.CSS_SELECTOR, selectors.RESULT_GROUP))
         )
         # Wait for the search's own AJAX rather than a fixed sleep: the group
         # tabs are re-rendered by it, and until it lands they still show the
         # previous keyword's counts.
         self._await_ajax_idle()
+
+    def _results_anchor(self):
+        """A node from the results currently on screen, to watch for replacement.
+
+        None on the first search of a run, when there is nothing there yet — the
+        caller then falls back to waiting for the results to appear at all.
+        """
+        for selector in (
+            f"div[search-content-group-id='{MEMBER_AGENCY_GROUP_ID}'] .solicitationCount",
+            ".searchContentGroupContainer",
+        ):
+            try:
+                return self.driver.find_element(By.CSS_SELECTOR, selector)
+            except WebDriverException:
+                continue
+        return None
+
+    def _await_results_replaced(self, anchor) -> None:
+        """Wait for `anchor` to be torn out of the DOM by the new search.
+
+        A search that returns the same page object without re-rendering (BidNet
+        occasionally answers an identical query that way) times out here rather
+        than failing: the AJAX-idle wait that follows still gives the page time,
+        and the count read afterwards is then legitimately the current one.
+        """
+        if anchor is None:
+            self.wait(ELEMENT_TIMEOUT).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, selectors.RESULT_GROUP))
+            )
+            return
+        try:
+            self.wait(ELEMENT_TIMEOUT).until(EC.staleness_of(anchor))
+        except TimeoutException:
+            # Deliberately not an error: failing the keyword here would skip it,
+            # and a keyword skipped is exactly the outcome this whole change
+            # exists to prevent. Give the page a real settle instead, so the
+            # count read next has had time to become this keyword's even though
+            # the container was reused.
+            logger.warning(
+                "[run %s] results were not re-rendered within %ss — settling before "
+                "reading the count", self.run_id, ELEMENT_TIMEOUT,
+            )
+            time.sleep(SEARCH_SETTLE_SECONDS)
+
+    # Which results page is on screen: 1 for the first, n for a numbered page,
+    # 0 for "definitely not the first, number unknown" (a usable Previous/First
+    # link is the proof), and null when there is no pagination to read — a single
+    # page of results, which is page 1.
+    _JS_CURRENT_PAGE = """
+    const bar = document.querySelector(arguments[0]);
+    if (!bar) return null;
+    const current = bar.querySelector(arguments[1]);
+    if (current) {
+      const n = parseInt((current.textContent || '').replace(/[^0-9]/g, ''), 10);
+      if (n) return n;
+    }
+    return bar.querySelector(arguments[2]) ? 0 : 1;
+    """
+
+    def _ensure_first_result_page(self) -> bool:
+        """Put the results back on page 1 before they are harvested.
+
+        This is the half of the old per-keyword reload that still has to happen.
+        `collect_links` walks to the *last* page of every keyword's results, and
+        the next keyword is now typed into the box from there instead of into a
+        freshly loaded page. If BidNet answers a new search from page 7, the
+        harvest starts at page 7 and pages 1-6 are lost in silence — the run
+        would report a smaller, entirely plausible number of bids.
+
+        So it is checked rather than assumed, on the cheapest available signal:
+        the pagination bar's own current-page mark, falling back to "is there a
+        working way back?". Returns True when the results are on page 1 (or there
+        is only one page, or the bar cannot be read — nothing to act on), and
+        False when it could not get back, which the caller repairs by reloading
+        and re-filtering.
+        """
+        page = self._read_current_page()
+        if page is None or page == 1:
+            return True
+
+        logger.info(
+            "[run %s] results came back on page %s — returning to page 1 before "
+            "harvesting", self.run_id, page or "?",
+        )
+        for selector in selectors.FIRST_PAGE_SELECTORS:
+            try:
+                links = self.driver.find_elements(By.CSS_SELECTOR, selector)
+            except WebDriverException:
+                continue
+            if not links:
+                continue
+            try:
+                self.driver.execute_script("arguments[0].click();", links[0])
+            except WebDriverException:
+                continue
+            self._await_ajax_idle()
+            if self._read_current_page() in (None, 1):
+                return True
+
+        logger.warning(
+            "[run %s] could not return the results to page 1; reloading the search "
+            "and re-applying the session's filters instead", self.run_id,
+        )
+        return False
+
+    def _read_current_page(self) -> int | None:
+        try:
+            value = self.driver.execute_script(
+                self._JS_CURRENT_PAGE,
+                selectors.PAGINATION_CONTAINER,
+                selectors.PAGINATION_CURRENT,
+                selectors.PAGINATION_BACK,
+            )
+        except WebDriverException:
+            return None
+        return int(value) if isinstance(value, (int, float)) else None
 
     def _await_ajax_idle(self, timeout: int = AJAX_IDLE_TIMEOUT) -> bool:
         """Block until the page has no jQuery request in flight.
@@ -401,19 +743,258 @@ class BidnetScraper(BaseScraper):
         except TimeoutException:
             logger.info("[run %s] no result rows after grouping to Member Agency", self.run_id)
 
-    def apply_sidebar_filters(self) -> None:
-        """Narrow the current results page with the frontend's sidebar choices.
+    # -- the session's filters ----------------------------------------------
 
-        Runs after the keyword search and the Member Agency grouping, so it
-        filters that keyword's own result set — the search itself is untouched.
+    def open_filtered_session(self) -> None:
+        """Put the sidebar into the requested state **once**, before any keyword.
+
+        The date panels are the reason this exists. They are part of the search
+        form, not of a keyword's results: set once, they filter every search the
+        session makes afterwards. Driving them per keyword meant four postbacks
+        (tick the mode, write the dates, press Apply, wait out the reload) times
+        twenty-odd keywords on a portal where each is a full page round-trip, and
+        every one of those was another chance for the panel to come back empty —
+        which is precisely the failure this scraper's date code is littered with
+        scar tissue from.
+
+        The sidebar only renders on a results page, so one is opened first: a
+        search with an empty keyword box, which returns the portal's whole open
+        list. Nothing is collected from it. It exists to be filtered, and the
+        first keyword replaces it.
+
+        Failing here is not fatal, in either of its two shapes. If no results
+        page can be opened at all, `_filters_live` stays False and the first
+        keyword re-establishes the session before it searches. If the page opens
+        but the sidebar will not take, every keyword's own check finds the
+        filters missing and applies them to its own results — which is exactly
+        the flow this replaced, so the worst case is the old cost, not an
+        unfiltered run.
+        """
+        self.set_step("applying_filters")
+        self.reset_search_state()
+        self.ensure_logged_in()
+        self.live_debug("Opening the results page the session's filters go on...")
+        try:
+            self.search("")
+        except (TimeoutException, WebDriverException) as exc:
+            logger.warning(
+                "[run %s] could not open a results page to filter (%s) — the "
+                "sidebar will be applied on the first keyword's own results instead",
+                self.run_id, exc.__class__.__name__,
+            )
+            return
+
+        try:
+            report = self.apply_sidebar_filters()
+        except (TimeoutException, WebDriverException) as exc:
+            # The panels swallow their own per-panel failures, so getting here
+            # means something broader went wrong with the page. The run is not
+            # abandoned for it: the results page is still open and every keyword
+            # re-checks the filters, so this degrades to the old per-keyword
+            # behaviour rather than to an unfiltered run.
+            logger.warning(
+                "[run %s] the sidebar could not be applied to the session's results "
+                "page (%s) — each keyword will apply it to its own results instead",
+                self.run_id, exc.__class__.__name__,
+            )
+            report = {}
+        # True even when the apply was imperfect: the page in front of us is the
+        # one this run filtered, and the per-keyword check is what decides
+        # whether it still holds. Left False here, every keyword would re-open a
+        # bootstrap results page before searching — slower than the flow this
+        # replaced, for no extra safety.
+        self._filters_live = True
+        logger.info(
+            "[run %s] [SESSION FILTER]: applied once for the whole run — %s. "
+            "Every keyword below is searched with this already in force.",
+            self.run_id, self.filters.summary(),
+        )
+        if [name for name, _ in self._effective_filters().dates()] and not report.get("dates"):
+            # The one-time application is where a date panel failure is cheapest
+            # to see and most costly to miss: it is about to govern every keyword
+            # in the run, not one of them.
+            logger.warning(
+                "[run %s] [SESSION FILTER]: the date panel(s) did not verify on the "
+                "page they were applied to. Each keyword will re-check and re-apply "
+                "them, but if that keeps failing this run's bids are not date-filtered.",
+                self.run_id,
+            )
+
+    def _ensure_filters_live(self) -> None:
+        """Re-establish the session's filters if the page can no longer be
+        trusted to hold them. A no-op in the ordinary case, which is the point —
+        the filters are applied once and then simply kept."""
+        if self._filters_live:
+            return
+        self.open_filtered_session()
+
+    def confirm_filters_active(self, keyword: str) -> None:
+        """Confirm this keyword's search inherited the session's filters.
+
+        Read-only in the normal case: one round-trip that re-reads the status
+        radio, the list panels' hidden fields and both date panels off the page
+        the search just returned. That is the whole per-keyword cost of the
+        filters now, against four postbacks before.
+
+        The re-apply is the exception path. "The filters persist across a search"
+        is a claim about BidNet's form, and a session that quietly dropped its
+        Published Date window would put out-of-window bids into the export under
+        a run record stating the window was applied — so it is verified per
+        keyword rather than assumed, and repaired on the spot when it is not.
+        """
+        request = self._effective_filters()
+        requested_dates = [name for name, _ in request.dates()]
+        intact, drifted = SidebarDriver(
+            self.driver, note=self._note_sidebar, debug=self.live_debug
+        ).state_intact(request)
+
+        if intact:
+            self._dates_verified = bool(requested_dates)
+            if requested_dates:
+                self._dates_applied_for.append(keyword)
+            logger.info(
+                "[run %s]  ├── [SESSION FILTER]: still active for this search (%s).",
+                self.run_id, self.filters.summary(),
+            )
+            return
+
+        logger.warning(
+            "[run %s] keyword %r: the session's sidebar filters did not survive this "
+            "search (%s) — re-applying them to this keyword's results",
+            self.run_id, keyword, "; ".join(drifted),
+        )
+        self._filters_reapplied_for.append(keyword)
+        run_manager.update_run(
+            self.run_id, filters_reapplied_keywords=list(self._filters_reapplied_for)
+        )
+        self.apply_sidebar_filters(keyword)
+
+    def _effective_filters(self) -> SidebarFilterRequest:
+        """The request the sidebar is actually driven with — `self.filters`, less
+        anything the testing-phase switches strip out.
+
+        Testing-phase bypass: drop the date panels before the request reaches the
+        sidebar, so no date control is touched at all. Stripping them here rather
+        than inside SidebarDriver keeps the bypass in one place and leaves the
+        panel code exactly as production runs it.
+
+        It also has to be the *same* request the per-keyword check verifies
+        against: a check that still expected the panels the setup was told to
+        skip would report drift on every keyword and re-apply what the switch
+        exists to avoid touching.
+        """
+        request = self.filters
+        if APPLY_DATE_FILTERS or not request.dates():
+            return request
+
+        skipped = ", ".join(f"{n} {v.describe()}" for n, v in request.dates())
+        self.live_debug("Date filters BYPASSED (%s) — searching on keyword + status.", skipped)
+        if not self._bypass_reported:
+            self._bypass_reported = True
+            logger.warning(
+                "[run %s] APPLY_DATE_FILTERS is False — the requested date "
+                "filter(s) (%s) were NOT applied. Results are unfiltered by "
+                "date; this run's counts are wider than what was asked for.",
+                self.run_id, skipped,
+            )
+            run_manager.add_warning(
+                self.run_id,
+                f"Date filters were bypassed for testing (APPLY_DATE_FILTERS=False): "
+                f"{skipped} not applied. Results are not filtered by date.",
+            )
+        return request.model_copy(update={"published_date": None, "closing_date": None})
+
+    def apply_sidebar_filters(self, keyword: str = "") -> dict:
+        """Drive every sidebar panel into the requested state on the current page.
+
+        Called twice in a healthy run: once by `open_filtered_session` before any
+        keyword (`keyword=""`), and never again — the filters stay applied. The
+        other caller is `confirm_filters_active`, repairing a session that lost
+        them, which is where the per-keyword tallies below come from.
+
         A panel the portal did not render is reported into the run's errors and
         skipped: a partially-filtered run returns a superset of what was asked
         for, which is still usable, whereas aborting returns nothing.
         """
         self.set_step("applying_filters")
-        report = SidebarDriver(self.driver, note=self._note_sidebar).apply(self.filters)
-        # Report once per run — the filters are identical for every keyword, so
-        # logging each pass would just be noise.
+        # Measured either side of the postback. The sidebar is the one stage that
+        # can legitimately take a page of results down to nothing, so without
+        # these two numbers an over-narrow filter is indistinguishable from a
+        # search that never matched — which is exactly how a run reported hits
+        # for several keywords and exported nothing.
+        rows_before = self._visible_row_count()
+        count_before = self.result_count()
+
+        request = self._effective_filters()
+        # What this search is *supposed* to be filtered by, captured before the
+        # sidebar runs so the outcome can be checked against it.
+        requested_dates = [name for name, _ in request.dates()]
+
+        self.live_debug("Interacting with sidebar filters...")
+        report = SidebarDriver(
+            self.driver, note=self._note_sidebar, debug=self.live_debug
+        ).apply(request)
+
+        rows_after = self._visible_row_count()
+        count_after = self.result_count()
+        logger.info(
+            "[run %s] [SIDEBAR FILTER]: %s → %s bid(s) reported by the portal; "
+            "%s → %s row(s) on the current page",
+            self.run_id, _shown(count_before), _shown(count_after),
+            _shown(rows_before), _shown(rows_after),
+        )
+        # Whether a date panel is in force *and verified on the page*. This is
+        # the difference between a filter doing its job and one that silently
+        # broke, and it decides how loudly the emptiness below is reported.
+        self._dates_verified = bool(report.get("dates"))
+
+        # Tallied per keyword, not once per run. "The date filter applied" is one
+        # fact per keyword rather than one per run, and the run record used to
+        # carry only the first of them (`_sidebar_report` is written once): a
+        # panel that applied on keyword 1 and silently missed on keyword 9 looked
+        # identical to one that worked throughout, while quietly letting
+        # out-of-window bids into the export. In the current flow most keywords
+        # are tallied by `confirm_filters_active` reading the panels back; this
+        # branch covers the ones that had to be re-applied. The session's own
+        # application (`keyword=""`) belongs to no keyword and is not tallied.
+        if requested_dates and keyword:
+            if report.get("dates"):
+                self._dates_applied_for.append(keyword)
+            else:
+                self._dates_missed_for.append(keyword)
+                logger.warning(
+                    "[run %s] keyword %r: the date filter did NOT apply to this "
+                    "search — its results are unfiltered by date",
+                    self.run_id, keyword,
+                )
+
+        if rows_before and rows_after == 0:
+            dates = ", ".join(f"{name} {value.describe()}" for name, value in self.filters.dates())
+            if self._dates_verified:
+                # The panel read its own values back off the page, so this is the
+                # date window doing exactly what was asked of it. Reporting a
+                # working filter as a run error is how a real failure gets lost
+                # among a dozen expected ones — it goes in the log, not the
+                # errors list.
+                logger.info(
+                    "[run %s] [SIDEBAR FILTER]: all %s row(s) fall outside %s — "
+                    "nothing to collect from this search",
+                    self.run_id, rows_before, dates,
+                )
+            else:
+                # No verified date filter, so an emptied result set is unexplained
+                # and is the single most likely cause of an empty export.
+                message = (
+                    f"The sidebar filters removed every result: the portal returned "
+                    f"{rows_before} row(s) for this search and none survived filtering. "
+                    f"Filters applied: {self.filters.summary()}. If bids were "
+                    f"expected, widen or clear the sidebar filters and re-run."
+                )
+                self._note_sidebar(message)
+                logger.warning("[run %s] %s", self.run_id, message)
+        # Report once per run. In the normal flow this *is* the run's only
+        # application, made before the first keyword; a later repair does not
+        # overwrite it, because what the run promised is what it set out with.
         if self._sidebar_report is None:
             self._sidebar_report = report
             run_manager.update_run(
@@ -423,6 +1004,7 @@ class BidnetScraper(BaseScraper):
                 filters_applied=report,
             )
             logger.info("[run %s] sidebar filters applied: %s", self.run_id, report)
+        return report
 
     def _note_sidebar(self, message: str) -> None:
         """Record a sidebar problem once per run, however many keywords hit it."""
@@ -431,30 +1013,35 @@ class BidnetScraper(BaseScraper):
         self._sidebar_notes.add(message)
         run_manager.add_error(self.run_id, message)
 
-    def collect_links(self) -> list[str]:
-        """Walk every results page, collecting solicitation detail links."""
-        links: list[str] = []
+    def collect_links(self) -> LinkHarvest:
+        """Walk every results page, collecting solicitation detail links.
+
+        Returns a `LinkHarvest` rather than a bare list so the caller can report
+        the whole funnel — rows the portal rendered, rows a link was read from,
+        rows dropped — instead of only the number that survived. A keyword that
+        reports hits and yields no links is a parsing failure, and it used to be
+        indistinguishable from a keyword that genuinely matched nothing.
+        """
+        harvest = LinkHarvest()
         page_num = 1
         while True:
-            rows = self.driver.find_elements(By.CSS_SELECTOR, "tr.mets-table-row a.solicitationsTitleLink")
-            for row in rows:
-                href = row.get_attribute("href")
-                if href:
-                    full = self._abs_url(href)
-                    if full not in links:
-                        links.append(full)
-            logger.info("[run %s] collected links from page %s (total %s)", self.run_id, page_num, len(links))
-            run_manager.update_run(self.run_id, bids_found=len(links))
+            self._harvest_page(harvest, page_num)
+            logger.info(
+                "[run %s] page %s: %s row(s) detected, %s parsed, %s dropped "
+                "(%s unique link(s) so far)",
+                self.run_id, page_num, harvest.rows_detected, harvest.rows_parsed,
+                harvest.rows_dropped, len(harvest.links),
+            )
+            run_manager.update_run(self.run_id, bids_found=len(harvest.links))
 
             if page_num >= MAX_PAGES:
                 break
 
-            try:
-                first_before = self.driver.find_element(
-                    By.CSS_SELECTOR, "tr.mets-table-row a.solicitationsTitleLink"
-                ).get_attribute("href")
-            except WebDriverException:
-                first_before = None
+            # Routed through the same fallback selectors the harvest uses: when
+            # the title-cell markup changes, a sentinel pinned to the old class
+            # reads None on every page, `_first_link_changed` never fires, and
+            # the walk stops at page 1 — losing pages on top of losing rows.
+            first_before = self._first_row_link()
 
             next_button = self._find_next_button()
             if next_button is None:
@@ -466,26 +1053,156 @@ class BidnetScraper(BaseScraper):
                 logger.info("[run %s] could not click next page: %s", self.run_id, exc.__class__.__name__)
                 break
 
-            time.sleep(SEARCH_SETTLE_SECONDS)
-            try:
-                self.wait(PAGINATION_TIMEOUT).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, "table tbody tr.mets-table-row"))
-                )
-            except TimeoutException:
-                pass
+            # Wait for the first row to actually become a different
+            # solicitation, rather than sleeping and hoping. The old rows stay in
+            # the DOM until the new page swaps them in, so a presence wait
+            # returns immediately on the previous page — and comparing the first
+            # href straight after that reads "unchanged" on a page that was
+            # merely slow, stopping the walk with pages still unread.
+            def _first_link_changed(_driver) -> bool:
+                current = self._first_row_link()
+                return current is not None and current != first_before
 
             try:
-                first_after = self.driver.find_element(
-                    By.CSS_SELECTOR, "tr.mets-table-row a.solicitationsTitleLink"
-                ).get_attribute("href")
-            except WebDriverException:
-                first_after = None
-            if first_after == first_before:
-                logger.info("[run %s] next page did not change results; stopping", self.run_id)
+                self.wait(PAGINATION_TIMEOUT).until(_first_link_changed)
+            except TimeoutException:
+                # Genuinely the last page (or one that would not advance):
+                # confirmed by waiting the full timeout, not by a single read.
+                logger.info(
+                    "[run %s] page %s did not advance within %ss; treating it as the last",
+                    self.run_id, page_num, PAGINATION_TIMEOUT,
+                )
                 break
+            self._await_ajax_idle()
             page_num += 1
 
-        return links
+        return harvest
+
+    def _harvest_page(self, harvest: LinkHarvest, page_num: int) -> None:
+        """Read one results page into `harvest`, row by row.
+
+        Rows and links are counted separately on purpose: `result_count` reads
+        the group tab's badge, which is the portal's own number for the search,
+        so a keyword can report hits and still contribute nothing if the rows
+        arrive but no link can be read out of them. Every dropped row is logged
+        with its index and the selectors that missed it, so the next run says
+        which cell changed instead of reporting a silent zero.
+        """
+        # Read every row's href in a single JS pass rather than walking Selenium
+        # element handles one at a time.
+        #
+        # The handles are the problem: a lazy re-render partway through the loop
+        # detaches the rows still to be visited, every `row.find_element` on them
+        # raises StaleElementReferenceException, and — because that is a
+        # WebDriverException — they were counted as *unparseable* rows. Silent
+        # under-collection dressed up as a parsing failure, on a page that was
+        # merely still settling. One pass cannot go stale mid-iteration, and it
+        # is also a single round-trip instead of one per row per selector.
+        rows = self._read_rows(page_num)
+        if rows is None:
+            # The DOM changed under the read. Let it settle and take one more
+            # look before believing the page.
+            self._await_ajax_idle(timeout=PAGINATION_TIMEOUT)
+            rows = self._read_rows(page_num) or []
+
+        harvest.rows_detected += len(rows)
+        for row in rows:
+            href = row.get("href")
+            if not href:
+                harvest.rows_failed += 1
+                logger.warning(
+                    "[run %s] page %s row %s: no solicitation link — none of %s "
+                    "matched. Row text: %r",
+                    self.run_id, page_num, row.get("index"),
+                    ", ".join(f"'{s}'" for s in ROW_LINK_SELECTORS),
+                    (row.get("text") or "")[:160],
+                )
+                continue
+            self._note_fallback(row.get("selector"))
+            harvest.rows_parsed += 1
+            full = self._abs_url(href)
+            if full in harvest.links:
+                # Already seen on an earlier page of this same keyword — the
+                # portal repeats a row when the list shifts under pagination.
+                harvest.duplicates += 1
+                continue
+            harvest.links.append(full)
+
+    # Reads every row's link in one pass, trying each selector in order per row
+    # and reporting which one matched, so a fallback can be surfaced once.
+    #   arguments[0]: row selector, arguments[1]: ordered link selectors
+    _JS_READ_ROWS = """
+    const rows = document.querySelectorAll(arguments[0]);
+    const selectors = arguments[1];
+    const out = [];
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      let href = null, used = null;
+      for (const selector of selectors) {
+        const a = row.querySelector(selector);
+        if (a && a.href) { href = a.href; used = selector; break; }
+      }
+      out.push({
+        index: i + 1,
+        href: href,
+        selector: used,
+        text: href ? '' : (row.innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 160),
+      });
+    }
+    return out;
+    """
+
+    def _read_rows(self, page_num: int) -> list[dict] | None:
+        """Every row on the current page as {index, href, selector, text}, or
+        None if the page could not be read (a re-render mid-pass)."""
+        try:
+            return self.driver.execute_script(
+                self._JS_READ_ROWS, ROW_SELECTOR, list(ROW_LINK_SELECTORS)
+            )
+        except WebDriverException as exc:
+            logger.info(
+                "[run %s] page %s could not be read (%s) — settling and retrying once",
+                self.run_id, page_num, exc.__class__.__name__,
+            )
+            return None
+
+    def _note_fallback(self, selector: str | None) -> None:
+        """Report once per run that the primary row-link selector stopped
+        matching and a fallback is carrying the harvest."""
+        if not selector or selector == ROW_LINK_SELECTORS[0]:
+            return
+        if selector in self._link_fallbacks_used:
+            return
+        self._link_fallbacks_used.add(selector)
+        message = (
+            f"BidNet results rows no longer match '{ROW_LINK_SELECTORS[0]}' — "
+            f"reading solicitation links via the fallback selector '{selector}' "
+            f"instead. The rows are still being collected; the portal's markup has "
+            f"changed and the primary selector needs updating."
+        )
+        logger.warning("[run %s] %s", self.run_id, message)
+        run_manager.add_warning(self.run_id, message)
+
+    def _first_row_link(self) -> str | None:
+        """The first results row's href, read the same way the harvest reads
+        every row — one JS pass, same fallback order. Used as the pagination
+        sentinel, so it must not disagree with the harvest about what a row's
+        link is: a sentinel pinned to a selector the harvest no longer uses reads
+        None on every page, `_first_link_changed` never fires, and the walk stops
+        at page 1 with pages still unread."""
+        rows = self._read_rows(page_num=0)
+        if not rows:
+            return None
+        return rows[0].get("href") or None
+
+    def _visible_row_count(self) -> int | None:
+        """Rows rendered on the current results page, or None if unreadable.
+        Page-scoped, not the whole result set — enough to tell "the filter
+        emptied the table" from "the filter narrowed it"."""
+        try:
+            return len(self.driver.find_elements(By.CSS_SELECTOR, ROW_SELECTOR))
+        except WebDriverException:
+            return None
 
     def _find_next_button(self):
         for sel in (
@@ -561,12 +1278,17 @@ class BidnetScraper(BaseScraper):
         # closing date is kept and tallied. Returning None tells the caller to
         # drop this solicitation (and it is deliberately left out of the reuse
         # cache, so it never short-circuits the filter for a later keyword group).
-        days_left = days_until_close(record.get("closing_date"))
-        if days_left is None:
-            self._kept_unreadable_close += 1
-        elif days_left < MIN_DAYS_UNTIL_CLOSE:
-            self._skipped_closing_soon += 1
-            return None
+        #
+        # Off for the testing phase (APPLY_CLOSE_DATE_FILTER): every solicitation
+        # the portal returned is kept, so the run's count is comparable with a
+        # manual search's.
+        if APPLY_CLOSE_DATE_FILTER:
+            days_left = days_until_close(record.get("closing_date"))
+            if days_left is None:
+                self._kept_unreadable_close += 1
+            elif days_left < MIN_DAYS_UNTIL_CLOSE:
+                self._skipped_closing_soon += 1
+                return None
 
         # Detection is never gated on the tab's count badge: an unreadable badge
         # used to be recorded as "0 documents" and the bid's attachments were
@@ -591,7 +1313,7 @@ class BidnetScraper(BaseScraper):
         self.driver.get(link)
         try:
             self.wait(DETAIL_TIMEOUT).until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, ".mets-field"))
+                EC.presence_of_element_located((By.CSS_SELECTOR, selectors.DETAIL_FIELD))
             )
         except TimeoutException:
             logger.warning(
@@ -633,7 +1355,7 @@ class BidnetScraper(BaseScraper):
     def _page_heading(self) -> str:
         """The solicitation heading the acknowledgement page still renders."""
         try:
-            for element in self.driver.find_elements(By.CSS_SELECTOR, "h1, h2"):
+            for element in self.driver.find_elements(By.CSS_SELECTOR, selectors.DETAIL_HEADING):
                 text = (element.text or "").strip()
                 if text:
                     return text
@@ -779,7 +1501,7 @@ class BidnetScraper(BaseScraper):
         """
         try:
             self.wait(DETAIL_TIMEOUT).until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, ".mets-field"))
+                EC.presence_of_element_located((By.CSS_SELECTOR, selectors.DETAIL_FIELD))
             )
         except TimeoutException:
             logger.warning(
@@ -891,12 +1613,29 @@ class BidnetScraper(BaseScraper):
         run_manager.update_run(self.run_id, status="running")
         self._save_run_row()
         try:
-            self.start_driver()
+            # HEADLESS_MODE False forces a visible, maximised window for every
+            # run. Left at True the per-run "Live preview" flag decides, which is
+            # the production behaviour.
+            self.start_driver(headless=None if HEADLESS_MODE else False)
+            if not HEADLESS_MODE:
+                logger.info(
+                    "[LIVE DEBUG]: headed mode is ON (HEADLESS_MODE=False, %.1fs pauses, "
+                    "date filters %s). Set HEADLESS_MODE=True in %s for production.",
+                    DEBUG_PAUSE_SECONDS,
+                    "ON" if APPLY_DATE_FILTERS else "BYPASSED",
+                    "app/scrapers/bidnet/scraper.py",
+                )
             self.login()
 
             keywords = self.keywords
             logger.info("[run %s] niche %r: %s keyword(s), searched one at a time",
                         self.run_id, self.niche_label, len(keywords))
+
+            # PHASE 0 — filter the session once, before a single keyword is
+            # typed. Everything below inherits it; nothing below re-applies it
+            # unless a check finds it gone.
+            if keywords:
+                self.open_filtered_session()
 
             # PHASE 1 — search every keyword of the niche in turn, collecting
             # solicitation links. Deduplicated by link across the whole run, so a
@@ -911,9 +1650,27 @@ class BidnetScraper(BaseScraper):
                 try:
                     # A long sequential run outlives BidNet's session, which
                     # surfaces as a redirect to the login page rather than as a
-                    # timeout — no amount of waiting recovers it.
+                    # timeout — no amount of waiting recovers it. Signing in
+                    # again also loses the sidebar, which is why the filter check
+                    # comes after it and not before.
                     self.ensure_logged_in()
+                    # A no-op in the ordinary case: the filters applied before
+                    # the first keyword are still on the page. It re-establishes
+                    # them only after something navigated away — a re-login, or a
+                    # keyword that failed partway through.
+                    self._ensure_filters_live()
+                    # No reload between keywords: reloading is what would clear
+                    # the filters. The new term replaces the old one in the box,
+                    # and the search carries the session's filters with it.
                     self.search(keyword)
+                    if not self._ensure_first_result_page():
+                        # The results could not be brought back to page 1, so
+                        # harvesting here would silently skip everything before
+                        # it. Reload, re-filter, search again — the old
+                        # per-keyword cost, paid only when it is needed.
+                        self._filters_live = False
+                        self._ensure_filters_live()
+                        self.search(keyword)
 
                     # Fast-fail on an empty search. The group tab reports the hit
                     # count directly, so a keyword that matched nothing costs one
@@ -922,10 +1679,25 @@ class BidnetScraper(BaseScraper):
                     # not be read — carry on rather than risk skipping a keyword
                     # that does have bids.
                     count = self.result_count()
+                    logger.info(
+                        '[run %s] [KEYWORD SEARCH]: Keyword (%s) - "%s"',
+                        self.run_id, progress, keyword,
+                    )
+                    logger.info(
+                        "[run %s]  ├── [PORTAL DETECTED]: %s matching bid(s) reported "
+                        "by the Member Agency group.",
+                        self.run_id, _shown(count),
+                    )
                     if count == 0:
+                        # "No results" now means no results *under the session's
+                        # filters* — the search the portal answered was already
+                        # narrowed by them, so this is not evidence the keyword
+                        # matches nothing on BidNet at all.
                         logger.info(
-                            "[run %s] No results found for keyword: %s. Moving to next keyword.",
-                            self.run_id, keyword,
+                            "[run %s]  └── [TOTAL ACCUMULATED]: %s unique solicitation(s) "
+                            "queued. No results for this keyword under the run's "
+                            "filters (%s); moving to the next.",
+                            self.run_id, len(link_keywords), self.filters.summary(),
                         )
                         self._empty_keywords.append(keyword)
                         run_manager.update_run(
@@ -934,28 +1706,77 @@ class BidnetScraper(BaseScraper):
                         continue
 
                     self.filter_member_agency()
-                    # Sidebar filters are re-applied per keyword: each search
-                    # re-renders the panels, so the previous keyword's selection
-                    # does not carry over.
-                    self.apply_sidebar_filters()
-                    links = self.collect_links()
+                    # Read-only in the ordinary case: the session's filters are
+                    # confirmed still in force for this search, and only
+                    # re-applied if they are not.
+                    self.confirm_filters_active(keyword)
+                    harvest = self.collect_links()
                 except StopRequested:
                     raise
                 except (TimeoutException, WebDriverException) as exc:
                     # One bad keyword must not cost the other 20 — record it and
-                    # carry on to the next search.
+                    # carry on to the next search. Where the failure left the
+                    # browser is unknown, so the filters are treated as lost and
+                    # the next keyword re-establishes them from a fresh page.
+                    self._filters_live = False
                     run_manager.add_error(
                         self.run_id, f"search failed for {keyword}: {exc.__class__.__name__}"
                     )
                     self.screenshot(f"search_{index}")
                     continue
-                for link in links:
+
+                self._rows_detected += harvest.rows_detected
+                self._rows_parsed += harvest.rows_parsed
+                self._rows_failed += harvest.rows_failed
+
+                new_links = 0
+                for link in harvest.links:
+                    if link not in link_keywords:
+                        new_links += 1
                     matched = link_keywords.setdefault(link, [])
                     if keyword not in matched:
                         matched.append(keyword)
                 run_manager.update_run(self.run_id, bids_found=len(link_keywords))
-                logger.info("[run %s] [%s] %s -> %s links (%s unique so far)",
-                            self.run_id, progress, keyword, len(links), len(link_keywords))
+
+                logger.info(
+                    "[run %s]  ├── [PARSED SUCCESS]: %s/%s row(s) converted to links.",
+                    self.run_id, harvest.rows_parsed, harvest.rows_detected,
+                )
+                logger.info(
+                    "[run %s]  ├── [POST-FILTER]: %s retained (%s dropped: %s unreadable, "
+                    "%s repeated across pages).",
+                    self.run_id, len(harvest.links), harvest.rows_dropped,
+                    harvest.rows_failed, harvest.duplicates,
+                )
+                logger.info(
+                    "[run %s]  └── [TOTAL ACCUMULATED]: %s unique solicitation(s) queued "
+                    "(%s new from this keyword, %s already found by an earlier one).",
+                    self.run_id, len(link_keywords), new_links,
+                    len(harvest.links) - new_links,
+                )
+
+                # The portal said there were bids and not one row survived. Said
+                # once per keyword, at the point it happens, so the stage that
+                # lost them is named instead of inferred from an empty file —
+                # unless a verified date filter is what removed them, which is
+                # the filter working rather than the pipeline leaking.
+                if count and not harvest.links:
+                    if getattr(self, "_dates_verified", False):
+                        logger.info(
+                            "[run %s] keyword %r: %s bid(s) matched the keyword but "
+                            "none fall inside the requested date window — filtered "
+                            "out, not lost.",
+                            self.run_id, keyword, count,
+                        )
+                    else:
+                        message = (
+                            f"keyword {keyword!r}: the portal reported {count} bid(s) but "
+                            f"none were collected — {harvest.rows_detected} row(s) rendered, "
+                            f"{harvest.rows_failed} unparseable. This keyword contributes "
+                            f"nothing to the export."
+                        )
+                        logger.error("[run %s] %s", self.run_id, message)
+                        run_manager.add_error(self.run_id, message)
 
             # PHASE 2 — open every distinct solicitation once and download its
             # documents into this run's single folder.
@@ -984,6 +1805,80 @@ class BidnetScraper(BaseScraper):
             logger.info("[run %s] %s unique solicitations from %s keyword search(es)",
                         self.run_id, len(link_keywords), len(keywords))
 
+            # Did the date filter reach every keyword it was meant to?
+            #
+            # This is reconciled rather than assumed because the run record used
+            # to answer it from the *first* keyword alone (`_sidebar_report` is
+            # written once), so a filter that applied early and missed later
+            # looked identical to one that worked throughout — while letting
+            # out-of-window bids into the export. Counted per keyword, a miss is
+            # now impossible to mistake for a clean run.
+            attempted = self._dates_applied_for + self._dates_missed_for
+            if attempted:
+                logger.info(
+                    "[DATE FILTER] run %s | applied to %d of %d searched keyword(s): %s",
+                    self.run_id, len(self._dates_applied_for), len(attempted),
+                    self.filters.summary(),
+                )
+                run_manager.update_run(
+                    self.run_id,
+                    dates_applied_keywords=list(self._dates_applied_for),
+                    dates_missed_keywords=list(self._dates_missed_for),
+                )
+            if self._dates_missed_for:
+                message = (
+                    f"The date filter did not apply to "
+                    f"{len(self._dates_missed_for)} of {len(attempted)} searched "
+                    f"keyword(s): {', '.join(self._dates_missed_for)}. Bids found by "
+                    f"those keywords are NOT filtered by date, so this export may "
+                    f"contain solicitations outside "
+                    f"{self.filters.summary()}."
+                )
+                logger.error("[run %s] %s", self.run_id, message)
+                run_manager.add_error(self.run_id, message)
+
+            # How well the session held its filters. Empty is the expected
+            # result — applied once, kept throughout — and a long list is the
+            # signal that BidNet is *not* carrying them across searches on this
+            # account, which is worth knowing even though the run repaired
+            # itself: every entry cost the keyword a full set of extra postbacks.
+            if self._filters_reapplied_for:
+                logger.warning(
+                    "[run %s] [SESSION FILTER]: the sidebar had to be re-applied for "
+                    "%d of %d keyword(s) — %s. The filters did not survive those "
+                    "searches on their own.",
+                    self.run_id, len(self._filters_reapplied_for), len(keywords),
+                    ", ".join(self._filters_reapplied_for),
+                )
+                run_manager.update_run(
+                    self.run_id, filters_reapplied_keywords=list(self._filters_reapplied_for)
+                )
+
+            # The whole run as one funnel, stage by stage. Read top to bottom it
+            # names the stage that lost the bids: rows the portal rendered, rows
+            # parsed into links, links queued, records built, records exported.
+            logger.info(
+                "[FUNNEL] run %s | rows rendered: %d | rows parsed: %d | rows unparseable: %d "
+                "| unique solicitations queued: %d | records built: %d | exported: %d",
+                self.run_id, self._rows_detected, self._rows_parsed, self._rows_failed,
+                len(link_keywords), len(all_records), len(all_records),
+            )
+            # An empty export with a non-empty portal is a pipeline failure, not
+            # an empty niche, and it says which stage dropped them.
+            if self._rows_detected and not all_records:
+                stage = (
+                    "every row failed to parse (the results table's markup has "
+                    "changed — see the per-row warnings above)"
+                    if self._rows_parsed == 0
+                    else "links were collected but no record survived phase 2"
+                )
+                message = (
+                    f"Nothing was exported although BidNet rendered "
+                    f"{self._rows_detected} result row(s): {stage}."
+                )
+                logger.error("[run %s] %s", self.run_id, message)
+                run_manager.add_error(self.run_id, message)
+
             # Reconciliation, printed before anything is saved: every collected
             # solicitation is accounted for, and the export count is the sum of
             # the parts. If these ever disagree, the run says so here rather than
@@ -1008,6 +1903,9 @@ class BidnetScraper(BaseScraper):
                 )
             run_manager.update_run(
                 self.run_id,
+                rows_detected=self._rows_detected,
+                rows_parsed=self._rows_parsed,
+                rows_unparseable=self._rows_failed,
                 bids_fully_extracted=by_status[STATUS_OK],
                 bids_partial=by_status[STATUS_PARTIAL],
                 bids_extraction_failed=by_status[STATUS_FAILED],
@@ -1093,7 +1991,8 @@ class BidnetScraper(BaseScraper):
                 run_manager.add_warning(
                     self.run_id,
                     f"{len(self._empty_keywords)} of {len(keywords)} keywords matched "
-                    f"nothing on BidNet: {', '.join(self._empty_keywords)}",
+                    f"nothing on BidNet under this run's filters "
+                    f"({self.filters.summary()}): {', '.join(self._empty_keywords)}",
                 )
             # Every keyword came back empty — the searches worked, the portal
             # simply has nothing for this niche right now.
@@ -1102,17 +2001,26 @@ class BidnetScraper(BaseScraper):
             )
 
             # Surface the close-date filter's effect (see app/core/closing_filter).
-            run_manager.update_run(
-                self.run_id,
-                min_days_until_close=MIN_DAYS_UNTIL_CLOSE,
-                bids_skipped_closing_soon=self._skipped_closing_soon,
-                bids_kept_unreadable_close=self._kept_unreadable_close,
-            )
-            logger.info(
-                "[run %s] close-date filter (≥%sd): kept %s, skipped %s closing soon, %s unreadable kept",
-                self.run_id, MIN_DAYS_UNTIL_CLOSE, len(all_records),
-                self._skipped_closing_soon, self._kept_unreadable_close,
-            )
+            # Only when it ran: the console renders a "closing-date filter"
+            # note whenever a run reports one, and a run that dropped nothing
+            # must not claim to have filtered.
+            if APPLY_CLOSE_DATE_FILTER:
+                run_manager.update_run(
+                    self.run_id,
+                    min_days_until_close=MIN_DAYS_UNTIL_CLOSE,
+                    bids_skipped_closing_soon=self._skipped_closing_soon,
+                    bids_kept_unreadable_close=self._kept_unreadable_close,
+                )
+                logger.info(
+                    "[run %s] close-date filter (≥%sd): kept %s, skipped %s closing soon, %s unreadable kept",
+                    self.run_id, MIN_DAYS_UNTIL_CLOSE, len(all_records),
+                    self._skipped_closing_soon, self._kept_unreadable_close,
+                )
+            else:
+                logger.info(
+                    "[run %s] no close-date filter — every solicitation the portal "
+                    "returned was kept (%s)", self.run_id, len(all_records),
+                )
 
             # Persist every scraped solicitation in one transaction (mirrors
             # MyFlorida). The DB stays globally de-duplicated per run (by reference
@@ -1122,6 +2030,22 @@ class BidnetScraper(BaseScraper):
             try:
                 stored = export.save_bids(run, all_records)
                 run_manager.update_run(self.run_id, bids_stored_in_db=stored)
+                # The last stage that can lose rows: the run-level Excel in the
+                # archive is regenerated from these DB rows, so anything that
+                # does not land here is absent from the file the client opens.
+                logger.info(
+                    "[run %s] [DB SAVE]: %d record(s) in memory → %d row(s) stored.",
+                    self.run_id, len(all_records), stored,
+                )
+                if len(all_records) != stored:
+                    message = (
+                        f"{len(all_records) - stored} of {len(all_records)} scraped "
+                        f"record(s) were not stored in the database and will be missing "
+                        f"from the packaged spreadsheet (duplicate reference numbers "
+                        f"within this run — see the warning above)."
+                    )
+                    logger.error("[run %s] %s", self.run_id, message)
+                    run_manager.add_error(self.run_id, message)
             except Exception:  # noqa: BLE001 — DB issues shouldn't abort the run
                 logger.exception("[run %s] DB save failed", self.run_id)
                 run_manager.add_error(self.run_id, "db save failed (see logs)")
@@ -1137,6 +2061,14 @@ class BidnetScraper(BaseScraper):
             run_manager.update_run(self.run_id, status="completed", step="done")
             # Email/S3 notification on successful completion.
             notify_scrape_completion(self.run_id, "bidnet", len(all_records))
+        except StopRequested:
+            # The user pressed Stop. run_manager has already locked the run to
+            # "stopped" and is suppressing later status/error writes, so there
+            # is nothing to record — but this must not fall through to the
+            # handler below, which would log a traceback under "failed" and try
+            # to screenshot a browser that stopping has already closed. A run
+            # the user ended is not a run that broke.
+            logger.info("[run %s] stopped by user", self.run_id)
         except Exception as exc:  # noqa: BLE001 — a failed run must be reported, not crash the worker
             logger.exception("[run %s] failed", self.run_id)
             self.screenshot("fatal")

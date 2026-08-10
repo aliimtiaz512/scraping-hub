@@ -416,6 +416,22 @@ class DateFilter(BaseModel):
             raise ValueError(f"unknown 'within' period: {value}")
         return value
 
+    def describe(self) -> str:
+        """This setting with its actual values, for the run summary and logs.
+
+        The bare type was not enough: a run that narrowed to a one-week window
+        reported `published_date=RANGE`, which reads the same as any other range
+        and says nothing about why the results went to zero. The window itself
+        is the thing worth seeing next to an empty export.
+        """
+        if self.type == "RANGE":
+            return f"RANGE {self.range_start or '?'}–{self.range_end or '?'}"
+        if self.type == "DAY":
+            return f"DAY {self.day or '?'}"
+        if self.type == "WITHIN":
+            return f"WITHIN {self.within}"
+        return self.type
+
 
 class SidebarFilterRequest(BaseModel):
     """The frontend's filter choices, as posted to /bidnet/scrape.
@@ -453,12 +469,30 @@ class SidebarFilterRequest(BaseModel):
 
         Purchasing Group's None means the portal's own full selection stays as-is;
         every other section's empty list means the panel is left unfiltered.
+
+        An *empty* list for a `default_all` panel is treated as None too, and
+        that is load-bearing rather than tidiness. Purchasing Group ships fully
+        ticked, so writing its empty value into the hidden field selects no group
+        at all — and BidNet answers "no group" with no results, for every keyword,
+        however many bids the search itself matched. The failure is silent from
+        end to end: the write verifies (an empty field is exactly what was asked
+        for), the run reports its filters as applied, and the only symptom is an
+        empty spreadsheet. The console blocks this state in the UI; nothing
+        stopped it arriving over the API, so it is neutralised here, at the one
+        place every caller goes through. Widening beats exporting nothing.
         """
         chosen = getattr(self, section.name)
         if chosen is None:
             return None
         cleaned = list(dict.fromkeys(v.strip() for v in chosen if v and v.strip()))
-        if not cleaned and not section.default_all:
+        if not cleaned:
+            if section.default_all:
+                logger.warning(
+                    "bidnet: %s was requested with an empty selection, which BidNet "
+                    "reads as 'no %s' and answers with zero results for every "
+                    "keyword. Leaving the portal's full selection in place instead.",
+                    section.label, section.label.lower(),
+                )
             return None
         return cleaned
 
@@ -519,7 +553,7 @@ class SidebarFilterRequest(BaseModel):
             if chosen is not None:
                 parts.append(f"{section.name}={len(chosen)}")
         for name, value in self.dates():
-            parts.append(f"{name}={value.type}")
+            parts.append(f"{name}={value.describe()}")
         return ", ".join(parts)
 
 

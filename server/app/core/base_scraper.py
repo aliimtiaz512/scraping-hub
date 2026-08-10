@@ -121,6 +121,10 @@ class BaseScraper:
         self.current_step: str | None = None
         # Flipped by stop() (from another thread) when the user asks to stop.
         self._stop_requested = False
+        # Set once the browser has been torn down by stop(): nothing new may be
+        # sent to it, though `self.driver` stays put so in-flight Selenium calls
+        # still fail as WebDriverException rather than AttributeError.
+        self._driver_closed = False
 
     # -- lifecycle ----------------------------------------------------------
 
@@ -143,7 +147,13 @@ class BaseScraper:
             options.add_argument(f"--user-data-dir={user_data_dir}")
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
-        options.add_argument("--window-size=1920,1080")
+        if use_headless:
+            options.add_argument("--window-size=1920,1080")
+        else:
+            # A visible window is being watched, so give it the whole screen:
+            # BidNet's sidebar filters and date pickers sit below the fold at
+            # 1920x1080 with browser chrome taking a slice off the top.
+            options.add_argument("--start-maximized")
         # Trim Chrome's memory/CPU footprint. These portals are plain form-and-
         # table pages that need none of the GPU stack, extensions, or background
         # services, and on a memory-tight host that headroom is the difference
@@ -204,6 +214,11 @@ class BaseScraper:
             pass
 
     def stop_driver(self) -> None:
+        if self.driver and self._driver_closed:
+            # stop() already quit it; calling quit again just retries against a
+            # socket that is gone.
+            self.driver = None
+            return
         if self.driver:
             try:
                 self.driver.quit()
@@ -219,7 +234,7 @@ class BaseScraper:
     def get_screenshot_base64(self) -> str | None:
         """A base64 PNG of the current browser view, or None. Used by the shared
         live-screenshot endpoint; defensive so a frame grab never breaks a run."""
-        if not self.driver:
+        if not self.driver or self._driver_closed:
             return None
         try:
             return self.driver.get_screenshot_as_base64()
@@ -346,6 +361,14 @@ class BaseScraper:
         next checkpoint. Safe to call more than once.
         """
         self._stop_requested = True
+        # Mark the browser unusable rather than clearing `self.driver`. Clearing
+        # it would turn whatever Selenium call the worker is mid-way through
+        # into an AttributeError, which the scrapers' `except WebDriverException`
+        # handlers do not catch — a clean stop would surface as a crash. The
+        # reference stays; this flag is what stops anything *new* being sent to
+        # a chromedriver that is going away, which is where the trail of urllib3
+        # "Connection refused" retries after a stop came from.
+        self._driver_closed = True
         driver = self.driver
         if driver is not None:
             try:
@@ -364,7 +387,9 @@ class BaseScraper:
         self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", element)
 
     def screenshot(self, name: str) -> None:
-        if self.driver:
+        # Nothing to capture once the browser has been stopped, and asking costs
+        # three urllib3 retries against a closed socket.
+        if self.driver and not self._driver_closed:
             try:
                 self.driver.save_screenshot(str(self.run_dir / f"error_{sanitize_filename(name)}.png"))
             except Exception:  # noqa: BLE001 — never let a failure screenshot (esp. on a dead session) mask the real error

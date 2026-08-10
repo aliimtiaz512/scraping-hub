@@ -1334,6 +1334,14 @@ class SeptaScraper(BaseScraper):
             # Email/S3 notification on successful completion, counting the
             # module that ran — which is everything the workbook holds.
             notify_scrape_completion(self.run_id, "septa", self._kept_count)
+        except StopRequested:
+            # The user pressed Stop. run_manager has already locked the run to
+            # "stopped" and is suppressing later status/error writes, so there
+            # is nothing to record — but this must not fall through to the
+            # handler below, which would log a traceback under "failed" and try
+            # to screenshot a browser that stopping has already closed. A run
+            # the user ended is not a run that broke.
+            logger.info("[run %s] stopped by user", self.run_id)
         except Exception as exc:  # noqa: BLE001 — a failed run must be reported, not crash the worker
             logger.exception("[run %s] failed", self.run_id)
             self.screenshot("fatal")

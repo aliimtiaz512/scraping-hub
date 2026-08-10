@@ -95,10 +95,29 @@ Both panels share one shape, keyed by `{SECTION}` = `publishedDate` | `closingDa
 | Clear | `#{SECTION}ClearLink` | — |
 
 `SINCE_LAST_LOGIN` exists **only** on Published Date; the Closing Date panel has
-no such checkbox. Date text is `mm/dd/yyyy` (the panel's jQuery datepicker is
-configured `dateFormat: "mm/dd/yy"`).
+no such checkbox.
 
-Three DOM facts drive how these are set:
+**The two fields hold different formats, and this matters more than anything
+else on this panel.** The visible input is `mm/dd/yyyy` (the jQuery datepicker is
+configured `dateFormat: "mm/dd/yy"`); its `_hidden` twin — the one carrying the
+`name` the form actually posts — is **ISO `yyyy-mm-dd`**:
+
+```html
+<input id="publishedDateRANGE1"        value="08/04/2026">        <!-- display -->
+<input id="publishedDateRANGE1_hidden" value="2026-08-04"         <!-- posted  -->
+       name="publishedDate.localRangeStart">
+```
+
+Writing the US format into the twin posts a date the server cannot parse: the
+range collapses to empty, every keyword returns zero, and the panel still looks
+correctly filled in. That was a real bug — a whole niche exported nothing while
+the sidebar showed the window the user asked for. `_set_date_input` therefore
+sets the visible field through the widget (`$(el).datepicker('setDate', …)`,
+whose `onSelect` syncs the twin), writes ISO into the twin as a backstop, and
+calls `updateDateStatus(section)` — the page's own validator, and what lifts the
+Apply button out of its initial disabled state.
+
+Four DOM facts drive how these are set:
 
 1. The text inputs are `readonly` **and** `disabled` until their checkbox is
    ticked — they are datepicker-driven, so `send_keys` is not an option. The
@@ -106,9 +125,17 @@ Three DOM facts drive how these are set:
    twin (that is what the form actually posts), and dispatches `change` by hand
    because the field's behaviour hangs off `onchange="updateDateStatus(…)"`.
 2. `#{SECTION}SearchButton` ships `class="… disabled"` / `aria-disabled="true"`
-   and is only enabled by the page's own validation, which never fires for a
-   programmatic assignment. The flags are cleared before the click.
-3. Each real `<input>` is visually replaced by a styled `<span class="checkbox">`
+   and is a jQuery `commandButton` constructed with `enabled: "false"`, so
+   clearing the CSS flags is not on its own proof the click will act — the
+   widget latched its state at construction. The page enables it through
+   `updateDateStatus(section)`, which is why that is called after the writes;
+   the flags are cleared and the click still forced as a fallback, and a button
+   that was still disabled at that point is logged.
+3. The panel validates in place: `<div class="message151 error hidden">Ending
+   date must be greater or equal to the starting date.</div>`, unhidden when it
+   fires. It is read before Apply, so a refusal is reported as its own reason
+   rather than as an unexplained empty result set.
+4. Each real `<input>` is visually replaced by a styled `<span class="checkbox">`
    / `<span class="radio">`, so a native Selenium click can land on the overlay.
    Every toggle goes through `execute_script("arguments[0].click()")`, which
    reaches the input and still fires the page's handlers.
@@ -195,13 +222,23 @@ POST /bidnet/scrape  { niche: "ai_analytics", filters: { status, locations, …,
   → BidnetScraper(run_id, keywords, filters, niche_label)
 
 login()                                 once per run
+open_filtered_session()                 ONCE per run — the sidebar, incl. dates:
+    reset_search_state()                a clean search page
+    search("")                          empty search → the sidebar renders
+    apply_sidebar_filters()             ← SidebarDriver.apply(filters)
 for each keyword of the niche:          SEQUENTIAL — one keyword, one search
     ensure_logged_in()                  re-login if the session expired mid-run
+    _ensure_filters_live()              re-applies ONLY if something navigated
     search(keyword)                     types into #solicitationSingleBoxSearch,
-                                        clicks #topSearchButton, waits for jQuery idle
+                                        clicks #topSearchButton, waits for the
+                                        previous results to go STALE, then jQuery idle
+                                        — the session's filters ride along
+    _ensure_first_result_page()         back to page 1 if the last harvest left
+                                        the results deeper in
     result_count() == 0 ? -> continue   FAST-FAIL: skip the keyword entirely
     filter_member_agency()
-    apply_sidebar_filters()             ← SidebarDriver.apply(filters)
+    confirm_filters_active(keyword)     ← SidebarDriver.state_intact(filters),
+                                        read-only; re-applies only on drift
     collect_links()                     paginate, accumulating links
 for each DISTINCT link:                 deduplicated across every keyword
     process_bid(link, run_folder)       scrape fields + download documents
@@ -246,6 +283,91 @@ already present and the ZIP ships **exactly one** spreadsheet — the database's
 version when Postgres is reachable, the scraper's on-disk one when it is not.
 One row per solicitation, with every keyword that surfaced it comma-joined in
 `Matched Keyword`.
+
+### Why each search waits for the previous results to go stale
+
+Both of the obvious waits pass on the *previous* keyword's page:
+
+* `.searchContentGroupContainer` is already visible and is never removed, so a
+  visibility wait returns before the new search has even been sent.
+* `jQuery.active == 0` is still true in the moment between the click and the
+  request leaving, so an idle-wait can pass on the pre-search page.
+
+The symptom was a run that spent real time on a niche's first keyword and then
+raced through the rest returning nothing, while the same searches by hand
+returned results. `result_count()` was reading the previous keyword's tab: a
+stale `0` skipped the keyword as empty, and a stale non-zero re-collected links
+that deduplication then swallowed — indistinguishable from outside.
+
+So `search()` holds a node from the current group container, submits, and waits
+for it to go **stale** before believing anything on the page. If the portal
+answers without re-rendering (it occasionally does for an identical query) that
+is a warning and a settle, never a failure — a skipped keyword is the outcome
+being fixed.
+
+Pagination follows the same rule — the next-page wait is on the first row's href
+actually *changing*, not on rows being present, so a slow page is no longer read
+as the end of the list.
+
+### The filters are applied once, then checked — not re-applied per keyword
+
+The sidebar belongs to the **search form**, not to a keyword's results. Applied
+once, its panels are posted with every later search of the same session, so the
+run sets them up front — before the first keyword — and every keyword below is
+searched with the Published Date window already in force.
+
+What that replaced: each keyword began with `reset_search_state()`, and a reload
+clears the panels, so the whole sidebar had to be re-driven afterwards. For the
+date panels that is four postbacks each (tick the mode checkbox, write the
+fields, press `#publishedDateSearchButton`, wait out the reload) times twenty-odd
+keywords, on a portal where every postback is a full page round-trip. It also
+left a window in which a keyword's results existed *before* its date filter had
+landed — the harvest reading a page the filter had not reached yet is a bug this
+file already documents twice.
+
+The reload was doing two other jobs, and those are now done directly:
+
+* **the keyword box** — `search()` clears it through Selenium *and* through the
+  DOM (`value=''` plus an `input` event) before typing the next term, because
+  the portal binds its own model on input events; a half-cleared box searches
+  `alpha beta` instead of `beta`.
+* **the results page** — `collect_links()` walks to the *last* page of every
+  keyword's results, so `_ensure_first_result_page()` reads the pagination bar
+  and takes them back to page 1 before the next harvest. Harvesting from page 7
+  would silently lose pages 1-6 and report a smaller, entirely plausible number.
+
+Persistence is **verified, not assumed**. `SidebarDriver.state_intact(request)`
+re-reads the status radio, every panel's hidden field and both date panels — one
+read-only round-trip, no clicks and no postback — after each keyword's search.
+Intact is the normal answer and costs nothing; drift is reported with the panel
+named and repaired by re-applying the sidebar to that keyword's own results,
+which is the old behaviour, now paid for only where it is needed. The keywords
+that needed it land on the run as `filters_reapplied_keywords`.
+
+Anything that navigates invalidates the session state explicitly: `login()`
+clears `_filters_live` (a re-login lands on the dashboard, which has no sidebar),
+and so does a keyword that failed mid-page. The next keyword re-establishes the
+filters before it searches.
+
+The per-keyword date tally (`dates_applied_keywords` / `dates_missed_keywords`)
+is unchanged in meaning — it is now fed by reading the panels back rather than by
+re-driving them.
+
+One consequence worth knowing when reading a run: a keyword reporting **0 bids
+is 0 under the run's filters**, not proof the term matches nothing on BidNet.
+The search the portal answered was already narrowed, so there is no longer an
+unfiltered count per keyword to compare against. The before/after comparison
+still exists once, on the session's own results page.
+
+### The 7-day closing-date filter
+
+`APPLY_CLOSE_DATE_FILTER` in `scraper.py` is **False for the testing phase**: a
+run keeps every solicitation the portal returned, whatever its closing date, so
+its count is comparable with a manual search's. The rule, its tallies and its
+reporting are all still in place — flipping the flag restores them, and nothing
+else changes. While it is off the run does **not** report
+`min_days_until_close`, so the console shows no closing-date note for a filter
+that did not run.
 
 ### Zero-result fast-fail
 
@@ -418,8 +540,13 @@ something other than what was asked for is worse than one that refuses to start.
 
 ### Interaction with the existing close-date filter
 
-`app/core/closing_filter` already drops solicitations closing sooner than
+`app/core/closing_filter` drops solicitations closing sooner than
 `MIN_DAYS_UNTIL_CLOSE`, applied per-bid *after* the detail page is scraped. The
 sidebar Closing Date filter is applied earlier, at the portal. They compose: the
-sidebar narrows what is collected, the close-date filter still drops anything
-too near its deadline from whatever survives.
+sidebar narrows what is collected, and the close-date filter drops anything too
+near its deadline from whatever survives.
+
+**Currently only the sidebar half is live** — `APPLY_CLOSE_DATE_FILTER` is False
+for the testing phase (see "The 7-day closing-date filter" above), so the
+per-bid rule drops nothing. The sidebar's own Closing Date panel is unaffected
+and still narrows at the portal if the frontend sets it.
