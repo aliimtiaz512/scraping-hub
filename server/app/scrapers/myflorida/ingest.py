@@ -15,7 +15,6 @@ from typing import Any
 from openpyxl import load_workbook
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from app.core.closing_filter import MIN_DAYS_UNTIL_CLOSE, days_until_close
 from app.db import SessionLocal
 from app.scrapers.myflorida.models import Bid, ScrapeRun
 
@@ -90,66 +89,6 @@ def parse_excel(path: str | Path) -> list[dict[str, Any]]:
             record[header] = value
         records.append(record)
     return records
-
-
-def _close_date_column(headers: list[str]) -> int | None:
-    """Index of the export's close-date column (by normalized header), or None."""
-    normalized = [_normalize(h) for h in headers]
-    for candidate in FIELD_CANDIDATES["close_date"]:
-        for i, norm in enumerate(normalized):
-            if candidate in norm:
-                return i
-    return None
-
-
-def filter_workbook_by_close_date(path: str | Path) -> tuple[int, int, int]:
-    """Drop rows closing sooner than MIN_DAYS_UNTIL_CLOSE from the workbook on disk.
-
-    MyFlorida's downloadable deliverable IS this merged workbook (it is not
-    rebuilt from the DB), and the DB ingest reads the same file — so pruning it
-    here filters both at once. Rows whose close date can't be read are kept (we
-    can't prove they fail); a workbook with no recognizable close-date column is
-    left untouched. Returns (kept, skipped_closing_soon, kept_unreadable).
-    """
-    workbook = load_workbook(filename=str(path))
-    sheet = workbook.active
-    rows = [list(r) for r in sheet.iter_rows(values_only=True)]
-    if not rows:
-        workbook.close()
-        return (0, 0, 0)
-
-    header_idx = _find_header_row(rows)
-    headers = [str(h).strip() if h is not None else f"column_{i}" for i, h in enumerate(rows[header_idx])]
-    close_col = _close_date_column(headers)
-    data_row_count = sum(
-        1 for r in rows[header_idx + 1:] if not all(c in (None, "") for c in r)
-    )
-    if close_col is None:
-        workbook.close()
-        return (data_row_count, 0, 0)  # nothing to evaluate — keep everything
-
-    kept = skipped = unreadable = 0
-    delete_at: list[int] = []  # 1-based worksheet row numbers to remove
-    for offset, row in enumerate(rows[header_idx + 1:]):
-        if all(c in (None, "") for c in row):
-            continue
-        value = row[close_col] if close_col < len(row) else None
-        days = days_until_close(value)
-        if days is None:
-            unreadable += 1
-            kept += 1
-        elif days >= MIN_DAYS_UNTIL_CLOSE:
-            kept += 1
-        else:
-            skipped += 1
-            delete_at.append(header_idx + 1 + offset + 1)  # +1: openpyxl is 1-based
-
-    for row_num in sorted(delete_at, reverse=True):
-        sheet.delete_rows(row_num, 1)
-    if delete_at:
-        workbook.save(str(path))
-    workbook.close()
-    return (kept, skipped, unreadable)
 
 
 def map_row(raw: dict[str, Any]) -> dict[str, Any]:

@@ -1,19 +1,32 @@
-"""The ad-status sweep: every advertisement matching a status, classified.
+"""The ad-status sweep: every advertisement matching a status, captured whole.
 
 Subclasses `MFMPScraper` and overrides three things. Subclassing rather than
-editing the parent is deliberate — the niche flow's code path stays byte-for-byte
-what it was, and portal fixes to login/search land in both flows:
+editing the parent is deliberate — the niche flow's code path stays what it was,
+and portal fixes to login/search land in both flows:
 
   open_advanced_search  the sweep sets no commodity codes, so the parent's
                         accordion expansion is skipped.
-  _visit_bid            reads `#mainSection` and downloads into a scratch folder
-                        that is deleted once its text has been extracted.
-  run                   pagination, classification and a one-workbook delivery.
+  _capture_bid          reads `#mainSection` and keeps every attachment in the
+                        bid's own folder.
+  run                   pagination, capture, and the packaged delivery.
 
 Pagination is the substantive addition. The parent assumes a single page,
 which holds for a code/keyword search but not for an unfiltered status sweep.
 The portal's Angular Material paginator is walked until its Next button is
 disabled, following the shape already proven in the Wisconsin scraper.
+
+**Nothing is scored, categorised or dropped.** The sweep used to run each
+advertisement through a C/T/S evaluation matrix, file it into a niche lane, and
+delete its attachments once their text had fed the score — so what reached the
+reviewer was the classifier's opinion of the portal, and the documents behind
+that opinion were already gone. Every ad the search returns is now captured as
+it stands, with its attachments kept in `Bids_Data/<ad number>/` and one summary
+sheet indexing the lot; deciding what is worth pursuing is the reviewer's.
+
+The classifier itself (`scoring.py`, `routing.py`, `matching.py`,
+`mfmp_niches.yaml`) is still in the tree and still serves the lane views and
+workbooks of sweep runs recorded *before* this change. Nothing in this flow
+calls it.
 """
 
 from __future__ import annotations
@@ -29,16 +42,15 @@ from selenium.common.exceptions import TimeoutException, WebDriverException
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 
+from app.config import settings
 from app.core import run_manager
 from app.core.base_scraper import StopRequested
 from app.core.exports import archive_run
+from app.scrapers.myflorida import storage
 from app.scrapers.myflorida.ingest import map_row, parse_excel
 from app.scrapers.myflorida.scraper import MFMPScraper, describe_error
-from app.scrapers.myflorida.sweep import codes as code_extract
-from app.scrapers.myflorida.sweep import documents as docs
 from app.scrapers.myflorida.sweep import export
-from app.scrapers.myflorida.sweep.config import get_config
-from app.scrapers.myflorida.sweep.routing import Classification, classify
+from app.scrapers.myflorida.workbook import build_from_records, merge_exports
 from app.services.notifier import notify_scrape_completion
 
 logger = logging.getLogger(__name__)
@@ -69,7 +81,6 @@ class SweepScraper(MFMPScraper):
     def __init__(self, run_id: str, ad_statuses: list[str], max_bids: int | None = None):
         super().__init__(run_id, codes=[], ad_statuses=ad_statuses, ad_types=[], keywords=[])
         self.max_bids = max_bids
-        self.config = get_config()
         self.exports: list[Path] = []
         self.excel_path: Path | None = None
 
@@ -217,10 +228,22 @@ class SweepScraper(MFMPScraper):
             run_manager.add_warning(self.run_id, "description (#mainSection) not found on a bid")
             return ""
 
-    def _visit_bid(self, bid: dict) -> dict[str, Any]:
-        """Open a bid, read its description, harvest document text, come back."""
+    def _capture_bid(self, bid: dict) -> dict[str, Any]:
+        """Open a bid, read it, keep every attachment, come back.
+
+        The attachments are the change. They used to land in a scratch folder,
+        have their text lifted for the classifier, and be deleted before the next
+        bid — the sweep's contract was one spreadsheet and nothing else. They now
+        go straight into this bid's own folder inside the export tree
+        (`Bids_Data/<ad number>/`) and stay there, because a reviewer reading a
+        row is exactly the person who needs the solicitation PDF next to it.
+
+        A document that fails to download is recorded against the bid rather
+        than raised: a bid with three of four attachments is still worth having,
+        and the missing one is named in the summary sheet.
+        """
         number = bid["number"]
-        self.set_step(f"evaluating:{number}")
+        self.set_step(f"capturing:{number}")
 
         link = self.wait(LINK_TIMEOUT).until(EC.element_to_be_clickable((By.LINK_TEXT, number)))
         self.scroll_into_view(link)
@@ -230,23 +253,25 @@ class SweepScraper(MFMPScraper):
 
         detail_url = self.driver.current_url
         description = self._read_description()
+        title = bid.get("title", "")
 
-        folder = docs.scratch_dir(self.run_dir, number)
+        folder = storage.bid_folder(self.run_dir, number, title)
+        saved: list[str] = []
         errors: list[str] = []
         for index, doc_link in enumerate(self.driver.find_elements(*self._sel("document_links")), 1):
             try:
                 self.scroll_into_view(doc_link)
                 self.driver.execute_script("arguments[0].click();", doc_link)
                 downloaded = self.wait_for_download()
+                # Keep the portal's own filename; only prefix an index when two
+                # attachments on the same bid share one.
                 target = folder / downloaded.name
                 if target.exists():
                     target = folder / f"{index}_{downloaded.name}"
                 shutil.move(str(downloaded), str(target))
+                saved.append(target.name)
             except (TimeoutException, WebDriverException, OSError) as exc:
                 errors.append(f"doc {index}: {exc.__class__.__name__}")
-
-        extracted = docs.extract_and_discard(folder, description)
-        extracted.errors.extend(errors)
 
         self.driver.back()
         self.wait().until(EC.presence_of_element_located(self._sel("results_rows")))
@@ -254,13 +279,12 @@ class SweepScraper(MFMPScraper):
 
         return {
             "ad_number": number,
-            "title": bid.get("title", ""),
+            "title": title,
             "description": description,
             "detail_url": detail_url,
-            "documents": extracted.filenames,
-            "document_chars": extracted.char_count,
-            "scope_text": extracted.text,
-            "document_errors": extracted.errors,
+            "documents": saved,
+            "folder": storage.folder_reference(number, title),
+            "document_errors": errors,
         }
 
     # -- orchestration ------------------------------------------------------
@@ -335,39 +359,38 @@ class SweepScraper(MFMPScraper):
                 logger.exception("[run %s] could not read export %s", self.run_id, path)
         return out
 
-    def _classify(self, visited: dict[str, Any], meta: dict[str, Any]) -> tuple[Classification, dict]:
-        published, source = code_extract.extract(
-            meta.get("commodity_codes"), visited.get("description")
-        )
-        classification = classify(
-            self.config,
-            visited["ad_number"],
-            visited.get("title") or meta.get("title") or "",
-            visited.get("scope_text") or visited.get("description") or "",
-            published,
-        )
-        ad = {
-            "ad_number": visited["ad_number"],
-            "title": visited.get("title") or meta.get("title"),
+    def _record(self, captured: dict[str, Any], meta: dict[str, Any]) -> dict[str, Any]:
+        """One advertisement as it will be stored and summarised.
+
+        The portal's own export columns (agency, type, status, dates) merged with
+        what the detail page gave (description, attachments, the folder they are
+        in). Nothing is interpreted: no score, no niche, no verdict — the row is
+        what the portal said, plus where the files went.
+        """
+        return {
+            "ad_number": captured["ad_number"],
+            "title": captured.get("title") or meta.get("title"),
             "agency": meta.get("agency"),
             "ad_type": meta.get("ad_type"),
             "status": meta.get("status"),
             "ad_date": meta.get("ad_date"),
             "open_date": meta.get("open_date"),
             "close_date": meta.get("close_date"),
-            "description": visited.get("description"),
-            "code_source": source,
-            "documents": visited.get("documents"),
-            "document_chars": visited.get("document_chars", 0),
+            "description": captured.get("description"),
+            "detail_url": captured.get("detail_url"),
+            "documents": captured.get("documents") or [],
+            "folder": captured.get("folder"),
+            "document_errors": captured.get("document_errors") or [],
             "raw_data": meta.get("raw_data"),
         }
-        return classification, ad
 
     def run(self) -> None:
         run_manager.update_run(self.run_id, status="running")
-        results: list[tuple[Classification, dict[str, Any]]] = []
+        records: list[dict[str, Any]] = []
         try:
-            self.start_driver()
+            # Visible for the same reason the niche flow is: the login stops for
+            # a one-time password that a person has to type in.
+            self.start_driver(headless=False if settings.mfmp_manual_otp else None)
             self.login()
             self.open_advertisements()
             self.open_advanced_search()
@@ -380,14 +403,16 @@ class SweepScraper(MFMPScraper):
             else:
                 bids = self._collect_all_pages()
                 metadata = self._metadata_by_ad()
-                results = self._process(bids, metadata)
+                records = self._process(bids, metadata)
 
-            self._finalize(results)
+            self._finalize(records)
             run_manager.update_run(self.run_id, status="completed", step="done")
-            notify_scrape_completion(self.run_id, "myflorida_sweep", len(results))
+            notify_scrape_completion(self.run_id, "myflorida_sweep", len(records))
         except StopRequested:
+            # Everything captured so far is still packaged: the attachments are
+            # already on disk and the reviewer should get what the run got.
             logger.info("[run %s] stopped by user", self.run_id)
-            self._finalize(results)
+            self._finalize(records)
             run_manager.update_run(self.run_id, status="completed", step="stopped")
         except Exception as exc:  # noqa: BLE001 — a failed run must be reported, not crash the worker
             logger.exception("[run %s] sweep failed", self.run_id)
@@ -395,16 +420,16 @@ class SweepScraper(MFMPScraper):
             run_manager.add_error(self.run_id, describe_error(exc, self.current_step))
             run_manager.update_run(self.run_id, status="failed", step="failed")
         finally:
-            docs.cleanup_scratch(self.run_dir)
             self.cleanup()
             run_manager.update_run(self.run_id, finished_at=datetime.now().isoformat())
             run_manager.remove_empty_folder(self.run_id)
 
     def _process(
         self, bids: list[dict], metadata: dict[str, dict[str, Any]]
-    ) -> list[tuple[Classification, dict[str, Any]]]:
-        """Visit and classify every collected bid, page by page."""
-        results: list[tuple[Classification, dict[str, Any]]] = []
+    ) -> list[dict[str, Any]]:
+        """Open every collected bid and keep it, page by page. No bid is skipped
+        on the strength of anything read from it."""
+        records: list[dict[str, Any]] = []
         by_page: dict[int, list[dict]] = {}
         for bid in bids:
             by_page.setdefault(bid.get("page", 0), []).append(bid)
@@ -422,11 +447,11 @@ class SweepScraper(MFMPScraper):
                     run_manager.add_error(
                         self.run_id,
                         f"could not return to page {page_index + 1} — "
-                        f"{len(page_bids) - offset} advertisement(s) not evaluated",
+                        f"{len(page_bids) - offset} advertisement(s) not captured",
                     )
                     break
                 try:
-                    visited = self._visit_bid(bid)
+                    captured = self._capture_bid(bid)
                 except StopRequested:
                     raise
                 except (TimeoutException, WebDriverException) as exc:
@@ -436,63 +461,74 @@ class SweepScraper(MFMPScraper):
                     self._recover_to_results()
                     continue
 
-                classification, ad = self._classify(visited, metadata.get(bid["number"], {}))
-                results.append((classification, ad))
+                record = self._record(captured, metadata.get(bid["number"], {}))
+                records.append(record)
                 run_manager.update_run(
                     self.run_id,
-                    bids_processed=len(results),
+                    bids_processed=len(records),
+                    documents_downloaded=sum(len(r["documents"]) for r in records),
                     bids=[{
-                        "number": c.advertisement_number,
-                        "title": a.get("title"),
-                        "niche": c.primary_niche,
-                        "score": c.primary_score,
-                        "strength": c.match_strength,
-                    } for c, a in results[-20:]],
+                        "number": r["ad_number"],
+                        "title": r.get("title"),
+                        # A count, not the list: `documents` on a result row
+                        # means the filenames themselves everywhere else, and
+                        # the live table only needs how many there were.
+                        "document_count": len(r["documents"]),
+                        "folder": r.get("folder"),
+                    } for r in records[-20:]],
                 )
-        return results
+        return records
 
-    def _finalize(self, results: list[tuple[Classification, dict[str, Any]]]) -> None:
-        """Persist, build the workbook, archive. Each step best-effort."""
-        if not results:
+    def _finalize(self, records: list[dict[str, Any]]) -> None:
+        """Summary sheet, database, archive. Each step best-effort.
+
+        The summary is written **to disk first and always**, unlike the old
+        delivery which leaned on the DB to rebuild the workbook on demand. It has
+        to be: the deliverable is now a ZIP whose root holds the sheet next to
+        the documents it indexes, so the file has to exist at package time
+        whatever the database is doing.
+        """
+        if not records:
             run_manager.update_run(self.run_id, no_results=True)
 
-        lanes: dict[str, int] = {}
-        for classification, _ in results:
-            lanes[classification.primary_niche] = lanes.get(classification.primary_niche, 0) + 1
-        run_manager.update_run(self.run_id, niche_counts=lanes)
+        self.set_step("merging_workbook")
+        # The portal's own per-page exports, stitched into one sheet, with each
+        # row pointing at the folder holding that ad's documents. Falls back to
+        # building the sheet from what was captured if the portal's exports are
+        # unusable — a summary is not optional, it is the archive's index.
+        folder_by_ad = {r["ad_number"]: r.get("folder", "") for r in records}
+        try:
+            if self.exports:
+                self.excel_path = merge_exports(
+                    self.exports, self.run_dir, self._niche_label(), {}, folder_by_ad
+                )
+            else:
+                self.excel_path = build_from_records(records, self.run_dir)
+        except Exception:  # noqa: BLE001 — never fail a run over the workbook
+            logger.exception("[run %s] summary sheet failed; rebuilding from records",
+                             self.run_id)
+            try:
+                self.excel_path = build_from_records(records, self.run_dir)
+            except Exception:  # noqa: BLE001
+                logger.exception("[run %s] summary rebuild failed too", self.run_id)
+                run_manager.add_error(self.run_id, "summary sheet could not be written")
+        if self.excel_path:
+            run_manager.update_run(
+                self.run_id, excel_path=str(self.excel_path), excel_exported=True
+            )
 
         self.set_step("storing_in_db")
-        db_ok = True
         try:
-            stored = export.save(self.run_id, results)
+            stored = export.save_capture(self.run_id, records)
             run_manager.update_run(self.run_id, bids_stored_in_db=stored)
-        except Exception as exc:  # noqa: BLE001
-            db_ok = False
+        except Exception as exc:  # noqa: BLE001 — the files on disk are the record
             logger.exception("[run %s] sweep DB save failed", self.run_id)
             run_manager.add_error(self.run_id, f"db save failed: {exc.__class__.__name__}")
+            # Tells the download/email path to serve the sheet on disk rather
+            # than regenerate an empty one from a DB that never got the rows.
+            run_manager.update_run(self.run_id, db_save_failed=True)
 
-        self.set_step("generating_excel")
-        if db_ok:
-            # Rebuilt from the DB on demand by the download/email path, exactly
-            # like SAM — nothing needs to sit on disk.
-            run_manager.update_run(self.run_id, excel_exported=True)
-        else:
-            # DB outage: the classifications exist only in memory, so a disk
-            # workbook is the only copy the download can serve.
-            from app.core.filenames import sanitize_filename
-            from app.scrapers.myflorida.sweep.workbook import build_workbook
-
-            name = sanitize_filename(f"MyFlorida_Sweep_{self.run_id}", max_length=150)
-            path = self.run_dir / f"{name}.xlsx"
-            try:
-                build_workbook(self.config, export.rows_by_lane(self.config, results), path)
-                run_manager.update_run(
-                    self.run_id, excel_path=str(path), excel_exported=True)
-            except Exception:  # noqa: BLE001
-                logger.exception("[run %s] sweep workbook generation failed", self.run_id)
-                run_manager.add_error(self.run_id, "workbook generation failed (see logs)")
-
-        self.set_step("saving_excel")
+        self.set_step("packaging_results")
         archive_run(self.run_id)
 
 

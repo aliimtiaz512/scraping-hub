@@ -30,8 +30,8 @@ from app.config import settings
 from app.core import run_manager
 from app.core.base_scraper import BaseScraper, StopRequested
 from app.core.filenames import sanitize_filename
-from app.core.closing_filter import MIN_DAYS_UNTIL_CLOSE
-from app.scrapers.myflorida.ingest import filter_workbook_by_close_date, ingest_excel
+from app.scrapers.myflorida import storage
+from app.scrapers.myflorida.ingest import ingest_excel
 from app.scrapers.myflorida.workbook import merge_exports
 from app.core.exports import archive_run
 from app.services.notifier import notify_scrape_completion
@@ -72,6 +72,13 @@ SEL = {
     "login_password": (By.CSS_SELECTOR, "input[formcontrolname='password']"),
     "login_submit": (By.CSS_SELECTOR, "button[type='submit']"),
     "advanced_search_button": (By.XPATH, "//button[contains(., 'Advanced Search')]"),
+    # Present on the signed-in shell whatever route the OTP flow lands on, so a
+    # session that came back somewhere other than the ads page is still
+    # recognised as authenticated. See `_authenticated`.
+    "dashboard_marker": (
+        By.CSS_SELECTOR,
+        "mat-toolbar a[href*='/vendor/ads'], mat-sidenav-container, .vendor-dashboard",
+    ),
     "max_results_select": (By.XPATH, "//mat-form-field[.//mat-label[contains(.,'Maximum')]]//mat-select"),
     "ad_status_panel_header": (By.XPATH, "//mat-expansion-panel-header[.//mat-panel-title[contains(normalize-space(.),'Ad Status')]]"),
     "ad_status_options": (By.XPATH, "//mat-selection-list[@aria-label='Ad Status']//mat-list-option"),
@@ -206,8 +213,82 @@ class MFMPScraper(BaseScraper):
         password.clear()
         password.send_keys(settings.mfmp_password)
         self.driver.find_element(*SEL["login_submit"]).click()
-        # Successful login leaves the /login page.
-        self.wait().until(lambda d: "login" not in d.current_url.lower())
+        self._await_authenticated()
+
+    def _await_authenticated(self) -> None:
+        """Wait out the one-time password, then confirm we are really inside.
+
+        MFMP answers a correct email/password with a one-time code sent to the
+        account's email or phone. There is nothing on this side that can produce
+        that code, so the browser runs visible (see `run`) and this step waits
+        for a person to type it into the open window — the same human-in-the-loop
+        shape the North Dakota portal's CAPTCHA uses.
+
+        Two things this must not do. It must not treat *leaving* `/login` as
+        being logged in: the OTP challenge is its own route, so the old check
+        passed the moment the code was demanded and handed a half-authenticated
+        session to the search step, which then failed somewhere unrelated with a
+        message about a missing button. And it must not sit on the default
+        element wait, which is far shorter than a person takes to fetch a code
+        from their phone. So it waits for the *dashboard* — the thing that only
+        exists once the session is real — for as long as `mfmp_otp_wait_seconds`
+        allows.
+        """
+        timeout = (
+            settings.mfmp_otp_wait_seconds if settings.mfmp_manual_otp else LOGIN_FORM_TIMEOUT
+        )
+        if settings.mfmp_manual_otp:
+            self.set_step("awaiting_otp")
+            message = (
+                f"MyFloridaMarketPlace sent a one-time password. Enter it in the open "
+                f"Chrome window — the run continues by itself once you are signed in "
+                f"(waiting up to {timeout}s)."
+            )
+            logger.info("[run %s] 👉 %s", self.run_id, message)
+            # On the run, not just in the log: this is the one moment the run
+            # needs a person, and nobody is reading the server's stdout.
+            run_manager.add_warning(self.run_id, message)
+            run_manager.update_run(
+                self.run_id, awaiting_otp=True, otp_wait_seconds=timeout
+            )
+
+        try:
+            self.wait(timeout).until(self._authenticated)
+        except TimeoutException as exc:
+            self.screenshot("otp_not_completed")
+            raise LoginTimeout(
+                f"MFMP sign-in did not complete within {timeout}s. "
+                + (
+                    "The one-time password was not entered in the open Chrome window "
+                    "in time — start the run again and have the code ready, or raise "
+                    "mfmp_otp_wait_seconds in server/.env."
+                    if settings.mfmp_manual_otp
+                    else "The account was challenged for a one-time password and "
+                    "mfmp_manual_otp is off, so nothing could answer it."
+                )
+            ) from exc
+        finally:
+            run_manager.update_run(self.run_id, awaiting_otp=False)
+
+        self.set_step("logged_in")
+
+    def _authenticated(self, driver) -> bool:
+        """True once the portal has landed us somewhere only a real session
+        reaches. Checked as "the dashboard is on screen", not as "the URL no
+        longer says login" — an OTP prompt satisfies the second and not the
+        first, which is the whole difference this method exists for."""
+        try:
+            url = (driver.current_url or "").lower()
+        except WebDriverException:
+            return False
+        if "/login" in url:
+            return False
+        # The ads landing page and the portal's post-login shell both carry the
+        # Advanced Search button; either means we are through.
+        return bool(
+            driver.find_elements(*SEL["advanced_search_button"])
+            or driver.find_elements(*SEL["dashboard_marker"])
+        )
 
     def open_advertisements(self, attempts: int = 3) -> None:
         """Load the ads landing page and let it settle before anyone clicks it.
@@ -520,8 +601,7 @@ class MFMPScraper(BaseScraper):
         self.wait().until(lambda d: "/detail/" in d.current_url)
         time.sleep(2)  # let the detail page (incl. document list) render
 
-        bid_dir = self.run_dir / self._bid_folder_name(bid)
-        bid_dir.mkdir(parents=True, exist_ok=True)
+        bid_dir = storage.bid_folder(self.run_dir, number, title)
 
         doc_links = self.driver.find_elements(*SEL["document_links"])
         for index, doc_link in enumerate(doc_links, start=1):
@@ -558,15 +638,10 @@ class MFMPScraper(BaseScraper):
             pass
 
     def _bid_folder_name(self, bid: dict) -> str:
-        """`<ad number>_<title>` — the ad number leads because it's the stable ID
-        you'd search by; the title (truncated) follows for readability."""
-        number = sanitize_filename((bid.get("number") or "").strip(), max_length=64)
-        # sanitize_filename truncates after its own strip, so a title cut mid-word
-        # can still end in a space or dot — strip again on this side of the cut.
-        title = sanitize_filename((bid.get("title") or "").strip(), max_length=60).strip(" ._")
-        if number and title:
-            return f"{number}_{title}"
-        return number or title or "untitled"
+        """Where this bid's documents live *inside the archive* — the value the
+        summary sheet's Folder column carries, so a row points at a real place in
+        the unpacked ZIP. See `myflorida/storage.py` for the layout."""
+        return storage.folder_reference(bid.get("number") or "", bid.get("title") or "")
 
     def _niche_label(self) -> str:
         """Human label for the run's niche, used for the merged workbook name."""
@@ -655,26 +730,13 @@ class MFMPScraper(BaseScraper):
             run_manager.add_error(self.run_id, f"workbook merge failed: {exc.__class__.__name__}")
             return
 
-        # Keep only ads still at least MIN_DAYS_UNTIL_CLOSE days from close. The
-        # close date lives only in this merged export (the ad list has just
-        # number/title), so we prune the workbook here — which filters both the
-        # downloadable Excel and the DB ingest that reads it next. Unreadable
-        # close dates are kept; a failure must not fail the run.
-        try:
-            kept, skipped, unreadable = filter_workbook_by_close_date(self.excel_path)
-            run_manager.update_run(
-                self.run_id,
-                min_days_until_close=MIN_DAYS_UNTIL_CLOSE,
-                bids_skipped_closing_soon=skipped,
-                bids_kept_unreadable_close=unreadable,
-            )
-            logger.info(
-                "[run %s] close-date filter (≥%sd): kept %s, skipped %s closing soon, %s unreadable kept",
-                self.run_id, MIN_DAYS_UNTIL_CLOSE, kept, skipped, unreadable,
-            )
-        except Exception:  # noqa: BLE001 — filtering must never fail the run
-            logger.exception("[run %s] close-date filter failed", self.run_id)
-
+        # No close-date pruning, and nothing else that drops rows: every
+        # advertisement the portal returned reaches the summary sheet and the DB.
+        # The workbook used to be filtered to ads at least MIN_DAYS_UNTIL_CLOSE
+        # days from closing, which silently removed bids a reviewer might still
+        # have wanted to see — judging what is worth pursuing is the reviewer's,
+        # not the scraper's. `app.core.closing_filter` still exists for the
+        # portals that use it; this flow no longer calls it.
         try:
             self.ingest_to_db()
         except Exception as exc:  # noqa: BLE001 — DB issues shouldn't fail the run
@@ -761,7 +823,12 @@ class MFMPScraper(BaseScraper):
     def run(self) -> None:
         run_manager.update_run(self.run_id, status="running")
         try:
-            self.start_driver()
+            # Visible, always, while manual OTP is on: the run stops at the
+            # one-time password and waits for a person to type it in, and there
+            # is nothing to type into in a headless window. Not left to the
+            # per-run "Live preview" flag — a run started without it would hang
+            # at the challenge until the wait expired, with no way to answer.
+            self.start_driver(headless=False if settings.mfmp_manual_otp else None)
             self.login()
             if self.keyword_mode:
                 self._run_keywords()

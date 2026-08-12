@@ -173,12 +173,115 @@ def save(run_id: str, results: list[tuple[Classification, dict[str, Any]]]) -> i
     return stored
 
 
+UNREVIEWED = "UNREVIEWED"
+"""What `primary_niche` holds for a bid nobody classified.
+
+Not a verdict and not a lane — a placeholder in a NOT NULL column, saying the
+only true thing available: this advertisement was captured, and no automated
+rule has been applied to it. It is what separates a run of the current pipeline
+from the classified runs still in the table, which is how `generate_excel` knows
+which workbook to build.
+"""
+
+
+def save_capture(run_id: str, records: list[dict[str, Any]]) -> int:
+    """Store captured advertisements — every one of them, unscored.
+
+    The classifying `save()` above is untouched and still writes the six
+    per-niche score rows for the runs that had them. This one writes the bid and
+    stops: no `SweepScore` rows, no niche, no strength, because none was
+    computed. Everything the portal and the detail page gave is kept, including
+    which folder in the archive holds the ad's documents.
+    """
+    session = SessionLocal()
+    stored = 0
+    try:
+        for record in records:
+            session.add(SweepBid(
+                run_id=run_id,
+                ad_number=record.get("ad_number") or "",
+                title=record.get("title"),
+                agency=record.get("agency"),
+                ad_type=record.get("ad_type"),
+                status=record.get("status"),
+                ad_date=record.get("ad_date"),
+                open_date=record.get("open_date"),
+                close_date=record.get("close_date"),
+                description=record.get("description"),
+                primary_niche=UNREVIEWED,
+                primary_score=0,
+                match_strength=None,
+                documents=record.get("documents") or [],
+                document_chars=0,
+                raw_data={
+                    **(record.get("raw_data") or {}),
+                    "detail_url": record.get("detail_url"),
+                    "folder": record.get("folder"),
+                    "document_errors": record.get("document_errors") or [],
+                },
+            ))
+            stored += 1
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+    logger.info("[run %s] stored %d captured advertisement(s)", run_id, stored)
+    return stored
+
+
+def _capture_rows(run_id: str) -> list[dict[str, Any]] | None:
+    """This run's bids as flat summary rows, or None if it was a classified run.
+
+    The decision is made on the data rather than on a flag: a run whose bids all
+    carry `UNREVIEWED` came from the capture pipeline and gets the flat sheet;
+    anything else predates it and still gets its lane workbook, so an old run's
+    download is exactly what it always was.
+    """
+    session = SessionLocal()
+    try:
+        bids = session.execute(
+            select(SweepBid).where(SweepBid.run_id == run_id).order_by(SweepBid.id)
+        ).scalars().all()
+    finally:
+        session.close()
+    if not bids or any(bid.primary_niche != UNREVIEWED for bid in bids):
+        return None
+    return [
+        {
+            "ad_number": bid.ad_number,
+            "title": bid.title,
+            "agency": bid.agency,
+            "ad_type": bid.ad_type,
+            "status": bid.status,
+            "ad_date": bid.ad_date,
+            "open_date": bid.open_date,
+            "close_date": bid.close_date,
+            "description": bid.description,
+            "documents": bid.documents or [],
+            "detail_url": (bid.raw_data or {}).get("detail_url"),
+            "folder": (bid.raw_data or {}).get("folder"),
+        }
+        for bid in bids
+    ]
+
+
 def generate_excel(run_id: str, out_path: str | Path) -> int:
     """Rebuild the run's workbook from the DB. Returns the advertisement count.
 
     This is the hook `app.core.exports._GENERATOR_PORTALS` calls, so a download
     months later is regenerated rather than read from a workspace long deleted.
+    A captured (unclassified) run rebuilds as the flat summary sheet its archive
+    shipped; a classified run rebuilds as the lane workbook it always did.
     """
+    rows = _capture_rows(run_id)
+    if rows is not None:
+        from app.scrapers.myflorida.workbook import build_summary_at
+
+        build_summary_at(rows, Path(out_path))
+        return len(rows)
+
     config = get_config()
     session = SessionLocal()
     try:

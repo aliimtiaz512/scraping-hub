@@ -27,6 +27,15 @@ class Settings(BaseSettings):
     mfmp_email: str = ""
     mfmp_password: str = ""
     mfmp_login_url: str = "https://vendor.myfloridamarketplace.com/login"
+    # MFMP challenges a login with a one-time password sent to the account's
+    # email/phone. Nothing on this side can produce that code, so the browser is
+    # forced visible and the login step waits for a human to type it into the
+    # open window; the run continues the instant the ads dashboard loads. Same
+    # shape as `northdakota_manual_login` above. Set false only for an account
+    # whose OTP has been disabled — the run then fails at the challenge instead
+    # of waiting for someone who is not there.
+    mfmp_manual_otp: bool = True
+    mfmp_otp_wait_seconds: int = 120  # seconds to wait for the human
 
     # RideMetro (Bonfire) — the login is RideMetro's own portal, but a run
     # sweeps the whole Euna Supplier Network the account belongs to: every

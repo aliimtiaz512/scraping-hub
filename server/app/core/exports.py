@@ -25,22 +25,26 @@ logger = logging.getLogger(__name__)
 XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 # Portals whose runs download real document files → their download is a ZIP.
-DOC_PORTALS = {"myflorida", "bidnet", "northdakota", "emma"}
+DOC_PORTALS = {"myflorida", "myflorida_sweep", "bidnet", "northdakota", "emma"}
 
 # Portals whose run produces nothing but the spreadsheet, so wrapping it in a
 # ZIP adds a folder to unpack for no gain. SAM downloads each bid's attachments
 # only to extract their text for the evaluator, then deletes them — the sheet is
 # the entire deliverable. These runs are archived and delivered as a bare .xlsx.
-# The MyFlorida sweep is the same shape: it downloads each ad's attachments only
-# to extract their text for the classifier, then deletes them. SEPTA never
-# downloads anything at all — its Open Quotes grid is metadata only, so the
-# merged sheet across a niche's searches is the entire deliverable. RideMetro is
-# the same: its Euna Supplier Network sweep only reads each agency's
+# SEPTA never downloads anything at all — its Open Quotes grid is metadata only,
+# so the merged sheet across a niche's searches is the entire deliverable.
+# RideMetro is the same: its Euna Supplier Network sweep only reads each agency's
 # opportunities list, and the agency-grouped report is all a run produces.
 # Unison joined them once its evaluator went in: it fetches each buy's
 # attachments to read them into the decision, then discards them — after the
 # verdict the files serve no purpose, so the sheet is the deliverable.
-EXCEL_ONLY_PORTALS = {"sam", "myflorida_sweep", "septa", "ridemetro", "unison"}
+#
+# The MyFlorida sweep used to be here, for exactly that reason: it downloaded
+# each ad's attachments only to feed the classifier's scope signal and then
+# deleted them. It keeps them now (the classifier is gone from that pipeline),
+# so its runs deliver the same ZIP the niche flow does — a summary sheet beside
+# the documents it indexes.
+EXCEL_ONLY_PORTALS = {"sam", "septa", "ridemetro", "unison"}
 
 # Portals whose export module can rebuild the run's Excel from the DB via
 # `generate_excel(run_id, path)`. MyFlorida is absent on purpose: its workbook
@@ -167,9 +171,14 @@ def build_zip(run: dict[str, Any], out_path: Path) -> str:
         payload = excel_bytes(run)
         if payload:
             data, name = payload
-            # MyFlorida's merged workbook lives inside the run folder and was
-            # already added by the walk above — don't duplicate it.
-            if name not in zf.namelist():
+            # A sheet already inside the walked folder must not be added a second
+            # time at the ZIP root. Checked on the *path*, not the name: MyFlorida
+            # writes its summary to `MyFlorida_Export/MyFlorida_Bids_Summary.xlsx`,
+            # whose arcname carries a folder prefix and so never equals the bare
+            # download name this payload comes back under.
+            on_disk = Path(run.get("excel_path") or "")
+            already_added = bool(on_disk.is_file() and folder in on_disk.parents)
+            if not already_added and name not in zf.namelist():
                 zf.writestr(name, data)
 
     label = folder.name or f"{scraper}_{run['run_id']}"

@@ -16,7 +16,7 @@ const STEP_LABELS: Record<string, string> = {
   searching: "Running search",
   collecting_bids: "Collecting bid list",
   exporting_excel: "Exporting Excel",
-  merging_workbook: "Merging results workbook",
+  merging_workbook: "Building the summary sheet",
   storing_in_db: "Storing bids in database",
   // RideMetro
   opening_opportunities: "Opening opportunities list",
@@ -30,6 +30,10 @@ const STEP_LABELS: Record<string, string> = {
   opening_bid: "Opening solicitation",
   // North Dakota
   awaiting_manual_login: "Waiting for you to solve the CAPTCHA in the browser…",
+  // MyFlorida: the portal has emailed/texted a one-time password and the run is
+  // paused until someone types it into the open Chrome window.
+  awaiting_otp: "Waiting for you to enter the one-time password in the browser…",
+  logged_in: "Signed in",
   opening_solicitations: "Opening Solicitations menu",
   opening_public_solicitation_request: "Opening Public Solicitation Requests",
   // SAM / Unison / NAICS
@@ -98,6 +102,23 @@ export default function RunStatus({ run }: { run: RunStatusData }) {
           <RunBadge status={run.status} />
         </div>
       </header>
+
+      {/* The one moment a run needs a person. MyFlorida's login is answered with
+          a one-time password that only the account holder can read, so the run
+          sits and waits — and says so loudly, because a quiet spinner is
+          indistinguishable from a hang and the window times out. */}
+      {run.awaiting_otp && (
+        <div role="alert" className="border-b border-gold-300 bg-gold-50 px-5 py-4">
+          <p className="font-display text-sm text-gold-900">
+            Enter the one-time password in the Chrome window
+          </p>
+          <p className="mt-1 text-xs leading-relaxed text-gold-800">
+            MyFloridaMarketPlace sent a code to the account. Type it into the browser
+            window that opened — the run continues by itself the moment you are signed in
+            {run.otp_wait_seconds ? `, and gives up after ${run.otp_wait_seconds}s` : ""}.
+          </p>
+        </div>
+      )}
 
       {/* Live step: the current action, with an indeterminate bar underneath.
           The backend reports steps, not percentages, so no fake completion %. */}

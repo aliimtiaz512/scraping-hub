@@ -6,17 +6,50 @@ import { DataTable } from "@/components/ui";
 /**
  * The ad-status sweep's live results.
  *
- * Separate from `ResultsTable` because the sweep produces different rows, not
- * differently-styled ones: it classifies every advertisement rather than
- * downloading each one's attachments, so there is no document count and no
- * per-bid download status to show. What it has instead is the classifier's
- * verdict — the niche it landed in, its score, and how firm that call is.
+ * Two shapes, because the sweep has had two. A current run *captures* every
+ * advertisement — its attachments are kept in a folder of its own and nothing is
+ * scored — so the row says what was collected and where it went. A run recorded
+ * before that change carries the classifier's verdict instead: the niche it
+ * landed in, its score, and how firm the call was. Which columns to show is
+ * decided from the rows themselves, so a historical run still renders as it did.
  *
  * The server sends a rolling window of the most recent rows (not the whole run),
- * so this is a progress view; the complete set lands in the delivered workbook.
+ * so this is a progress view; the complete set lands in the delivered archive.
  */
 export default function MyFloridaSweepResults({ bids }: { bids: BidResult[] }) {
   if (bids.length === 0) return null;
+
+  const classified = bids.some((bid) => bid.niche !== undefined && bid.niche !== null);
+  if (!classified) {
+    const documents = bids.reduce((sum, bid) => sum + (bid.document_count ?? 0), 0);
+    return (
+      <DataTable
+        caption={
+          `Captured · latest ${bids.length} ${bids.length === 1 ? "ad" : "ads"}` +
+          ` · ${documents} document${documents === 1 ? "" : "s"} saved`
+        }
+        headers={[
+          { label: "Number" },
+          { label: "Title" },
+          { label: "Documents", className: "text-center" },
+          { label: "Folder in archive" },
+        ]}
+      >
+        {bids.map((bid) => (
+          <tr key={bid.number} className="transition hover:bg-ink-50">
+            <td className="whitespace-nowrap px-4 py-3 font-mono text-xs font-medium text-ink-900">{bid.number}</td>
+            <td className="max-w-md truncate px-4 py-3 text-ink-700" title={bid.title ?? ""}>
+              {bid.title ?? "—"}
+            </td>
+            <td className="tabular px-4 py-3 text-center text-ink-600">{bid.document_count ?? 0}</td>
+            <td className="max-w-xs truncate px-4 py-3 font-mono text-xs text-ink-500" title={bid.folder ?? ""}>
+              {bid.folder ?? "—"}
+            </td>
+          </tr>
+        ))}
+      </DataTable>
+    );
+  }
 
   return (
     <DataTable

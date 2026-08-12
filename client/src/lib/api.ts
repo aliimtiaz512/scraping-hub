@@ -99,9 +99,13 @@ export interface BidResult {
   buyer_description?: string;
   buyer?: string;
   end_date?: string;
-  // MyFlorida ad-status sweep: the classifier's verdict for this ad. The sweep
-  // reports rows itself rather than through the per-bid document crawl, so it
-  // carries these instead of `documents`/`error` — see MyFloridaSweepResults.
+  // MyFlorida ad-status sweep. A current run captures every ad and keeps its
+  // attachments, so a row says how many were saved and which folder of the
+  // archive they are in. `niche`/`score`/`strength` are the classifier's verdict
+  // and appear only on runs recorded before the matrix was taken out of the
+  // pipeline — see MyFloridaSweepResults, which renders whichever it is given.
+  document_count?: number;
+  folder?: string;
   niche?: string;
   score?: number;
   strength?: string | null;
@@ -289,6 +293,11 @@ export interface RunStatus {
   filters_summary?: string;
   // BidNet filter-option discovery runs: how many options each panel yielded.
   filter_option_counts?: Record<string, number>;
+  /** MyFlorida: true while the run is parked at the one-time password, waiting
+   *  for someone to type it into the open browser window. `otp_wait_seconds` is
+   *  how long it will wait before giving up. */
+  awaiting_otp?: boolean;
+  otp_wait_seconds?: number;
   // Cal eProcure / EMMA: login-milestone diagnostics. `login_ok` is true once
   // the run has signed in and confirmed the session; `landing_*` describe the
   // page it ended on (the supplier homepage, or EMMA's Public Solicitations).
