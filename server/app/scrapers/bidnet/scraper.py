@@ -1,27 +1,41 @@
 """Selenium automation for the BidNet Direct vendor portal.
 
-A run searches **one niche**, and every keyword that niche owns is searched
+A run searches **one niche**, and every term that niche owns is searched
 **separately, one at a time, in a single browser session** — never combined into
 a boolean query. A combined `A AND B` search only returns solicitations matching
 both terms, a small fraction of what the terms find individually; searching them
-in sequence is what makes the bid count whole. Keywords come from the database
+in sequence is what makes the bid count whole. Terms come from the database
 (see `niches.py`); the frontend only ever sends a niche key.
+
+A niche owns **two kinds of term**, and both go into the same search box: its
+keywords ("logo design"), then its NIGP class-item / UNSPSC codes ("965-46").
+They are one queue — `SearchTerm` carries the kind, which the logs name and the
+export records — because to the portal they are the same thing, text typed into
+`#solicitationSingleBoxSearch`. Codes are searched *after* every keyword so a
+bid's `Matched Keyword` column leads with the human-readable term that found it.
+
+The same solicitation turning up under several terms is the normal case, not the
+exception — that is what searching twenty-odd terms in one sector produces, and
+searching codes on top of keywords produces more of it. It is opened, downloaded
+and exported **once**: see `_bid_key` and `_seen_bid_ids`.
 
 Flow, per run:
 
     login
     open_filtered_session                   <- ONCE: sidebar filters incl. the
                                                Published/Closing Date panels
-    for each keyword of the niche:          <- sequential, same session
+    for each term of the niche:             <- keywords, then NIGP codes; one
+                                               queue, sequential, same session
         ensure_logged_in                    <- re-login if the session expired
-        search(keyword)                     <- typed into the box in place; the
+        search(term)                        <- typed into the box in place; the
                                                session's filters ride along
         result_count() == 0 ?  -> skip      <- fast-fail, no waiting on empty results
         filter to "Member Agency Bids"
         confirm_filters_active              <- read-only; re-applies only on drift
         paginate, collecting solicitation links
-    for each distinct solicitation link:    <- deduplicated across all keywords
+    for each distinct solicitation:         <- deduplicated across every term
         open it, scrape its fields, download every document
+        seen already?          -> skip      <- second dedup, on the reference no.
     write one master Excel, persist to the DB, package the run
 
 **The sidebar filters are applied once per run, not once per keyword.** They
@@ -45,6 +59,7 @@ nothing to split apart.
 """
 
 import logging
+import re
 import time
 from collections import Counter
 from dataclasses import dataclass, field
@@ -66,6 +81,7 @@ from app.core.filenames import sanitize_filename
 from app.db import SessionLocal
 from app.scrapers.bidnet import documents, export, niches, selectors, storage
 from app.scrapers.bidnet.filters import SidebarFilterRequest
+from app.scrapers.bidnet.niches import KIND_NIGP, SearchTerm
 from app.scrapers.bidnet.sidebar import SidebarDriver
 from app.core.exports import archive_run
 from app.services.notifier import notify_scrape_completion
@@ -242,14 +258,19 @@ class BidnetScraper(BaseScraper):
     def __init__(
         self,
         run_id: str,
-        keywords: list[str],
+        search_terms: list[SearchTerm] | list[str],
         filters: SidebarFilterRequest | None = None,
         niche_label: str | None = None,
     ):
         super().__init__(run_id)
-        # Every keyword of the run's single niche, resolved from the database by
-        # the router. They are searched one at a time, never combined.
-        self.keywords = keywords
+        # Every term of the run's single niche — its keywords, then its NIGP
+        # codes — resolved from the database by `execute_run`. Searched one at a
+        # time, never combined. Bare strings are accepted and taken as keywords,
+        # so a caller with nothing but terms does not have to know about kinds.
+        self.search_terms: list[SearchTerm] = [
+            term if isinstance(term, SearchTerm) else SearchTerm(str(term))
+            for term in search_terms
+        ]
         self.niche_label = niche_label or "BidNet"
         # The sidebar filter state chosen in the frontend. Defaults to the
         # portal's own defaults (Open Solicitations, every purchasing group, no
@@ -306,10 +327,37 @@ class BidnetScraper(BaseScraper):
         self.document_folder = storage.documents_folder(self.niche_folder)
         self.niche_key = run.get("niche") or ""
         self.niche_slug = run.get("niche_slug")
-        # Keywords the portal reported zero bids for — skipped without waiting
+        # Terms the portal reported zero bids for — skipped without waiting
         # on rows that were never coming, and surfaced on the run so a niche
         # whose terms all miss is obvious rather than silent.
         self._empty_keywords: list[str] = []
+        # THE DEDUPLICATION ENGINE. One solicitation reached by twenty terms is
+        # one row in the export, and these are what enforce it end to end:
+        #
+        #   _seen_bid_ids     every bid id already in the master list
+        #   _records_by_id    that id -> the record that was kept, so a later
+        #                     sighting can add its term to `Matched Keyword`
+        #                     instead of being thrown away whole
+        #   _duplicates_skipped / _duplicate_terms   what to report at the end
+        #
+        # There are two rounds, because a solicitation has two identities and
+        # they can disagree. The link round (phase 1) keys off the URL and is
+        # what stops a bid being *opened and downloaded* twice — the expensive
+        # part. The record round (phase 2) keys off the reference number read
+        # from the detail page, and catches what the first cannot: the portal
+        # serves the same solicitation under two href shapes
+        # (`/view-notice/<id>` and `/open-solicitation/<id>?target=view`), and
+        # a code search reaching a bid a keyword already found by the other
+        # shape would otherwise be a second row for one bid.
+        self._seen_bid_ids: set[str] = set()
+        self._records_by_id: dict[str, dict] = {}
+        self._duplicates_skipped = 0
+        self._duplicate_terms: list[str] = []
+        # Repeat sightings caught in phase 1 — a bid a later term found that an
+        # earlier one had already queued. Counted rather than derived, so the
+        # number means one thing and is not an arithmetic guess between two
+        # stages that also drop rows for other reasons.
+        self._link_duplicates = 0
         # Close-date filter tallies (see app/core/closing_filter): solicitations
         # dropped for closing too soon (before their documents are downloaded),
         # and those kept despite an unreadable Closing Date.
@@ -395,6 +443,96 @@ class BidnetScraper(BaseScraper):
         if href.startswith("/"):
             return BASE_URL + href
         return href
+
+    # -- bid identity -------------------------------------------------------
+
+    @staticmethod
+    def _bid_key(link: str) -> str:
+        """The identity of the solicitation a results-row link points at.
+
+        The **solicitation id**, not the URL. BidNet serves the same bid under
+        two href shapes, and a run that searches a niche's keywords and then its
+        NIGP codes hits that constantly:
+
+            /private/supplier/interception/view-notice/444124954092
+            /private/supplier/interception/open-solicitation/444124954092?target=view
+
+        Comparing URLs makes those two different bids — the same solicitation
+        opened twice, downloaded twice and exported twice. So the trailing path
+        segment (the id) is what identifies it, with the query string dropped:
+        `?target=view` is a display hint, not a different bid.
+
+        Falls back to the whole URL, lowercased and stripped of its query, when
+        there is no id to find — an unknown shape must not collapse two genuinely
+        different bids into one, and losing a bid is worse than a duplicate row.
+        """
+        base = (link or "").split("?", 1)[0].split("#", 1)[0].rstrip("/")
+        segment = base.rsplit("/", 1)[-1] if "/" in base else base
+        if segment.isdigit():
+            return segment
+        return base.lower()
+
+    def _claim_bid(self, bid_id: str, record: dict[str, Any], matched: list[str]) -> bool:
+        """Register a scraped bid, or report it as one already held.
+
+        The single gate every record passes through on its way to the master
+        list, the spreadsheet and the database. True means this bid is new and
+        the caller should keep it; False means it is already in there and the
+        caller must drop it.
+
+        The id it registers is the **reference number** when the detail page
+        gave one, because that is the solicitation's own identity — two links
+        the portal serves under different ids are still one bid if they carry
+        one reference number, and searching a niche's NIGP codes after its
+        keywords is what makes that collision common. It falls back to the link
+        id for a bid whose reference could not be read: an unreadable reference
+        is not evidence of sameness, and deduplicating on it would merge every
+        failed extraction into a single row.
+
+        A duplicate is not simply discarded — the term that found it a second
+        time is added to the kept record's `Matched Keyword`, so the export
+        still says a bid was reached by both a keyword and a code. Dropping the
+        row without that would lose the only evidence the code search earned its
+        place.
+        """
+        reference_key = self._reference_key(record.get("reference_number") or "")
+        key = reference_key or bid_id
+
+        kept = self._records_by_id.get(key)
+        if kept is None:
+            self._seen_bid_ids.add(key)
+            self._records_by_id[key] = record
+            return True
+
+        self._duplicates_skipped += 1
+        self._duplicate_terms.extend(matched)
+        merged = [
+            term for term in (kept.get("matched_keyword") or "").split(", ") if term
+        ]
+        for term in matched:
+            if term not in merged:
+                merged.append(term)
+        kept["matched_keyword"] = ", ".join(merged)
+        logger.info(
+            "[run %s] [DUPLICATE SKIPPED]: Bid '%s' already extracted (%s) — this "
+            "sighting came from %s; %r kept as one row, now credited to %s",
+            self.run_id, key, kept.get("detail_url") or "", ", ".join(matched),
+            kept.get("title") or key, kept["matched_keyword"],
+        )
+        return False
+
+    @staticmethod
+    def _reference_key(reference_number: str) -> str:
+        """A reference number reduced to what makes two of them the same bid.
+
+        Agencies write the same number differently in different places
+        ("RFP 2026-014", "rfp2026-014"), and the detail page is not consistent
+        about spacing, so the comparison ignores case and anything that is not a
+        letter or a digit. Empty for a reference that carries no alphanumerics at
+        all, which the caller reads as "no usable id" rather than as a match —
+        otherwise every unreadable bid would deduplicate into one.
+        """
+        return re.sub(r"[^a-z0-9]", "", (reference_number or "").lower())
 
     # -- flow steps ---------------------------------------------------------
 
@@ -1627,25 +1765,35 @@ class BidnetScraper(BaseScraper):
                 )
             self.login()
 
-            keywords = self.keywords
-            logger.info("[run %s] niche %r: %s keyword(s), searched one at a time",
-                        self.run_id, self.niche_label, len(keywords))
+            terms = self.search_terms
+            keywords = [t.term for t in terms]
+            codes = [t.term for t in terms if t.kind == KIND_NIGP]
+            logger.info(
+                "[run %s] niche %r: %s search term(s) — %s keyword(s) then %s NIGP "
+                "code(s), searched one at a time",
+                self.run_id, self.niche_label, len(terms), len(terms) - len(codes), len(codes),
+            )
 
-            # PHASE 0 — filter the session once, before a single keyword is
-            # typed. Everything below inherits it; nothing below re-applies it
-            # unless a check finds it gone.
-            if keywords:
+            # PHASE 0 — filter the session once, before a single term is typed.
+            # Everything below inherits it; nothing below re-applies it unless a
+            # check finds it gone.
+            if terms:
                 self.open_filtered_session()
 
-            # PHASE 1 — search every keyword of the niche in turn, collecting
-            # solicitation links. Deduplicated by link across the whole run, so a
-            # solicitation surfaced by five keywords is opened and downloaded
-            # once; each link remembers every keyword that found it.
-            link_keywords: dict[str, list[str]] = {}
-            for index, keyword in enumerate(keywords, start=1):
-                progress = f"{index}/{len(keywords)}"
+            # PHASE 1 — search every term of the niche in turn, collecting
+            # solicitation links. Deduplicated by solicitation id across the
+            # whole run, so a bid surfaced by five keywords and two NIGP codes is
+            # opened and downloaded once; each entry remembers every term that
+            # found it, and they all reach the `Matched Keyword` column.
+            bids: dict[str, dict] = {}
+            for index, search_term in enumerate(terms, start=1):
+                keyword = search_term.term
+                progress = f"{index}/{len(terms)}"
                 run_manager.update_run(
-                    self.run_id, keyword=keyword, keyword_progress=progress
+                    self.run_id,
+                    keyword=keyword,
+                    keyword_progress=progress,
+                    search_kind=search_term.kind,
                 )
                 try:
                     # A long sequential run outlives BidNet's session, which
@@ -1680,8 +1828,9 @@ class BidnetScraper(BaseScraper):
                     # that does have bids.
                     count = self.result_count()
                     logger.info(
-                        '[run %s] [KEYWORD SEARCH]: Keyword (%s) - "%s"',
-                        self.run_id, progress, keyword,
+                        '[run %s] [SEARCH EXECUTING]: (%s) Niche: %s | Input Type: %s '
+                        '| Term: "%s"',
+                        self.run_id, progress, self.niche_label, search_term.label, keyword,
                     )
                     logger.info(
                         "[run %s]  ├── [PORTAL DETECTED]: %s matching bid(s) reported "
@@ -1689,15 +1838,16 @@ class BidnetScraper(BaseScraper):
                         self.run_id, _shown(count),
                     )
                     if count == 0:
-                        # "No results" now means no results *under the session's
+                        # "No results" means no results *under the session's
                         # filters* — the search the portal answered was already
-                        # narrowed by them, so this is not evidence the keyword
+                        # narrowed by them, so this is not evidence the term
                         # matches nothing on BidNet at all.
                         logger.info(
-                            "[run %s]  └── [TOTAL ACCUMULATED]: %s unique solicitation(s) "
-                            "queued. No results for this keyword under the run's "
-                            "filters (%s); moving to the next.",
-                            self.run_id, len(link_keywords), self.filters.summary(),
+                            "[run %s]  └── [RESULT]: 0 total bids found (0 new, 0 "
+                            "duplicates skipped). %s unique solicitation(s) queued. No "
+                            "results for this term under the run's filters (%s); moving "
+                            "to the next.",
+                            self.run_id, len(bids), self.filters.summary(),
                         )
                         self._empty_keywords.append(keyword)
                         run_manager.update_run(
@@ -1729,15 +1879,33 @@ class BidnetScraper(BaseScraper):
                 self._rows_parsed += harvest.rows_parsed
                 self._rows_failed += harvest.rows_failed
 
+                # DEDUPLICATION, round one — by solicitation id, across every
+                # term the run has searched so far. A bid an earlier keyword
+                # already queued is not queued again by a later NIGP code (or
+                # the other way round); it only gains that term in its
+                # `Matched Keyword` column. This is the round that matters for
+                # cost: a bid queued twice is a detail page opened twice and its
+                # documents downloaded twice.
                 new_links = 0
                 for link in harvest.links:
-                    if link not in link_keywords:
+                    bid_id = self._bid_key(link)
+                    entry = bids.get(bid_id)
+                    if entry is None:
                         new_links += 1
-                    matched = link_keywords.setdefault(link, [])
-                    if keyword not in matched:
-                        matched.append(keyword)
-                run_manager.update_run(self.run_id, bids_found=len(link_keywords))
+                        bids[bid_id] = {"link": link, "terms": [keyword]}
+                        continue
+                    self._link_duplicates += 1
+                    if keyword not in entry["terms"]:
+                        entry["terms"].append(keyword)
+                    logger.debug(
+                        "[run %s] [DUPLICATE SKIPPED]: Bid %r already found by %s — "
+                        "not queued again for %s %r",
+                        self.run_id, bid_id, ", ".join(entry["terms"][:-1]) or "an earlier term",
+                        search_term.label.lower(), keyword,
+                    )
+                run_manager.update_run(self.run_id, bids_found=len(bids))
 
+                duplicates = len(harvest.links) - new_links
                 logger.info(
                     "[run %s]  ├── [PARSED SUCCESS]: %s/%s row(s) converted to links.",
                     self.run_id, harvest.rows_parsed, harvest.rows_detected,
@@ -1749,10 +1917,9 @@ class BidnetScraper(BaseScraper):
                     harvest.rows_failed, harvest.duplicates,
                 )
                 logger.info(
-                    "[run %s]  └── [TOTAL ACCUMULATED]: %s unique solicitation(s) queued "
-                    "(%s new from this keyword, %s already found by an earlier one).",
-                    self.run_id, len(link_keywords), new_links,
-                    len(harvest.links) - new_links,
+                    "[run %s]  └── [RESULT]: %s total bids found (%s new, %s duplicates "
+                    "skipped). %s unique solicitation(s) queued.",
+                    self.run_id, len(harvest.links), new_links, duplicates, len(bids),
                 )
 
                 # The portal said there were bids and not one row survived. Said
@@ -1782,7 +1949,8 @@ class BidnetScraper(BaseScraper):
             # documents into this run's single folder.
             self.set_step("collecting_bids")
             all_records: list[dict] = []
-            for index, (link, matched) in enumerate(link_keywords.items()):
+            for index, (bid_id, entry) in enumerate(bids.items()):
+                link, matched = entry["link"], entry["terms"]
                 record: dict[str, Any] | None = {
                     "reference_number": None, "title": None, "documents": [], "error": None,
                 }
@@ -1799,11 +1967,17 @@ class BidnetScraper(BaseScraper):
                     continue
                 record["matched_keyword"] = ", ".join(matched)
                 record["niche"] = self.niche_label
+                # DEDUPLICATION, round two — on the reference number now that the
+                # detail page has been read. Nothing is written to the master
+                # list without passing this.
+                if not self._claim_bid(bid_id, record, matched):
+                    continue
                 run_manager.add_bid_result(self.run_id, record)
                 all_records.append(record)
 
-            logger.info("[run %s] %s unique solicitations from %s keyword search(es)",
-                        self.run_id, len(link_keywords), len(keywords))
+            logger.info("[run %s] %s unique solicitations from %s search(es) "
+                        "(%s keyword, %s NIGP code)",
+                        self.run_id, len(bids), len(terms), len(terms) - len(codes), len(codes))
 
             # Did the date filter reach every keyword it was meant to?
             #
@@ -1847,12 +2021,30 @@ class BidnetScraper(BaseScraper):
                     "[run %s] [SESSION FILTER]: the sidebar had to be re-applied for "
                     "%d of %d keyword(s) — %s. The filters did not survive those "
                     "searches on their own.",
-                    self.run_id, len(self._filters_reapplied_for), len(keywords),
+                    self.run_id, len(self._filters_reapplied_for), len(terms),
                     ", ".join(self._filters_reapplied_for),
                 )
                 run_manager.update_run(
                     self.run_id, filters_reapplied_keywords=list(self._filters_reapplied_for)
                 )
+
+            # What the deduplication engine actually removed. Reported because a
+            # niche whose codes only ever re-find what its keywords already found
+            # is a real finding about the catalog — the codes cost a search each
+            # and added nothing — and it is invisible from the export, which by
+            # construction contains no duplicates at all.
+            logger.info(
+                "[DEDUPLICATION] run %s | unique bid ids: %d | repeat sightings "
+                "across terms (not queued again): %d | records dropped after "
+                "extraction as the same solicitation: %d",
+                self.run_id, len(self._seen_bid_ids), self._link_duplicates,
+                self._duplicates_skipped,
+            )
+            run_manager.update_run(
+                self.run_id,
+                unique_bid_ids=len(self._seen_bid_ids),
+                duplicates_skipped=self._duplicates_skipped,
+            )
 
             # The whole run as one funnel, stage by stage. Read top to bottom it
             # names the stage that lost the bids: rows the portal rendered, rows
@@ -1861,7 +2053,7 @@ class BidnetScraper(BaseScraper):
                 "[FUNNEL] run %s | rows rendered: %d | rows parsed: %d | rows unparseable: %d "
                 "| unique solicitations queued: %d | records built: %d | exported: %d",
                 self.run_id, self._rows_detected, self._rows_parsed, self._rows_failed,
-                len(link_keywords), len(all_records), len(all_records),
+                len(bids), len(all_records), len(all_records),
             )
             # An empty export with a non-empty portal is a pipeline failure, not
             # an empty niche, and it says which stage dropped them.
@@ -1888,18 +2080,18 @@ class BidnetScraper(BaseScraper):
             logger.info(
                 "[SUMMARY] run %s | Scraped: %d | Fully extracted: %d | Failed/Fallback: %d "
                 "| Acknowledgement required: %d | Final Export Count: %d "
-                "| Skipped (closing soon): %d",
-                self.run_id, len(link_keywords), by_status[STATUS_OK], fallback,
+                "| Skipped (closing soon): %d | Skipped (duplicate): %d",
+                self.run_id, len(bids), by_status[STATUS_OK], fallback,
                 by_status[STATUS_ACK_REQUIRED], len(all_records),
-                self._skipped_closing_soon,
+                self._skipped_closing_soon, self._duplicates_skipped,
             )
-            expected = len(link_keywords) - self._skipped_closing_soon
+            expected = len(bids) - self._skipped_closing_soon - self._duplicates_skipped
             if len(all_records) != expected:
                 logger.error(
-                    "[SUMMARY] run %s | MISMATCH: %d collected - %d skipped = %d expected, "
-                    "but %d record(s) are being exported",
-                    self.run_id, len(link_keywords), self._skipped_closing_soon,
-                    expected, len(all_records),
+                    "[SUMMARY] run %s | MISMATCH: %d collected - %d closing soon - "
+                    "%d duplicate = %d expected, but %d record(s) are being exported",
+                    self.run_id, len(bids), self._skipped_closing_soon,
+                    self._duplicates_skipped, expected, len(all_records),
                 )
             run_manager.update_run(
                 self.run_id,
@@ -1984,20 +2176,20 @@ class BidnetScraper(BaseScraper):
 
             if self._empty_keywords:
                 logger.info(
-                    "[run %s] %s of %s keyword(s) returned no bids: %s",
-                    self.run_id, len(self._empty_keywords), len(keywords),
+                    "[run %s] %s of %s search term(s) returned no bids: %s",
+                    self.run_id, len(self._empty_keywords), len(terms),
                     ", ".join(self._empty_keywords),
                 )
                 run_manager.add_warning(
                     self.run_id,
-                    f"{len(self._empty_keywords)} of {len(keywords)} keywords matched "
+                    f"{len(self._empty_keywords)} of {len(terms)} search terms matched "
                     f"nothing on BidNet under this run's filters "
                     f"({self.filters.summary()}): {', '.join(self._empty_keywords)}",
                 )
             # Every keyword came back empty — the searches worked, the portal
             # simply has nothing for this niche right now.
             run_manager.update_run(
-                self.run_id, no_results=len(self._empty_keywords) == len(keywords)
+                self.run_id, no_results=len(self._empty_keywords) == len(terms)
             )
 
             # Surface the close-date filter's effect (see app/core/closing_filter).
@@ -2135,20 +2327,21 @@ def execute_run(
     niche_key: str,
     filters: SidebarFilterRequest | None = None,
 ) -> None:
-    """Run one niche: resolve its keywords from the database, then search each
-    in turn. Resolved here rather than passed in so the run always uses the
-    catalog as it stands when the browser actually starts."""
+    """Run one niche: resolve its search terms from the database, then search
+    each in turn — every keyword, then every NIGP code. Resolved here rather than
+    passed in so the run always uses the catalog as it stands when the browser
+    actually starts."""
     session = SessionLocal()
     try:
         niche = niches.get_niche(session, niche_key)
-        keywords = niches.keywords_for(session, niche_key)
+        terms = niches.search_terms_for(session, niche_key)
         label = niche.label if niche else niche_key
     finally:
         session.close()
 
-    if not keywords:
-        run_manager.add_error(run_id, f"niche '{label}' has no keywords to search")
+    if not terms:
+        run_manager.add_error(run_id, f"niche '{label}' has no search terms")
         run_manager.update_run(run_id, status="failed", step="failed")
         return
 
-    BidnetScraper(run_id, keywords, filters, niche_label=label).run()
+    BidnetScraper(run_id, terms, filters, niche_label=label).run()

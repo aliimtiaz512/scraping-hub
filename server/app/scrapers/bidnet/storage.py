@@ -55,6 +55,14 @@ logger = logging.getLogger(__name__)
 SESSION_PREFIX = "BidNet_Exports"
 _SESSION_RE = re.compile(rf"^{re.escape(SESSION_PREFIX)}_(\d{{4}}-\d{{2}}-\d{{2}})$")
 
+# A batch execution's root. Dated *and timed*, unlike the session root above,
+# because the two answer opposite questions: the session root deliberately
+# accumulates a day's niches into one bundle, while a batch is one execution
+# whose output must contain that execution and nothing else. Two batches of the
+# same niche on the same day are two roots, two ZIPs, no shared files.
+BATCH_PREFIX = "BidNet_Batch"
+_BATCH_RE = re.compile(rf"^{re.escape(BATCH_PREFIX)}_(\d{{4}}-\d{{2}}-\d{{2}})_\d{{6}}$")
+
 # The per-niche documents folder, and the suffix on a niche's spreadsheet.
 DOCUMENTS_DIRNAME = "documents"
 EXCEL_SUFFIX = "_Bids.xlsx"
@@ -79,6 +87,48 @@ def session_root(when: date | None = None) -> Path:
     root = settings.work_root / session_name(when)
     root.mkdir(parents=True, exist_ok=True)
     return root
+
+
+def batch_name(when: datetime | None = None) -> str:
+    """The root folder name for one batch execution — `BidNet_Batch_<date>_<hhmmss>`."""
+    moment = when or datetime.now()
+    return f"{BATCH_PREFIX}_{moment.strftime('%Y-%m-%d_%H%M%S')}"
+
+
+def batch_root(name: str) -> Path:
+    """A batch execution's own root, created on first use.
+
+    Never shared with another execution and never with the day's session root:
+    isolation between niches starts with not writing them into a tree that
+    already holds someone else's output.
+    """
+    root = settings.work_root / sanitize_filename(name, max_length=150)
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def is_batch_root(path: Path) -> bool:
+    return bool(_BATCH_RE.match(path.name))
+
+
+def reset_niche_folder(root: Path, niche_label: str, niche_key: str = "", slug: str | None = None) -> Path:
+    """An **empty** folder for this niche inside `root` — the state reset on disk.
+
+    `niche_folder` deliberately reuses whatever is already there, because a
+    re-run within a day's session should add to that niche's bundle. A batch
+    wants the opposite and cannot get it by asking politely: anything left in
+    the folder — a previous execution's spreadsheet, documents from a niche that
+    happened to sanitise to the same name — is packaged as if this run had
+    produced it. So the folder is removed and remade, and the caller starts from
+    a directory it knows the contents of.
+    """
+    import shutil
+
+    folder = root / niche_dirname(niche_label, niche_key, slug)
+    if folder.exists():
+        shutil.rmtree(folder, ignore_errors=True)
+    folder.mkdir(parents=True, exist_ok=True)
+    return folder
 
 
 def niche_dirname(niche_label: str, niche_key: str = "", slug: str | None = None) -> str:

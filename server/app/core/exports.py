@@ -186,14 +186,23 @@ def archive_run(run_id: str) -> str | None:
     failure the workspace is kept so the download endpoint can still package it
     on demand. Returns the archive path, or None if packaging failed.
 
-    BidNet is the exception: its runs accumulate into a shared per-day session
-    root, so it packages the whole root and keeps it (see `_archive_bidnet`).
+    BidNet is the exception, and has two of its own paths. A single-niche run
+    accumulates into a shared per-day session root, so it packages the whole root
+    and keeps it (see `_archive_bidnet`). A run belonging to a **batch** carries
+    `batch_root` instead, and packages only its own niche folder — the isolation
+    a batch exists for reaches all the way to the archive, or the ZIP would hand
+    back the very niches the run was kept apart from (see `batch.archive_niche`).
+    The two fields are mutually exclusive, so which one is set selects the path.
     """
     from app.core import run_manager
 
     run = run_manager.get_run(run_id)
     if not run:
         return None
+    if run.get("scraper") == "bidnet" and run.get("batch_root"):
+        from app.scrapers.bidnet import batch as bidnet_batch
+
+        return bidnet_batch.archive_niche(run_id, run)
     if run.get("scraper") == "bidnet" and run.get("session_root"):
         return _archive_bidnet(run_id, run)
     folder = Path(run.get("folder") or "")

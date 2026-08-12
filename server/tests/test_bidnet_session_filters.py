@@ -322,10 +322,10 @@ def _boom(*_args, **_kwargs):
     raise RuntimeError("far enough — the flag is what this test is about")
 
 
-def test_no_keywords_means_no_bootstrap_search(driven, monkeypatch):
+def test_no_search_terms_means_no_bootstrap_search(driven, monkeypatch):
     """A niche with nothing to search should not open a results page to filter."""
     instance, trace = driven
-    instance.keywords = []
+    instance.search_terms = []
     _intact(monkeypatch)
     instance.run()
 

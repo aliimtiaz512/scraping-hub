@@ -138,11 +138,12 @@ def test_the_run_reports_the_funnel_per_keyword(driven, caplog):
     instance.run()
 
     log = "\n".join(r.getMessage() for r in caplog.records)
-    assert '[KEYWORD SEARCH]: Keyword (1/5) - "gasket"' in log
+    assert '[SEARCH EXECUTING]: (1/5) Niche: X | Input Type: KEYWORD | Term: "gasket"' in log
     assert "[PORTAL DETECTED]: 3 matching bid(s)" in log
     assert "[PARSED SUCCESS]: 3/3 row(s)" in log
     assert "[POST-FILTER]: 3 retained" in log
-    assert "[TOTAL ACCUMULATED]: 3 unique solicitation(s)" in log
+    assert "[RESULT]: 3 total bids found (3 new, 0 duplicates skipped)" in log
+    assert "3 unique solicitation(s) queued" in log
     # …and the run-wide reconciliation at the end.
     assert "[FUNNEL]" in log
     assert f"unique solicitations queued: {EXPECTED_UNIQUE}" in log

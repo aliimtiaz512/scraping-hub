@@ -46,7 +46,7 @@ export default function BidnetNicheSelect({
             <option value="">Select a niche…</option>
             {niches.map((niche) => (
               <option key={niche.key} value={niche.key}>
-                {niche.label} ({niche.keyword_count} keywords)
+                {niche.label} ({niche.search_count ?? niche.keyword_count} searches)
               </option>
             ))}
           </>
@@ -57,8 +57,8 @@ export default function BidnetNicheSelect({
         {empty
           ? "Add niches to server/app/scrapers/bidnet/niches.py and restart the API."
           : current
-            ? `${current.keyword_count} keyword searches will run in sequence, in one browser session. Every bid and document lands in one folder with a single master spreadsheet.`
-            : "Each niche maps to a set of procurement keywords held on the server."}
+            ? `${current.keyword_count} keyword searches${current.nigp_count ? ` and ${current.nigp_count} NIGP code searches` : ""} will run in sequence, in one browser session. A bid found by more than one term is collected once. Every bid and document lands in one folder with a single master spreadsheet.`
+            : "Each niche maps to a set of procurement keywords and NIGP codes held on the server."}
       </p>
     </Card>
   );

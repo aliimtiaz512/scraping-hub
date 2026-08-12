@@ -6,7 +6,7 @@ import BidnetFilters from "@/components/BidnetFilters";
 import BidnetNicheSelect from "@/components/BidnetNicheSelect";
 import BidnetResults from "@/components/BidnetResults";
 import RunStatusPanel, { stepLabel } from "@/components/RunStatus";
-import { ErrorBanner, LaunchBar, StartButton } from "@/components/ui";
+import { Button, ErrorBanner, LaunchBar, StartButton } from "@/components/ui";
 import LiveMonitor from "@/components/LiveMonitor";
 import StopButton from "@/components/StopButton";
 import {
@@ -14,10 +14,13 @@ import {
   getBidnetNiches,
   getRunStatus,
   refreshBidnetFilterOptions,
+  runDownloadUrl,
+  startBidnetBatch,
   startBidnetScrape,
   type BidnetFilterCatalog,
   type BidnetFilters as Filters,
   type BidnetNiche,
+  type BidnetNicheResult,
   type RunStatus,
 } from "@/lib/api";
 
@@ -111,6 +114,23 @@ export default function BidnetPanel() {
     }
   };
 
+  /** Every niche in one execution, one after another. The same filters apply to
+   *  all of them, and each niche is packaged into its own ZIP — so this is the
+   *  one control that ignores the niche dropdown. */
+  const handleStartAll = async () => {
+    setError(null);
+    setStarting(true);
+    try {
+      const { batch_id } = await startBidnetBatch(undefined, filters);
+      setRun(await getRunStatus("bidnet", batch_id));
+      poll(pollRef, batch_id, setRun);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setStarting(false);
+    }
+  };
+
   /** Harvest BidNet's full option lists, then reload the catalog with them. */
   const handleRefreshOptions = async () => {
     setError(null);
@@ -129,13 +149,16 @@ export default function BidnetPanel() {
   // matches nothing — BidNet treats "no group" as "no results".
   const noPurchasingGroup = filters.purchasing_groups?.length === 0;
   const niche = niches.find((n) => n.key === selectedNiche) ?? null;
-  const blocked =
+  // What stops *any* run, batch included — the niche dropdown is not one of
+  // them, since running everything needs no selection.
+  const blockedForAll =
     (niches.length === 0 &&
       "No niches configured — add them to server/app/scrapers/bidnet/niches.py and restart the API.") ||
-    (!selectedNiche && "Select a niche to search.") ||
     (noPurchasingGroup &&
       "Select at least one purchasing group — BidNet returns nothing without one.") ||
     null;
+  const blocked = blockedForAll ?? (!selectedNiche ? "Select a niche to search." : null);
+  const totalSearches = niches.reduce((sum, n) => sum + (n.search_count ?? n.keyword_count), 0);
 
   return (
     <div className="space-y-6">
@@ -161,10 +184,31 @@ export default function BidnetPanel() {
         />
       )}
 
-      <LaunchBar summary={blocked ?? launchSummary(niche, filters, catalog)}>
+      <LaunchBar
+        summary={
+          blockedForAll ??
+          (selectedNiche
+            ? launchSummary(niche, filters, catalog)
+            : `Select a niche to search, or run all ${niches.length} niches in one go — ` +
+              `${totalSearches} searches, one ZIP per niche.`)
+        }
+      >
         <div className="flex items-center gap-2">
           <StopButton run={run} onError={setError} />
           <LiveMonitor run={run} portal="bidnet" />
+          <Button
+            variant="secondary"
+            size="lg"
+            onClick={() => void handleStartAll()}
+            disabled={starting || isRunning || blockedForAll !== null}
+            title={
+              blockedForAll ??
+              `Run all ${niches.length} niches one after another — ${totalSearches} searches, ` +
+                "each niche in its own browser session and its own ZIP."
+            }
+          >
+            Run all niches
+          </Button>
           <StartButton
             onClick={() => handleStart()}
             disabled={starting || isRunning || blocked !== null}
@@ -176,9 +220,75 @@ export default function BidnetPanel() {
         </div>
       </LaunchBar>
 
+      {run?.is_batch && <BatchProgress run={run} />}
       {run && <RunStatusPanel run={run} />}
-      {run && <BidnetResults bids={run.bids} />}
+      {run && !run.is_batch && <BidnetResults bids={run.bids} />}
     </div>
+  );
+}
+
+/** Where a batch has got to: one row per niche, in the order they run.
+ *
+ *  A batch's own run record holds no bids — each niche has its own run, its own
+ *  spreadsheet and its own ZIP — so this replaces the results table rather than
+ *  sitting beside it, and links to each niche's download as it lands. */
+function BatchProgress({ run }: { run: RunStatus }) {
+  const results = run.niche_results ?? [];
+  const total = run.niche_total ?? results.length;
+  const done = run.niche_done ?? results.length;
+  const running = run.status === "running" || run.status === "pending";
+
+  return (
+    <section className="rounded-xl border border-ink-200/70 bg-white shadow-sm shadow-ink-900/[0.03]">
+      <header className="flex items-baseline justify-between gap-4 border-b border-ink-100 px-5 py-4">
+        <h3 className="font-display text-base text-ink-900">
+          All niches — {done} of {total} finished
+        </h3>
+        {running && run.niche_current && (
+          <p className="text-xs text-ink-500">Scraping {run.niche_current}…</p>
+        )}
+      </header>
+      <ul className="divide-y divide-ink-100">
+        {(run.niches_requested ?? []).map((label, index) => {
+          const result = results[index];
+          const active = running && !result && run.niche_current === label;
+          return (
+            <li key={label} className="flex items-center justify-between gap-4 px-5 py-3 text-sm">
+              <span className="min-w-0 truncate text-ink-900">{label}</span>
+              <NicheOutcome result={result} active={active} />
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
+}
+
+function NicheOutcome({ result, active }: { result?: BidnetNicheResult; active: boolean }) {
+  if (!result) {
+    return (
+      <span className="shrink-0 text-xs text-ink-400">{active ? "Running…" : "Queued"}</span>
+    );
+  }
+  if (result.status !== "completed") {
+    return (
+      <span className="shrink-0 text-xs text-red-600" title={result.error}>
+        {result.status === "stopped" ? "Stopped" : "Failed"}
+      </span>
+    );
+  }
+  return (
+    <span className="flex shrink-0 items-center gap-3 text-xs text-ink-500">
+      <span>{result.bids ?? 0} bids</span>
+      {result.zip_name && result.run_id && (
+        <a
+          href={runDownloadUrl(result.run_id)}
+          className="font-medium text-gold-700 underline-offset-2 hover:underline"
+        >
+          Download
+        </a>
+      )}
+    </span>
   );
 }
 
@@ -230,9 +340,9 @@ function launchSummary(
     if (filters[name]) active.push(name === "published_date" ? "Published Date" : "Closing Date");
   }
 
-  const count = niche?.keyword_count ?? 0;
+  const count = niche?.search_count ?? niche?.keyword_count ?? 0;
   const base =
-    `${count} ${count === 1 ? "search" : "searches"}, one per keyword · ` +
+    `${count} ${count === 1 ? "search" : "searches"}, one per term · ` +
     `${status?.label ?? "Open Solicitations"}`;
   return active.length === 0 ? `${base} · no other filters.` : `${base} · ${active.join(", ")}.`;
 }

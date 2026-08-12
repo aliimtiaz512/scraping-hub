@@ -261,13 +261,28 @@ export interface RunStatus {
   /** Which of the Unison scraper's filters ran, and a one-line rendering of
    *  them. The keyword and close-date filters stay off for the testing phase. */
   filters_active?: Record<string, boolean>;
-  // BidNet-only: which niche the run is searching, and how many keywords it
-  // owns. `keyword`/`keyword_progress` track the one being searched now.
+  // BidNet-only: which niche the run is searching, and how many terms it
+  // owns. A niche searches its keywords and then its NIGP codes, one term per
+  // search, so `search_count` is the total and `keyword`/`keyword_progress`
+  // track the one being searched now.
   niche_label?: string;
   keyword_count?: number;
+  nigp_count?: number;
+  search_count?: number;
   /** Keywords the portal reported zero bids for — skipped without waiting on
    *  results that were never coming. */
   keywords_without_results?: string[];
+  // BidNet batch runs (POST /bidnet/scrape/batch): one execution over several
+  // niches, run one at a time. The parent run carries the progress; each niche
+  // has its own run id, status and ZIP in `niche_results`.
+  is_batch?: boolean;
+  niche_total?: number;
+  niche_done?: number;
+  niche_current?: string;
+  niches_requested?: string[];
+  niches_completed?: number;
+  niches_failed?: number;
+  niche_results?: BidnetNicheResult[];
   // BidNet-only: the sidebar filters this run was launched with, and a one-line
   // rendering of them for the status panel.
   filters?: BidnetFilters;
@@ -503,6 +518,10 @@ export interface BidnetNiche {
   slug: string | null;
   /** How many keywords the niche searches, one search each. */
   keyword_count: number;
+  /** Its NIGP class-item / UNSPSC codes, searched the same way after them. */
+  nigp_count?: number;
+  /** Keywords plus codes — the number of searches a run actually makes. */
+  search_count?: number;
 }
 
 export function getBidnetNiches(): Promise<{ niches: BidnetNiche[] }> {
@@ -511,9 +530,22 @@ export function getBidnetNiches(): Promise<{ niches: BidnetNiche[] }> {
 
 /**
  * Start a run over one niche. The backend looks up that niche's keywords and
- * searches each separately in a single session — never combined into one
- * boolean query, which would return only the bids matching every term.
+ * NIGP codes and searches each separately in a single session — never combined
+ * into one boolean query, which would return only the bids matching every term.
+ * A solicitation reached by several terms is exported once, naming them all.
  */
+/** One niche of a batch, as the parent run reports it. */
+export interface BidnetNicheResult {
+  niche: string;
+  label: string;
+  /** completed | failed | stopped — the niche's own run status. */
+  status: string;
+  run_id?: string;
+  bids?: number;
+  zip_name?: string | null;
+  error?: string;
+}
+
 export function startBidnetScrape(
   niche: string,
   filters: BidnetFilters = {},
@@ -523,12 +555,39 @@ export function startBidnetScrape(
   niche: string;
   niche_label: string;
   keyword_count: number;
+  nigp_count?: number;
+  search_count?: number;
   folder: string;
   filters: BidnetFilters;
 }> {
   return request(`/bidnet/scrape${livePreviewQuery(livePreview)}`, {
     method: "POST",
     body: JSON.stringify({ niche, filters }),
+  });
+}
+
+/**
+ * Run several niches in one execution, sequentially. Each niche gets its own
+ * browser session, its own output folder and its own ZIP — nothing is shared
+ * between them — and one niche failing does not stop the rest.
+ *
+ * Omit `niches` to run every niche in the catalog. Returns the batch's run id,
+ * which polls like any other run; `niche_results` on it names each niche's own
+ * run id as it finishes.
+ */
+export function startBidnetBatch(
+  niches?: string[],
+  filters: BidnetFilters = {},
+  livePreview = false,
+): Promise<{
+  batch_id: string;
+  workspace: string;
+  niches: { key: string; label: string; keyword_count: number; nigp_count: number; search_count: number }[];
+  filters: BidnetFilters;
+}> {
+  return request(`/bidnet/scrape/batch${livePreviewQuery(livePreview)}`, {
+    method: "POST",
+    body: JSON.stringify(niches?.length ? { niches, filters } : { filters }),
   });
 }
 

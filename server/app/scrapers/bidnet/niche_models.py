@@ -70,6 +70,11 @@ class BidnetNicheKeyword(Base):
     Stored bare: quoting a phrase makes no difference to what BidNet returns
     (verified against the live portal — see the `niches` module docstring).
 
+    Two kinds live here, in one table because they are the same thing to the
+    portal — text typed into the same box: the sector's `keyword`s and its
+    `nigp` class-item / UNSPSC codes. `sort_order` keeps every keyword ahead of
+    every code, which is the order a run searches them in.
+
     Terms are unique *within* a niche only: a run searches one niche, so the same
     term legitimately belongs to two sectors (e.g. "WCAG" under both Graphic
     Design and Software).
@@ -83,6 +88,10 @@ class BidnetNicheKeyword(Base):
         String(64), ForeignKey("bidnet_niches.key", ondelete="CASCADE"), index=True
     )
     term: Mapped[str] = mapped_column(String(255))
+    # "keyword" | "nigp" — see niches.KIND_KEYWORD / KIND_NIGP. Defaulted rather
+    # than required so a row inserted by hand is a keyword unless it says
+    # otherwise, which is what every row predating the codes was.
+    kind: Mapped[str] = mapped_column(String(16), default="keyword", server_default="keyword")
     notes: Mapped[str | None] = mapped_column(Text)
     # Search order within the niche — the run works through them in this order.
     sort_order: Mapped[int] = mapped_column(Integer, default=0)

@@ -275,8 +275,8 @@ def test_a_filter_that_reached_every_keyword_raises_nothing(scraper, monkeypatch
 
 
 def _finish_run(scraper, monkeypatch):
-    """Drive run() past phase 1 with no keywords, so the reconciliation runs."""
-    scraper.keywords = []
+    """Drive run() past phase 1 with no search terms, so the reconciliation runs."""
+    scraper.search_terms = []
     for name, value in {
         "start_driver": lambda *a, **k: None,
         "login": lambda: None,

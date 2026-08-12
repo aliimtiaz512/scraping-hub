@@ -1,20 +1,22 @@
 # BidNet Direct — niche-driven sequential search + sidebar filters
 
-How a niche's keywords are searched one at a time, and how the frontend's
-filter choices reach BidNet Direct's search sidebar.
+How a niche's search terms — its keywords, then its NIGP codes — are searched
+one at a time, and how the frontend's filter choices reach BidNet Direct's search
+sidebar.
 
 **Unchanged:** the login flow (`BidnetScraper.login`) and the mechanics of a
-single keyword search (`BidnetScraper.search` — type into the box, click the
-button) are untouched. What changed is *what* gets searched (a niche's keywords,
-from the database, one at a time) and *where the output lands* (one folder, one
-spreadsheet). Filters are applied after each keyword's search has run, narrowing
-that search's own result set.
+single search (`BidnetScraper.search` — type into the box, click the button) are
+untouched. What changed is *what* gets searched (a niche's keywords and then its
+NIGP codes, from the database, one term at a time), *when the filters are
+applied* (once per run, before the first term — see below), and *where the output
+lands* (one folder, one spreadsheet, one row per solicitation however many terms
+found it).
 
 ## Where each piece lives
 
 | Layer | File |
 | --- | --- |
-| Niche catalog (keywords, DB-backed) | `server/app/scrapers/bidnet/niches.py`, `niche_models.py` |
+| Niche catalog (keywords + NIGP codes, DB-backed) | `server/app/scrapers/bidnet/niches.py`, `niche_models.py` |
 | Filter catalog, request model, validation | `server/app/scrapers/bidnet/filters.py` |
 | Selenium driver for the sidebar | `server/app/scrapers/bidnet/sidebar.py` |
 | Option discovery ("View All" harvest) | `server/app/scrapers/bidnet/discovery.py` |
@@ -265,10 +267,74 @@ Multi-word terms are stored quoted (`"graphic design"`) so BidNet matches the
 phrase; the search box's own help documents `AND`, `OR` and parentheses, and the
 guide quotes every phrase. A quoted phrase is still one search term.
 
-The guide's NIGP/UNSPSC codes are recorded in each niche's `notes` for
-traceability but are **not** searched: the keyword box is full-text, and BidNet's
-NIGP sidebar filter keys off internal ids (`112450`), not published class-item
-numbers (`965-46`).
+### NIGP codes are searched too, through the same box
+
+Each niche owns a second list, `nigp_codes` — the guide's NIGP class-item and
+UNSPSC numbers — and a run searches them one at a time in
+`#solicitationSingleBoxSearch`, exactly as it searches keywords, **after** every
+keyword of that niche:
+
+| Niche | Codes |
+| --- | --- |
+| Graphic Design | 965-46, 915-48, 915-22, 915-09, 82131603 |
+| Commercial Printing | 966-00, 966-18, 966-28, 966-55, 966-86 |
+| Custom Software | 920-40, 920-45, 920-03, 918-29, 81111500 |
+| Artificial Intelligence | 920-04, 918-30, 920-24, 81111508 |
+| Printed Circuit Board | 287-54, 287-00, 936-25, 32101501 |
+
+Both kinds live in `bidnet_niche_keywords`, told apart by `kind`
+(`keyword` | `nigp`) and ordered by `sort_order`, which is what puts every
+keyword ahead of every code. `niches.search_terms_for()` returns the queue and
+the scraper iterates it; `SearchTerm.kind` is what the logs name and what the
+`[SEARCH EXECUTING]` line reports. An existing database needs
+`migrations/2026-08-11_add_bidnet_niche_kind.sql`; without it the catalog is read
+from `niches.py` instead and the run says so.
+
+This is **not** the portal's NIGP sidebar filter and does not replace it. That
+filter keys off BidNet's internal ids (`112450`) and narrows by how the *portal*
+classified a solicitation; searching `965-46` as text finds the notices that
+quote the code in their own words. Expect codes to return nothing more often
+than keywords do — a term that matches nothing costs one search, the same as any
+keyword that misses.
+
+### One bid, one row — the deduplication engine
+
+Searching a sector's keywords and then its codes finds the same solicitation
+repeatedly by design, so identity is tracked for the whole run and a bid is
+opened, downloaded and exported **once**. Two rounds, because a solicitation has
+two identities and they can disagree:
+
+1. **By solicitation id, as links are collected** (`_bid_key`). The trailing path
+   segment, not the URL: BidNet serves the same bid as
+   `/interception/view-notice/<id>` *and*
+   `/interception/open-solicitation/<id>?target=view`, so comparing URLs would
+   make those two bids — opened twice, downloaded twice. This is the round that
+   saves the work.
+2. **By reference number, once the detail page has been read** (`_claim_bid`,
+   `_seen_bid_ids`). Nothing reaches the master list, the spreadsheet or the
+   database without passing it. It catches what the first cannot: two different
+   link ids that turn out to carry one reference number.
+
+A repeat sighting is not simply discarded — the term that found it again is
+added to the kept row's `Matched Keyword`, so the export still shows that a bid
+was reached by both a keyword and a code. A bid whose reference number could not
+be read falls back to its link id rather than deduplicating on an empty string,
+which would merge every failed extraction in the run into one row.
+
+The per-search line says what each term actually contributed:
+
+```
+[SEARCH EXECUTING]: (3/27) Niche: Graphic Design | Input Type: NIGP CODE | Term: "965-46"
+ ├── [PORTAL DETECTED]: 4 matching bid(s) reported by the Member Agency group.
+ ├── [PARSED SUCCESS]: 4/4 row(s) converted to links.
+ ├── [POST-FILTER]: 4 retained (0 dropped: 0 unreadable, 0 repeated across pages).
+ └── [RESULT]: 4 total bids found (1 new, 3 duplicates skipped). 12 unique solicitation(s) queued.
+```
+
+and the run closes with a `[DEDUPLICATION]` line — unique ids, repeat sightings
+across terms, and records dropped after extraction — which is the only place a
+niche whose codes never add anything new is visible, since the export by
+construction contains no duplicates at all.
 
 ### Output
 
@@ -281,8 +347,8 @@ The master sheet is named with `core.exports.excel_name`, the same name the
 packaging step gives its DB-regenerated copy, so `build_zip` recognises it as
 already present and the ZIP ships **exactly one** spreadsheet — the database's
 version when Postgres is reachable, the scraper's on-disk one when it is not.
-One row per solicitation, with every keyword that surfaced it comma-joined in
-`Matched Keyword`.
+One row per solicitation, with every term that surfaced it — keywords and NIGP
+codes alike — comma-joined in `Matched Keyword`.
 
 ### Why each search waits for the previous results to go stale
 
