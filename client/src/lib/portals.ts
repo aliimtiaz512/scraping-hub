@@ -30,7 +30,8 @@ export interface PortalMeta {
     | "marketplace"
     | "catalog"
     | "bear"
-    | "crab";
+    | "crab"
+    | "liberty";
   accent: {
     /** Icon tile: background + foreground. */
     tile: string;
@@ -229,6 +230,23 @@ export const PORTALS: PortalMeta[] = [
       dot: "bg-cyan-500",
       rail: "bg-cyan-500",
       wash: "from-cyan-50",
+    },
+  },
+  {
+    key: "philadelphia",
+    label: "PHLContracts",
+    operator: "City of Philadelphia",
+    host: "phlcontracts.phila.gov",
+    tagline: "Open bids",
+    description:
+      "Sign in to PHLContracts, open the city's full Open Bids list, and capture every bid: its summary row, its detail-page header information, and every file attached to it — each bid in a folder of its own, indexed by one master spreadsheet, packaged as a single ZIP.",
+    outputs: ["Full Open Bids list", "Per-bid documents", "Summary workbook + ZIP"],
+    icon: "liberty",
+    accent: {
+      tile: "bg-indigo-50 text-indigo-600 ring-indigo-100",
+      dot: "bg-indigo-500",
+      rail: "bg-indigo-500",
+      wash: "from-indigo-50",
     },
   },
 ];

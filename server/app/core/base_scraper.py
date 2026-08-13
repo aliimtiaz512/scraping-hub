@@ -403,13 +403,23 @@ class BaseScraper:
         self.current_step = step
         run_manager.update_run(self.run_id, step=step)
 
-    def wait_for_download(self, timeout: int = DOWNLOAD_TIMEOUT) -> Path:
+    def wait_for_download(
+        self, timeout: int = DOWNLOAD_TIMEOUT, ignore: set[Path] | None = None
+    ) -> Path:
         """Wait for a new file to fully land in the staging download dir.
 
         Chrome marks an in-progress download with a `.crdownload` suffix or, on
         Linux, a hidden `.com.google.Chrome.XXXXXX` temp name — a file is only
         finished once neither pattern is present.
+
+        `ignore` is what was already staged before the click. Pass it when
+        downloading several files in a row: without it this returns the newest
+        file present, which — in the moment between the click and Chrome opening
+        its `.crdownload` — is still the *previous* download. That returns
+        immediately, the same file is claimed twice, and the run ends with fewer
+        documents than the page offered.
         """
+        ignore = ignore or set()
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             self.raise_if_stopped()  # don't keep waiting on a download the user cancelled
@@ -419,7 +429,9 @@ class BaseScraper:
             ]
             done = [
                 f for f in self.download_dir.iterdir()
-                if f.is_file() and f.suffix != ".crdownload" and not f.name.startswith(".com.google.Chrome.")
+                if f.is_file() and f.suffix != ".crdownload"
+                and not f.name.startswith(".com.google.Chrome.")
+                and f not in ignore
             ]
             if done and not partial:
                 return max(done, key=lambda f: f.stat().st_mtime)

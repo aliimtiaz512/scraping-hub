@@ -5,6 +5,7 @@ import CalEProcurePanel from "@/components/CalEProcurePanel";
 import EmmaPanel from "@/components/EmmaPanel";
 import MyFloridaPanel from "@/components/MyFloridaPanel";
 import NorthDakotaPanel from "@/components/NorthDakotaPanel";
+import PhiladelphiaPanel from "@/components/PhiladelphiaPanel";
 import PortalIcon from "@/components/PortalIcon";
 import NaicsPanel from "@/components/NaicsPanel";
 import RideMetroPanel from "@/components/RideMetroPanel";
@@ -31,6 +32,7 @@ export default function PortalConsole({ portal }: { portal: Portal }) {
       {portal === "naics" && <NaicsPanel />}
       {portal === "caleprocure" && <CalEProcurePanel />}
       {portal === "emma" && <EmmaPanel />}
+      {portal === "philadelphia" && <PhiladelphiaPanel />}
     </div>
   );
 }

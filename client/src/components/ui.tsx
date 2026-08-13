@@ -241,6 +241,52 @@ export function Field({
 }
 
 /**
+ * A labelled dropdown, in the same language as `Field`.
+ *
+ * For a criterion whose values are a short, fixed list the portal publishes —
+ * a status, a category. A field whose list is long or changes (a buyer, an NIGP
+ * class) stays a `Field`, because a text box the user types a name into ages
+ * better than a hundred options copied out of someone else's page.
+ */
+export function SelectField({
+  label,
+  hint,
+  value,
+  options,
+  onChange,
+  disabled,
+  placeholder = "Any",
+}: {
+  label: string;
+  hint?: string;
+  value: string;
+  options: { value: string; label: string }[];
+  onChange: (v: string) => void;
+  disabled?: boolean;
+  placeholder?: string;
+}) {
+  return (
+    <div>
+      <label className="mb-1.5 block text-xs font-semibold text-ink-700">{label}</label>
+      <select
+        value={value}
+        disabled={disabled}
+        onChange={(e) => onChange(e.target.value)}
+        className="w-full rounded-lg border border-ink-200 bg-white px-3 py-2 text-sm text-ink-900 shadow-sm transition focus:border-gold-400 focus:outline-none focus:ring-2 focus:ring-gold-400/25 disabled:cursor-not-allowed disabled:bg-ink-50 disabled:text-ink-400"
+      >
+        <option value="">{placeholder}</option>
+        {options.map((option) => (
+          <option key={option.value} value={option.value}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+      {hint && <p className="mt-1.5 text-xs text-ink-500">{hint}</p>}
+    </div>
+  );
+}
+
+/**
  * Mutually exclusive options as one connected control — for a choice that
  * changes what a run does, where a checkbox or a chip row would wrongly imply
  * several can be picked.

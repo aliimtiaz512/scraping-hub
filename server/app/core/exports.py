@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 # Portals whose runs download real document files → their download is a ZIP.
-DOC_PORTALS = {"myflorida", "myflorida_sweep", "bidnet", "northdakota", "emma"}
+DOC_PORTALS = {"myflorida", "myflorida_sweep", "bidnet", "northdakota", "emma", "philadelphia"}
 
 # Portals whose run produces nothing but the spreadsheet, so wrapping it in a
 # ZIP adds a folder to unpack for no gain. SAM downloads each bid's attachments
@@ -51,7 +51,7 @@ EXCEL_ONLY_PORTALS = {"sam", "septa", "ridemetro", "unison"}
 # is downloaded from the portal itself and merged on disk (run["excel_path"]).
 _GENERATOR_PORTALS = {
     "septa", "wisconsin", "ridemetro", "northdakota", "sam", "unison", "bidnet",
-    "myflorida_sweep", "emma",
+    "myflorida_sweep", "emma", "philadelphia",
 }
 
 # Where a portal's export module lives, when it is not `app.scrapers.<key>`.
@@ -84,6 +84,7 @@ def excel_name(run: dict[str, Any]) -> str:
         "bidnet": f"Bidnetdirect_({search or 'all solicitations'})",
         "myflorida_sweep": f"MyFlorida_Sweep_({search or 'all statuses'})",
         "emma": f"EMMA_({search or 'all public solicitations'})",
+        "philadelphia": f"Philadelphia_({search or 'all open bids'})",
     }.get(scraper, f"{scraper}_{run['run_id']}")
     return sanitize_filename(label, max_length=150) + ".xlsx"
 

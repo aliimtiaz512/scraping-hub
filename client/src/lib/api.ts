@@ -11,7 +11,8 @@ export type Portal =
   | "unison"
   | "naics"
   | "caleprocure"
-  | "emma";
+  | "emma"
+  | "philadelphia";
 
 export interface CommodityCode {
   code: string;
@@ -809,6 +810,55 @@ export function startEmmaScrape({
   return request(`/emma/scrape${livePreviewQuery(livePreview)}`, {
     method: "POST",
     body: JSON.stringify({ keyword, status, category }),
+  });
+}
+
+// -- City of Philadelphia (PHLContracts) -------------------------------------
+
+/**
+ * Advanced Search criteria for a PHLContracts run. Every field is optional and
+ * an empty one is not a filter — the server drops blanks, so a half-filled form
+ * narrows by exactly the fields that were filled.
+ *
+ * Dropdown criteria take either the portal's own code or the text it shows
+ * ("MI" or "Micro Purchase"), which is what lets this form stay in the words of
+ * the person filling it in.
+ */
+export interface PhiladelphiaFilters {
+  description?: string;
+  item_description?: string;
+  bid_number?: string;
+  alternate_id?: string;
+  buyer?: string;
+  organization?: string;
+  department?: string;
+  nigp_class?: string;
+  type_code?: string;
+  status?: string;
+  category?: string;
+  opening_date_from?: string;
+  opening_date_to?: string;
+  /** Off: every filled criterion must match. On: any one of them may. */
+  match_any?: boolean;
+}
+
+/**
+ * Start a run on PHLContracts.
+ *
+ * With no filters this walks the whole Open Bids list — the portal's full
+ * published scope. With filters it drives the portal's own Advanced Search
+ * (Document Type: Bid Solicitations) and takes what that returns. Both paths
+ * end at the same results table, so the rest of the run is identical: each
+ * bid's detail page is read, its attachments are saved into a folder of its
+ * own, and the lot is packaged into one ZIP with a summary sheet at its root.
+ */
+export function startPhiladelphiaScrape(
+  livePreview = false,
+  filters?: PhiladelphiaFilters,
+): Promise<{ run_id: string; search: string; folder: string; filters: PhiladelphiaFilters }> {
+  return request(`/philadelphia/scrape${livePreviewQuery(livePreview)}`, {
+    method: "POST",
+    body: JSON.stringify(filters ?? {}),
   });
 }
 

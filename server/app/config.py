@@ -106,6 +106,12 @@ class Settings(BaseSettings):
     # Kept outside server/ so it doesn't trip the uvicorn --reload watcher.
     northdakota_profile_dir: str = "../data/chrome_profiles/northdakota"
 
+    # City of Philadelphia — PHLContracts, a Periscope Holdings BSO portal. The
+    # Open Bids list is behind a vendor login, so a run needs an account.
+    phila_email: str = ""
+    phila_password: str = ""
+    phila_login_url: str = "https://www.phlcontracts.phila.gov/bso/view/login/login.xhtml"
+
     # SEPTA (Southeastern Pennsylvania Transportation Authority) vendor portal —
     # ASP.NET procurement site; login then scrape the Open Quotes grid.
     septa_username: str = ""

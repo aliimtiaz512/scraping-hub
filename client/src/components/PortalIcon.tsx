@@ -131,5 +131,16 @@ export default function PortalIcon({ name, className = "h-5 w-5" }: { name: Port
           <path d="M7 15.5l-2.5 1M7.8 17l-2 1.7M17 15.5l2.5 1M16.2 17l2 1.7" />
         </svg>
       );
+    case "liberty":
+      // The Liberty Bell: Philadelphia's emblem, crack and all.
+      return (
+        <svg {...common}>
+          <path d="M9 5.5h6" />
+          <path d="M9.5 5.5c-.6 3-2 5.2-2.5 9h10c-.5-3.8-1.9-6-2.5-9" />
+          <path d="M5.5 16.5h13" />
+          <path d="M12 16.5v2.2" />
+          <path d="M12.6 8.2l-1.2 2.4 1 1.4-.9 1.9" />
+        </svg>
+      );
   }
 }
