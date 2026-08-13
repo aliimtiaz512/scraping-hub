@@ -260,8 +260,17 @@ export interface RunStatus {
   filter_id?: string;
   filter_label?: string;
   pages_scraped?: number;
+  /** How many bids the portal itself said the listing held, read from its
+   *  "1 - 100 of 115 Buys" line. `bids_found` short of this means the walk
+   *  missed pages — the run records an error saying so. */
+  bids_detected?: number;
   /** How the run's buys came out of the evaluator, e.g. `{PURSUE: 4, REJECT: 20}`. */
   decisions?: Record<string, number>;
+  /** Unison: bids rejected by an early-exit screen (GSA Schedules, hospitality
+   *  and food) before the evaluation matrix ran, and bids the strict fallback
+   *  decided instead of sending to manual review. */
+  screened_out?: number;
+  manual_review_resolved?: number;
   /** Which of the Unison scraper's filters ran, and a one-line rendering of
    *  them. The keyword and close-date filters stay off for the testing phase. */
   filters_active?: Record<string, boolean>;

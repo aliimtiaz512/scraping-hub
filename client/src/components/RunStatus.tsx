@@ -135,7 +135,15 @@ export default function RunStatus({ run }: { run: RunStatusData }) {
       )}
 
       <div className="grid grid-cols-2 divide-ink-100 sm:grid-cols-4 sm:divide-x">
-        <Stat label="Bids found" value={run.bids_found} />
+        {/* Against the portal's own count when the run knows it (Unison reads
+            it off the listing's "1 - 100 of 115 Buys" line). A run that read
+            fewer than the portal reported is the failure this shows: the number
+            on its own looked like a small listing rather than a short walk. */}
+        <Stat
+          label={run.bids_detected ? "Bids found / detected" : "Bids found"}
+          value={run.bids_detected ? `${run.bids_found} / ${run.bids_detected}` : run.bids_found}
+          muted={!!run.bids_detected && run.bids_found < run.bids_detected}
+        />
         <Stat label="Processed" value={run.bids_processed} />
         <Stat label="Documents" value={run.documents_downloaded} />
         <Stat label="Results" value={run.excel_exported ? "Ready" : "—"} muted={!run.excel_exported} />

@@ -40,6 +40,14 @@ from app.services.notifier import notify_scrape_completion
 
 logger = logging.getLogger(__name__)
 
+#: How many scraped records are mirrored into the live run state for the
+#: console's table. Not a processing limit — the run stores, exports and
+#: evaluates every record regardless. Sized to hold any real listing whole
+#: (a full unfiltered Unison day is a few hundred buys) so the console's count
+#: matches the run's, and bounded only so a runaway listing cannot inflate the
+#: polled run object without limit.
+LIVE_PREVIEW_CEILING = 1000
+
 # Listing row key -> model field.
 _LISTING_MAP = {
     "Buyer#": "buyer_number",
@@ -226,13 +234,39 @@ def execute_run(run_id: str) -> None:
         # session is left open for the detail pass that follows.
         rows = scraper.open_listing(filter_id=filter_id, page_size=filters.PAGE_SIZE)
         records = _listing_records(rows)
+        detected = scraper.expected_buys
         run_manager.update_run(
-            run_id, bids_found=len(records), pages_scraped=scraper.pages_scraped,
+            run_id,
+            bids_found=len(records),
+            pages_scraped=scraper.pages_scraped,
+            bids_detected=detected,
         )
         logger.info(
-            "[run %s] listing: %d buys across %d page(s)",
-            run_id, len(records), scraper.pages_scraped,
+            "[run %s] listing: read %d of %s buy(s) detected, across %d page(s)",
+            run_id, len(records), detected if detected is not None else "?",
+            scraper.pages_scraped,
         )
+        # The count the run is held to. A listing that reports 115 and yields 100
+        # is not a smaller listing — it is fifteen buys nobody will ever see, and
+        # it used to pass as a clean run because nothing compared the two numbers
+        # out loud.
+        if not getattr(scraper, "filter_applied", True):
+            message = (
+                f"the '{filters.filter_label(filter_id)}' criterion could not be "
+                f"applied — this run read the unfiltered listing, so its counts "
+                f"are against every open buy rather than that criterion's"
+            )
+            logger.error("[run %s] %s", run_id, message)
+            run_manager.add_error(run_id, message)
+
+        if detected is not None and len(records) < detected:
+            message = (
+                f"the portal reported {detected} buys but only {len(records)} were "
+                f"read across {scraper.pages_scraped} page(s) — "
+                f"{detected - len(records)} were not collected"
+            )
+            logger.error("[run %s] %s", run_id, message)
+            run_manager.add_error(run_id, message)
 
         # Pass 2 — each buy's detail page, documents and verdict. One failure
         # costs that buy; the row stays in the report carrying its error.
@@ -256,11 +290,34 @@ def execute_run(run_id: str) -> None:
             decisions[record.get("decision") or "NOT_EVALUATED"] = (
                 decisions.get(record.get("decision") or "NOT_EVALUATED", 0) + 1
             )
+        # How many verdicts the strict fallback settled that would otherwise have
+        # gone to a person, and how many the early-exit screens took off the
+        # table before the funnel ran. Reported because both are the point of the
+        # change and both are invisible from the decision tally alone: a REJECT
+        # made by a screen and one made by Rule B read the same in that count.
+        resolved = sum(1 for r in records if r.get("decision_before_strict"))
+        screened = sum(1 for r in records if str(r.get("rule") or "").startswith("screen:"))
         run_manager.update_run(
-            run_id, documents_downloaded=documents_downloaded, decisions=decisions,
+            run_id,
+            documents_downloaded=documents_downloaded,
+            decisions=decisions,
+            manual_review_resolved=resolved,
+            screened_out=screened,
         )
-        logger.info("[run %s] decisions: %s | %d document(s) downloaded",
-                    run_id, decisions, documents_downloaded)
+        logger.info(
+            "[run %s] decisions: %s | %d document(s) downloaded | %d rejected by "
+            "an early-exit screen | %d resolved off the manual-review queue",
+            run_id, decisions, documents_downloaded, screened, resolved,
+        )
+        if resolved:
+            logger.info(
+                "[run %s] strict fallback settled: %s",
+                run_id,
+                ", ".join(
+                    f"{r.get('buyer_number')}={r.get('decision')}"
+                    for r in records if r.get("decision_before_strict")
+                )[:800],
+            )
 
         # The close-date rule is off for testing, so this passes every record
         # through. The tallies are only published when it actually ran —
@@ -281,8 +338,34 @@ def execute_run(run_id: str) -> None:
                 run_id, MIN_DAYS_UNTIL_CLOSE, len(records), skipped_soon, unreadable_close,
             )
 
+        # The whole job in one line: what the portal said it had, what the walk
+        # read, and what came out the far end of the detail pass. The three
+        # agreeing is the guarantee this pipeline exists to make; any two of them
+        # disagreeing names the stage that lost the bids.
+        if detected:
+            logger.info(
+                "[PIPELINE COMPLETE]: Total Processed: %d / Total Detected: %d (%.0f%% Coverage)",
+                len(records), detected, 100 * len(records) / detected,
+            )
+        else:
+            logger.info(
+                "[PIPELINE COMPLETE]: Total Processed: %d (the portal stated no total)",
+                len(records),
+            )
         run_manager.update_run(run_id, bids_found=len(records), bids_processed=len(records))
-        for rec in records[:100]:  # mirror a preview into the live run state
+        # Every record, not the first hundred. The slice here was a display
+        # limit and never touched processing — but a run of 136 buys showed 100
+        # rows in the console, which is indistinguishable from the truncation
+        # bug it sat next to. The ceiling below is a memory guard for a
+        # pathological listing, an order of magnitude above any real one, and it
+        # says so when it bites.
+        if len(records) > LIVE_PREVIEW_CEILING:
+            logger.warning(
+                "[run %s] showing the first %d of %d records in the console; the "
+                "spreadsheet and the database hold all of them",
+                run_id, LIVE_PREVIEW_CEILING, len(records),
+            )
+        for rec in records[:LIVE_PREVIEW_CEILING]:
             run_manager.add_bid_result(run_id, {
                 "buyer_number": rec.get("buyer_number"),
                 "buyer_description": rec.get("buyer_description"),

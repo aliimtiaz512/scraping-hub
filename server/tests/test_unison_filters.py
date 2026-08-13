@@ -211,8 +211,12 @@ class FakeDriver:
         self.quit_called = True
 
 
-def _fake_engine(monkeypatch, runner, rows, page_source=""):
-    """Install a scraper double and stub everything the runner does around it."""
+def _fake_engine(monkeypatch, runner, rows, page_source="", detected=None):
+    """Install a scraper double and stub everything the runner does around it.
+
+    `detected` is what the listing claimed to hold — pass a number larger than
+    `rows` to model a walk that came back short.
+    """
     seen: dict = {}
 
     class FakeScraper:
@@ -220,6 +224,9 @@ def _fake_engine(monkeypatch, runner, rows, page_source=""):
             self.keywords_to_exclude = ["should be replaced"]
             self.headless = True
             self.pages_scraped = 0
+            # What the listing claimed it held. The runner holds the walk to
+            # this number, so the fake has to carry it like the engine does.
+            self.expected_buys = None
             self.driver = FakeDriver(page_source)
 
         def open_listing(self, filter_id="-1", page_size="100"):
@@ -227,6 +234,7 @@ def _fake_engine(monkeypatch, runner, rows, page_source=""):
             seen["page_size"] = page_size
             seen["keywords"] = list(self.keywords_to_exclude)
             self.pages_scraped = 2
+            self.expected_buys = len(rows) if detected is None else detected
             return rows
 
     monkeypatch.setattr(runner, "UnisonMarketplaceScraper", FakeScraper)
@@ -367,3 +375,40 @@ def test_a_run_delivers_the_sheet_and_keeps_no_documents(monkeypatch, tmp_path):
     assert stored["documents_downloaded"] == 1
     # …and the run is delivered as a bare sheet, not a ZIP.
     assert "unison" in exports.EXCEL_ONLY_PORTALS
+
+
+# -- the walk is held to the count the portal reported -------------------------
+
+
+def test_a_short_listing_is_an_error_on_the_run(monkeypatch, tmp_path):
+    """115 detected, 100 read is not a smaller listing — it is fifteen buys
+    nobody will ever see. It used to pass as a clean run because nothing
+    compared the two numbers out loud."""
+    from app.core import run_manager
+    from app.scrapers.unison import runner
+
+    rows = [{"buyer_number": f"B{n}", "detail_url": ""} for n in range(100)]
+    _fake_engine(monkeypatch, runner, rows, detected=115)
+    run = run_manager.create_run("unison", tmp_path)
+
+    runner.execute_run(run["run_id"])
+
+    stored = run_manager.get_run(run["run_id"])
+    assert stored["bids_detected"] == 115
+    assert any("115" in e and "100" in e for e in stored["errors"]), stored["errors"]
+
+
+def test_a_complete_listing_raises_nothing(monkeypatch, tmp_path):
+    from app.core import run_manager
+    from app.scrapers.unison import runner
+
+    rows = [{"buyer_number": f"B{n}", "detail_url": ""} for n in range(115)]
+    _fake_engine(monkeypatch, runner, rows, detected=115)
+    run = run_manager.create_run("unison", tmp_path)
+
+    runner.execute_run(run["run_id"])
+
+    stored = run_manager.get_run(run["run_id"])
+    assert stored["bids_detected"] == 115
+    assert stored["bids_found"] == 115
+    assert not any("not collected" in e for e in stored["errors"])
