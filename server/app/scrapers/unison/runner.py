@@ -276,6 +276,20 @@ def execute_run(run_id: str) -> None:
                 run_id,
                 step=f"detail ({index}/{len(records)}): {record.get('buyer_number', '')}",
             )
+            # Step 0: a buy whose listing row already names a GSA vehicle is out
+            # before anything is fetched for it. Opening the page and pulling its
+            # documents could not change the answer, so it is a page load and a
+            # handful of PDFs saved on every hit. It stays in the report, with
+            # the verdict and the reason, exactly as a screened buy always did.
+            early = unison_evaluation.screen_listing(record)
+            if early is not None:
+                record.update(early)
+                record["attachments"] = []
+                record["attachment_count"] = 0
+                record["line_items"] = []
+                record["line_item_count"] = 0
+                run_manager.update_run(run_id, bids_processed=index)
+                continue
             try:
                 _scrape_detail(scraper, session, record, docs_root)
             except Exception as exc:  # noqa: BLE001 — one buy must not sink the run

@@ -124,15 +124,62 @@ and they act on what the portal *declares* rather than on what prose implies:
 
 | Screen | Field | Match | Result |
 | --- | --- | --- | --- |
-| `screen:gsa` | Buy Description + the General Information contract-vehicle rows | `GSA Schedules` / `GSA Schedule` / `GSA Federal Supply Schedule`, case-insensitive | REJECT |
+| `screen:gsa` | Buy Description, the General Information rows, bidding requirements, buy terms, Category/Subcategory | `GSA_PATTERN` — Schedule(s), contract(s), MAS or Federal Supply Schedule, any separator, case-insensitive | REJECT |
 | `screen:cat` | Category, Subcategory | `hospitality`, `food service(s)`, `foods`, `catering`, `beverage`, `restaurant` | REJECT |
 
 A screened buy never reaches the funnel — no documents are read through a
 classifier that might disagree, and the rule code in the sheet says which screen
-decided it. The contract vehicle is searched in both places it appears (the
-description on some buys, a General Information row on others, where its varying
-label lands it in `extra`) because a screen reading one would pass exactly the
-buys that state it in the other.
+decided it.
+
+### The GSA screen matches a pattern, not a list of strings
+
+It used to be three literals — `gsa schedules`, `gsa schedule`, `gsa federal
+supply schedule` — checked with `in`. That let a great deal through. A hyphen
+(`GSA-Schedule`), an underscore, a doubled space, a line break, or the words
+`contract` or `MAS` instead of `Schedule` were each enough to walk a GSA buy
+past the screen and into the evaluation matrix. Six of seven live forms missed.
+
+`GSA_PATTERN` replaces them:
+
+```python
+r"\bgsa[\s\-_]*(?:federal[\s\-_]*supply[\s\-_]*schedules?|schedules?|contracts?|mas)\b"
+```
+
+`[\s\-_]*` swallows whatever sits between the two words; the trailing `\b`
+keeps it to whole words. `GSA_FORMS` lists every form the screen is expected to
+catch and the tests assert the pattern against it, so the written statement and
+the matcher cannot drift.
+
+**Bare `GSA` is deliberately not a match.** The company is registered with GSA
+and the word appears in registration boilerplate, GSA Advantage listings and
+vendor blurbs on buys that are in scope. What puts a buy out is the *vehicle*,
+not the mention; rejecting on the word would take good work off the table to
+catch it. Tests pin `GSA Advantage`, `GSAB`, `Gsanchez` and a bare `MAS` as
+passes.
+
+### Where it runs: before the detail page is fetched
+
+The GSA screen runs twice, and the first is the cheap one.
+
+`screen_listing()` is **step 0 of the detail loop**, over the listing row alone.
+The listing already carries the Buy Description, so a buy that names a GSA
+vehicle there is out before its detail page is opened — a page load, its PDF
+downloads and a text extraction saved on every hit, none of which could have
+changed the answer. The buy stays in the report with its verdict and reason, and
+reports zero documents rather than leaving the count for the sheet to guess at.
+
+`screen()` then runs inside `evaluate()` over everything the detail page added,
+for the buys that state their vehicle only there. Only GSA is screened at the
+listing stage: the category screen reads Category and Subcategory, which the
+listing does not carry.
+
+Every interception says so out loud, naming the phrase and the field it was
+found in — a rejection nobody can trace back to something on the page is one
+nobody can check:
+
+```
+[FILTER TRIGGERED]: Bid #10492 | Match: 'gsa schedules' found in 'buy_description' | Action: Set Status -> REJECT (Bypassed Matrix)
+```
 
 The category screen is careful about one known trap:
 `7B20 -- HARDWARE AND PERPETUAL LICENSE SOFTWARE` is the category the classifier

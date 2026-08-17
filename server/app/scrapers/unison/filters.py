@@ -67,6 +67,14 @@ def catalog() -> list[dict[str, str]]:
 #: Drop requests whose description contains one of EXCLUDED_KEYWORDS.
 EXCLUDE_KEYWORDS = False
 #: The engine's original exclusion list, kept for when it goes back on.
+#:
+#: This is *not* what takes GSA buys off the table — `evaluation.screen_listing`
+#: is, and it keeps them in the report marked REJECT with a reason. This list
+#: makes the engine drop a row before the hub ever sees it, so a buy excluded
+#: here leaves no trace of having existed. Two things to know before switching
+#: it on: the GSA term duplicates a screen that already works and matches far
+#: more forms of it, and these are plain substrings — "gsa schedules" here would
+#: miss "GSA-Schedule", exactly as the screen did before it was made a pattern.
 EXCLUDED_KEYWORDS: list[str] = [
     "gsa schedules", "food rfi", "market research", "foods", "meal", "survey",
 ]

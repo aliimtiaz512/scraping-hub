@@ -73,9 +73,37 @@ _DIGITS = re.compile(r"\d")
 # `rule` column so a rejection is traceable to the screen that made it, and is
 # kept short — the column is String(16).
 
-#: Contract vehicles that put a buy out of scope, matched case-insensitively in
-#: the Buy Description and in the General Information contract-vehicle line.
-GSA_TERMS = ("gsa schedules", "gsa schedule", "gsa federal supply schedule")
+#: The forms of "GSA Schedule" this screen is expected to catch. Not used for
+#: matching — `GSA_PATTERN` below does that — but kept as the written statement
+#: of what it must cover, and asserted against the pattern in the tests. A list
+#: of literals *was* the matcher, and it missed six of these seven: a hyphen, an
+#: underscore, a doubled space, a line break, and the words "contract" and "MAS"
+#: were each enough to walk a GSA buy straight into the funnel.
+GSA_FORMS = (
+    "gsa schedule", "gsa schedules",
+    "gsa-schedule", "gsa-schedules",
+    "gsa_schedule", "gsa_schedules",
+    "gsa  schedules",
+    "gsa contract", "gsa contracts",
+    "gsa schedule contract",
+    "gsa mas",
+    "gsa federal supply schedule",
+)
+
+#: What actually decides it. `[\s\-_]*` swallows whatever sits between the two
+#: words — a space, several, a newline, a hyphen, an underscore, or nothing —
+#: and the trailing `\b` keeps the match to whole words.
+#:
+#: Bare "GSA" is deliberately **not** a match. The company is registered with
+#: GSA and the word turns up in registration boilerplate, "GSA Advantage"
+#: listings and vendor blurbs on buys that are perfectly in scope; rejecting on
+#: it would take good work off the table to catch a mention. What puts a buy out
+#: is the *vehicle* — a Schedule, a GSA contract, or MAS.
+GSA_PATTERN = re.compile(
+    r"\bgsa[\s\-_]*"
+    r"(?:federal[\s\-_]*supply[\s\-_]*schedules?|schedules?|contracts?|mas)\b",
+    re.IGNORECASE,
+)
 
 #: Categories out of scope outright. Matched against Category and Subcategory,
 #: normalised (lowercased, punctuation and the portal's numeric prefix dropped),
@@ -100,25 +128,127 @@ def _normalise(text: str) -> str:
     return re.sub(r"\s+", " ", cleaned).strip().lower()
 
 
-def _contract_vehicle_text(record: dict[str, Any]) -> str:
-    """Everything that can name a contract vehicle, as one searchable string.
+def _searchable_fields(record: dict[str, Any]) -> list[tuple[str, str]]:
+    """Every field that can name a contract vehicle, as `(field, text)` pairs.
 
     The portal has no single Contract Vehicle field: it appears in the Buy
-    Description on some buys and as a General Information row on others (its
-    label varies, so unmapped rows land in `general_info["extra"]`). All of it
-    is searched — a screen that reads one of the two places would pass exactly
-    the buys that state it in the other.
+    Description on some buys, in a General Information row on others (its label
+    varies, so unmapped rows land in `general_info["extra"]`), and in the
+    bidding requirements or buy terms on the rest. All of it is searched — a
+    screen that reads one place passes exactly the buys that state it in
+    another.
+
+    Pairs rather than one blob so the log can say *which* field tripped, which
+    is the difference between "this was rejected" and a line someone can check
+    against the portal.
     """
     general = record.get("general_info") or {}
     extra = general.get("extra") or {}
-    parts = [
-        record.get("buy_description") or "",
-        general.get("buy_description") or "",
-        general.get("solicitation_number") or "",
-        general.get("sam_contract_opportunity") or "",
-        " ".join(f"{k} {v}" for k, v in extra.items() if v),
+    sections = record.get("detail_sections") or {}
+
+    fields: list[tuple[str, str]] = [
+        # The listing's description, and the detail page's cleaner one.
+        ("buy_description", record.get("buy_description") or record.get("buyer_description") or ""),
+        ("general_info.buy_description", general.get("buy_description") or ""),
+        ("solicitation_number", general.get("solicitation_number") or ""),
+        ("sam_contract_opportunity", general.get("sam_contract_opportunity") or ""),
+        ("category", record.get("category") or ""),
+        ("subcategory", record.get("subcategory") or ""),
+        # Prose the vehicle is often stated in and which nothing used to read.
+        ("bidding_requirements", _flatten(
+            record.get("bidding_requirements") or sections.get("bidding_requirements"))),
+        ("buy_terms", _flatten(record.get("buy_terms") or sections.get("buy_terms"))),
     ]
-    return " ".join(str(p) for p in parts if p).lower()
+    # The General Information rows whose label the parser did not recognise —
+    # which is where a row actually labelled "Contract Vehicle" ends up.
+    for label, value in (extra or {}).items():
+        if value:
+            fields.append((f"general_info.{label}", f"{label} {value}"))
+    # Names the record may carry from elsewhere. None of these exist on a Unison
+    # buy today; listed so a field added later is screened from the day it
+    # appears rather than the day someone remembers this function.
+    for name in ("contract_vehicle", "title", "solicitation_summary"):
+        if record.get(name):
+            fields.append((name, str(record[name])))
+
+    return [(name, _collapse(text)) for name, text in fields if text]
+
+
+def _flatten(value: Any) -> str:
+    """A section's text, whether it arrived as a string, a list or a dict."""
+    if not value:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        return " ".join(f"{k} {v}" for k, v in value.items() if v)
+    if isinstance(value, (list, tuple)):
+        return " ".join(_flatten(v) for v in value)
+    return str(value)
+
+
+def _collapse(text: Any) -> str:
+    """Whitespace collapsed and trimmed, so a line break cannot hide a match."""
+    return re.sub(r"\s+", " ", str(text or "")).strip()
+
+
+def find_gsa(record: dict[str, Any]) -> tuple[str, str] | None:
+    """`(field, matched text)` for the first GSA vehicle found, or None.
+
+    Returns the field as well as the match because a rejection nobody can trace
+    back to a phrase on the page is one nobody can check.
+    """
+    for field, text in _searchable_fields(record):
+        found = GSA_PATTERN.search(text)
+        if found:
+            return field, found.group(0)
+    return None
+
+
+def log_gsa_match(record: dict[str, Any], field: str, matched: str) -> None:
+    """Say out loud that a buy was taken off the table, and on what evidence."""
+    logger.info(
+        "[FILTER TRIGGERED]: Bid #%s | Match: %r found in %r | "
+        "Action: Set Status -> REJECT (Bypassed Matrix)",
+        record.get("buy_number") or record.get("buyer_number") or "unknown",
+        matched.lower(), field,
+    )
+
+
+def screen_listing(record: dict[str, Any]) -> dict[str, Any] | None:
+    """The GSA verdict from the listing row alone, before the detail page is opened.
+
+    Step 0 of the detail loop. The listing already carries the Buy Description,
+    and a buy that names a GSA Schedule there is out — so there is nothing to be
+    learned by loading its detail page and downloading its documents first. That
+    is a page load, a handful of PDF fetches and a text extraction saved per
+    hit, and none of it could have changed the answer.
+
+    Only GSA is screened this early. The category screen reads Category and
+    Subcategory, which the listing does not carry — those are read on the detail
+    page, so that screen stays where it can see them.
+
+    Returns the storable verdict fields, or None to go on and open the page.
+    `screen` still runs later over everything the detail page adds, for the buys
+    that name their vehicle only there.
+    """
+    gsa = find_gsa(record)
+    if not gsa:
+        return None
+    field, matched = gsa
+    log_gsa_match(record, field, matched)
+    return {
+        "decision": "REJECT",
+        "reason": (
+            f"Contract vehicle is {matched.upper()} (stated in {field}) — outside "
+            f"the company's contracting routes, so the buy is not pursued."
+        ),
+        "rule": "screen:gsa",
+        "requirement_type": None,
+        "location": None,
+        "requirement_hinted": False,
+        "hint_evidence": "screened off the listing row; detail page not opened",
+    }
 
 
 def screen(record: dict[str, Any]) -> tuple[str, str, str] | None:
@@ -128,14 +258,15 @@ def screen(record: dict[str, Any]) -> tuple[str, str, str] | None:
     a buy off the table cheaply, never to put one on it — that judgement stays
     with the funnel, which weighs the whole record.
     """
-    vehicle = _contract_vehicle_text(record)
-    matched = next((term for term in GSA_TERMS if term in vehicle), None)
-    if matched:
+    gsa = find_gsa(record)
+    if gsa:
+        field, matched = gsa
+        log_gsa_match(record, field, matched)
         return (
             "screen:gsa",
             "REJECT",
-            f"Contract vehicle is {matched.upper()} — outside the company's "
-            f"contracting routes, so the buy is not pursued.",
+            f"Contract vehicle is {matched.upper()} (stated in {field}) — outside "
+            f"the company's contracting routes, so the buy is not pursued.",
         )
 
     for field in ("category", "subcategory"):

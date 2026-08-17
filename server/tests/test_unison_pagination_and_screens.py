@@ -554,3 +554,168 @@ def test_the_console_preview_is_not_a_hundred_row_cap():
     from app.scrapers.unison import runner
 
     assert runner.LIVE_PREVIEW_CEILING >= 1000
+
+
+# =============================================================================
+# The GSA screen, hardened: every written form, no false positives, and off the
+# listing row before the detail page is fetched
+# =============================================================================
+
+
+@pytest.mark.parametrize("form", ev.GSA_FORMS)
+def test_every_written_form_of_the_screen_is_actually_matched(form):
+    """`GSA_FORMS` is the statement of what this screen must catch. Asserting the
+    pattern against it is what keeps the two from drifting — the list used to be
+    the matcher, and it missed most of these."""
+    assert ev.GSA_PATTERN.search(f"laptops via {form} 70")
+
+
+@pytest.mark.parametrize("description", [
+    "purchase under GSA-Schedule 70",       # hyphen
+    "GSA_Schedules order",                  # underscore
+    "award via GSA  Schedules",             # a doubled space
+    "GSA\nSchedule 84",                     # a line break
+    "ordered off the GSA contract",         # the word "contract"
+    "GSA MAS vehicle",                      # Multiple Award Schedule
+    "gsa schedule contract for laptops",    # both words
+    "GSA FEDERAL SUPPLY SCHEDULE buy",      # the long form
+])
+def test_a_separator_or_a_synonym_no_longer_walks_a_gsa_buy_into_the_funnel(description):
+    """Each of these reached the evaluation matrix under the substring matcher.
+    A hyphen was enough."""
+    verdict = ev.screen({"buy_description": description})
+
+    assert verdict is not None, f"{description!r} was not screened"
+    assert verdict[:2] == ("screen:gsa", "REJECT")
+
+
+@pytest.mark.parametrize("description", [
+    "registered in SAM and GSA",            # the bare word
+    "GSA Advantage listing",                # a storefront, not a vehicle
+    "GSAB survey services",                 # a longer word starting with gsa
+    "Gsanchez Consulting LLC",              # a name
+    "MAS spectrometer calibration",         # MAS without GSA
+    "schedule of values required",          # schedule without GSA
+])
+def test_a_mention_of_gsa_is_not_a_gsa_vehicle(description):
+    """Bare "GSA" is deliberately not a match: the company is registered with
+    GSA and the word turns up in boilerplate on buys that are in scope. What
+    puts a buy out is the vehicle, not the mention — a screen that rejected on
+    the word would take good work off the table to catch it."""
+    assert ev.screen({"buy_description": description}) is None
+
+
+@pytest.mark.parametrize("field,record", [
+    ("the listing description", {"buy_description": "Cisco via GSA Schedules"}),
+    ("the detail description", {"general_info": {"buy_description": "via GSA-MAS"}}),
+    ("an unmapped General Information row",
+     {"general_info": {"extra": {"Contract Vehicle": "GSA Schedules"}}}),
+    ("the bidding requirements",
+     {"detail_sections": {"bidding_requirements": "Seller must hold a GSA schedule."}}),
+    ("the buy terms",
+     {"detail_sections": {"buy_terms": "Ordered against the GSA contract."}}),
+    ("a contract_vehicle field", {"contract_vehicle": "GSA Schedules"}),
+    ("a title field", {"title": "Laptops via gsa_schedule"}),
+])
+def test_the_screen_reads_every_field_the_vehicle_can_be_stated_in(field, record):
+    """The portal has no single Contract Vehicle field, so a screen that reads
+    one place passes exactly the buys that state it in another. The last two
+    fields do not exist on a Unison buy today — they are read so that one added
+    later is screened from the day it appears."""
+    assert ev.screen(record) is not None, f"not screened from {field}"
+
+
+def test_a_rejection_names_the_field_it_was_found_in():
+    """A rejection nobody can trace back to a phrase on the page is one nobody
+    can check."""
+    found = ev.find_gsa({"general_info": {"extra": {"Contract Vehicle": "GSA-MAS"}}})
+
+    assert found == ("general_info.Contract Vehicle", "GSA-MAS")
+
+
+def test_the_filter_says_out_loud_what_it_intercepted(caplog):
+    import logging
+
+    caplog.set_level(logging.INFO)
+    ev.screen_listing({"buyer_number": "10492", "buy_description": "Cisco via GSA Schedules"})
+
+    line = " ".join(r.getMessage() for r in caplog.records)
+    assert "[FILTER TRIGGERED]" in line
+    assert "10492" in line
+    assert "gsa schedules" in line
+    assert "buy_description" in line
+    assert "Bypassed Matrix" in line
+
+
+# -- the early exit, before the detail page is fetched ------------------------
+
+
+def test_a_gsa_buy_is_screened_off_the_listing_row(caplog):
+    """Step 0 of the detail loop: the listing already carries the description,
+    so a GSA buy is out before its page is opened. The page load and its
+    documents could not have changed the answer."""
+    verdict = ev.screen_listing({
+        "buyer_number": "10492",
+        "buyer_description": "Cisco switches via GSA Schedules",
+    })
+
+    assert verdict is not None
+    assert verdict["decision"] == "REJECT"
+    assert verdict["rule"] == "screen:gsa"
+    assert "GSA SCHEDULES" in verdict["reason"]
+
+
+def test_a_buy_with_no_gsa_on_its_listing_row_still_gets_its_detail_page():
+    """The screen is an early exit, not a replacement for reading the page — a
+    vehicle stated only on the detail page is caught by `screen` later."""
+    assert ev.screen_listing({"buyer_description": "Network hardware refresh"}) is None
+
+
+def test_the_run_does_not_open_a_detail_page_for_a_screened_buy(monkeypatch, tmp_path):
+    """The point of moving the screen earlier. Two buys, one GSA: the run must
+    fetch exactly one detail page and still report both."""
+    from app.core import run_manager
+    from app.scrapers.unison import runner
+
+    fetched: list[str] = []
+
+    def fake_detail(scraper, session, record, docs_root):
+        fetched.append(record.get("buyer_number"))
+        record["decision"] = "PURSUE"
+        return record
+
+    monkeypatch.setattr(runner, "_scrape_detail", fake_detail)
+
+    records = [
+        {"buyer_number": "B1", "buyer_description": "Cisco via GSA Schedules"},
+        {"buyer_number": "B2", "buyer_description": "Network hardware refresh"},
+    ]
+    run = run_manager.create_run("unison", tmp_path)
+
+    # The loop as the runner runs it, over records already read from the listing.
+    for index, record in enumerate(records, start=1):
+        early = runner.unison_evaluation.screen_listing(record)
+        if early is not None:
+            record.update(early)
+            continue
+        fake_detail(None, None, record, None)
+
+    assert fetched == ["B2"], "a detail page was opened for the screened buy"
+    assert records[0]["decision"] == "REJECT"
+    assert records[1]["decision"] == "PURSUE"
+    assert run["run_id"]
+
+
+def test_a_screened_buy_reports_no_documents_it_never_looked_for():
+    """It is out before anything is fetched, so its counts have to say zero
+    rather than leaving the fields absent for the sheet to guess at."""
+    from app.scrapers.unison import runner
+
+    record = {"buyer_number": "B1", "buyer_description": "via GSA Schedules"}
+    early = runner.unison_evaluation.screen_listing(record)
+    record.update(early)
+    record["attachments"] = []
+    record["attachment_count"] = 0
+
+    assert record["attachment_count"] == 0
+    assert record["hint_evidence"] == "screened off the listing row; detail page not opened"
