@@ -34,6 +34,11 @@ export default function BidnetPanel() {
   const [run, setRun] = useState<RunStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
+  // Off by default: a run opens no window. On, this run alone gets a visible
+  // browser — it does not change how the scrape behaves, only whether it can be
+  // watched. Deliberately not remembered between runs: leaving it on by
+  // accident would pop a window open on a machine nobody is sitting at.
+  const [showBrowser, setShowBrowser] = useState(false);
   // The option-discovery pass is its own run, tracked apart from the scrape: it
   // produces no bids and nothing to download, so it must not land in `run` and
   // be rendered as a (broken) scrape result.
@@ -104,7 +109,9 @@ export default function BidnetPanel() {
     setError(null);
     setStarting(true);
     try {
-      const { run_id } = await startBidnetScrape(selectedNiche, filters, livePreview);
+      const { run_id } = await startBidnetScrape(
+        selectedNiche, filters, livePreview || showBrowser,
+      );
       setRun(await getRunStatus("bidnet", run_id));
       poll(pollRef, run_id, setRun);
     } catch (e) {
@@ -121,7 +128,9 @@ export default function BidnetPanel() {
     setError(null);
     setStarting(true);
     try {
-      const { batch_id } = await startBidnetBatch(undefined, filters);
+      // The toggle applies here too: a batch runs its niches one after another,
+      // so it is one window at a time, not one per niche.
+      const { batch_id } = await startBidnetBatch(undefined, filters, showBrowser);
       setRun(await getRunStatus("bidnet", batch_id));
       poll(pollRef, batch_id, setRun);
     } catch (e) {
@@ -209,6 +218,23 @@ export default function BidnetPanel() {
           >
             Run all niches
           </Button>
+          <label
+            className="flex items-center gap-2 whitespace-nowrap text-xs text-ink-600"
+            title={
+              "Off, the run is headless — no window opens. On, this run opens a "
+              + "visible browser so the search can be watched. Does not change what "
+              + "the scrape does."
+            }
+          >
+            <input
+              type="checkbox"
+              checked={showBrowser}
+              disabled={starting || isRunning}
+              onChange={(e) => setShowBrowser(e.target.checked)}
+              className="h-3.5 w-3.5 rounded border-ink-300 text-gold-500 focus:ring-2 focus:ring-gold-400/30 disabled:cursor-not-allowed"
+            />
+            Show browser
+          </label>
           <StartButton
             onClick={() => handleStart()}
             disabled={starting || isRunning || blocked !== null}

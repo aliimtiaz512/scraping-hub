@@ -121,13 +121,18 @@ APPLY_CLOSE_DATE_FILTER = False
 # Show the browser and slow the flow down so form interactions, date-picker
 # overlays and page reloads can be watched as they happen.
 #
-# **Set to True for production.** That is the only edit needed: with it back on,
-# runs are headless again and every `[LIVE DEBUG]` line and pacing pause below
-# disappears, because both hang off this flag alone. Per-run visibility does not
-# need this switch at all — the console's "Live preview" button already shows the
-# browser for a single run (see BaseScraper.start_driver); this is the blunt
-# always-on version for a debugging session.
-HEADLESS_MODE = False
+# **On (True) is production**, and that is where this now sits: the filter logic
+# it was turned off to debug is verified, so runs are headless again and every
+# `[LIVE DEBUG]` line and pacing pause below is silent, because both hang off
+# this flag alone.
+#
+# Per-run visibility does not need this switch. The console's "Show browser"
+# toggle sets `live_preview` on the run and `BaseScraper.start_driver` shows the
+# window for that run alone; this flag is the blunt always-on version, for a
+# debugging session where every run should be watched. Turning it back to False
+# overrides the per-run flag for *every* run, which is why it does not belong on
+# in production.
+HEADLESS_MODE = True
 
 # Seconds to pause after a form interaction while HEADLESS_MODE is False, so a
 # watched step is readable rather than a flicker. Zero cost when headless.
@@ -1751,16 +1756,31 @@ class BidnetScraper(BaseScraper):
         run_manager.update_run(self.run_id, status="running")
         self._save_run_row()
         try:
-            # HEADLESS_MODE False forces a visible, maximised window for every
-            # run. Left at True the per-run "Live preview" flag decides, which is
-            # the production behaviour.
+            # HEADLESS_MODE True (production) hands the decision to the run's own
+            # `live_preview` flag; False forces a visible window for every run.
+            live_preview = bool((run_manager.get_run(self.run_id) or {}).get("live_preview"))
+            headed = live_preview or not HEADLESS_MODE
+            logger.info("[JOB INITIALIZED]: Portal: BidNet Direct")
+            logger.info(
+                " ├── [EXECUTION MODE]: %s (Live Preview: %s)",
+                "Visible browser" if headed else "Headless Background Run",
+                "ON" if live_preview else "OFF",
+            )
+            logger.info(
+                " ├── [FILTERS APPLIED]: %s",
+                "date panels active" if APPLY_DATE_FILTERS else "date panels BYPASSED",
+            )
+            logger.info(
+                " └── [STATUS]: %s",
+                "browser window open for this run"
+                if headed else "scraper running in silent background context...",
+            )
             self.start_driver(headless=None if HEADLESS_MODE else False)
             if not HEADLESS_MODE:
                 logger.info(
-                    "[LIVE DEBUG]: headed mode is ON (HEADLESS_MODE=False, %.1fs pauses, "
-                    "date filters %s). Set HEADLESS_MODE=True in %s for production.",
+                    "[LIVE DEBUG]: headed mode is ON for EVERY run (HEADLESS_MODE=False, "
+                    "%.1fs pauses). Set HEADLESS_MODE=True in %s for production.",
                     DEBUG_PAUSE_SECONDS,
-                    "ON" if APPLY_DATE_FILTERS else "BYPASSED",
                     "app/scrapers/bidnet/scraper.py",
                 )
             self.login()
