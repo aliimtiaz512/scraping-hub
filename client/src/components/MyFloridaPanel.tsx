@@ -7,11 +7,12 @@ import MyFloridaSweep from "@/components/MyFloridaSweep";
 import MyFloridaSweepResults from "@/components/MyFloridaSweepResults";
 import ResultsTable from "@/components/ResultsTable";
 import RunStatusPanel from "@/components/RunStatus";
-import { ErrorBanner, LaunchBar, StartButton } from "@/components/ui";
+import { Card, ErrorBanner, LaunchBar, SegmentedControl, StartButton } from "@/components/ui";
 import LiveMonitor from "@/components/LiveMonitor";
 import StopButton from "@/components/StopButton";
 import {
   getCategories,
+  getMyFloridaAccounts,
   getRunStatus,
   getSweepRunStatus,
   startMyFloridaScrape,
@@ -21,6 +22,7 @@ import {
   type AdStatusOption,
   type AdType,
   type Category,
+  type MyFloridaAccount,
   type RunStatus,
   type SearchMode,
 } from "@/lib/api";
@@ -37,6 +39,8 @@ const POLL_INTERVAL_MS = 3000;
 
 export default function MyFloridaPanel() {
   const [categories, setCategories] = useState<Category[]>([]);
+  const [accounts, setAccounts] = useState<MyFloridaAccount[]>([]);
+  const [account, setAccount] = useState("");
   const [selected, setSelected] = useState("");
   const [mode, setMode] = useState<PanelMode>("keywords");
   const [sweepStatuses, setSweepStatuses] = useState<AdStatusOption[]>(["open"]);
@@ -57,6 +61,22 @@ export default function MyFloridaPanel() {
         if (data.categories.length > 0) setSelected(data.categories[0].key);
       })
       .catch((e: Error) => setError(`Could not load categories — is the API running? (${e.message})`));
+  }, []);
+
+  // Which accounts exist and which can run are the server's to say, so the
+  // picker is built from its answer — a third login added to .env shows up
+  // without a frontend change.
+  useEffect(() => {
+    getMyFloridaAccounts()
+      .then(({ accounts: fetched, default: fallback }) => {
+        setAccounts(fetched);
+        // Land on a usable account: the server's default if it can run, else
+        // the first that can, else the default so the picker still shows why.
+        const usable = fetched.find((a) => a.key === fallback && a.configured)
+          ?? fetched.find((a) => a.configured);
+        setAccount(usable?.key ?? fallback);
+      })
+      .catch((e: Error) => setError(`Could not load accounts — is the API running? (${e.message})`));
   }, []);
 
   const current = useMemo(() => categories.find((c) => c.key === selected), [categories, selected]);
@@ -90,6 +110,7 @@ export default function MyFloridaPanel() {
         ? await startMyFloridaSweep({
             adStatuses: sweepStatuses,
             maxBids: sweepMaxBids,
+            account,
             livePreview,
           })
         : await startMyFloridaScrape({
@@ -99,6 +120,7 @@ export default function MyFloridaPanel() {
             keywords: selectedKeywords,
             adStatuses,
             adTypes,
+            account,
             livePreview,
           });
       setRun(await poll(run_id));
@@ -120,6 +142,10 @@ export default function MyFloridaPanel() {
   };
 
   const isRunning = run !== null && (run.status === "pending" || run.status === "running");
+  const activeAccount = accounts.find((a) => a.key === account);
+  // Only once the catalog has loaded: before that there is nothing to be wrong
+  // about, and a warning that flashes on every mount is noise.
+  const accountBlocked = accounts.length > 0 && !activeAccount?.configured;
   // Nothing checked in the active mode means there is nothing to search for.
   const nothingSelected =
     mode === "sweep"
@@ -133,6 +159,32 @@ export default function MyFloridaPanel() {
       {error && <ErrorBanner message={error} />}
 
       <ModeTabs mode={mode} disabled={isRunning} onChange={setMode} />
+
+      <Card
+        title="Account"
+        description="Which client's vendor registration to run as. Both see the same catalogue of advertisements — this decides whose account does the searching, and which inbox the one-time password arrives in."
+      >
+        <SegmentedControl
+          name="myflorida-account"
+          value={account}
+          options={accounts.map((option) => ({
+            value: option.key,
+            label: option.label,
+            hint: option.configured
+              ? "Credentials configured"
+              : `Not configured — set ${option.username_env} and ${option.password_env} in server/.env`,
+          }))}
+          onChange={setAccount}
+          disabled={isRunning}
+        />
+        {accountBlocked && (
+          <p className="mt-3 text-xs leading-relaxed text-red-700">
+            {activeAccount?.label ?? "This account"} has no credentials on the server, so a run
+            cannot sign in. Add {activeAccount?.username_env} and {activeAccount?.password_env} to{" "}
+            <code className="font-mono">server/.env</code> and restart the API.
+          </p>
+        )}
+      </Card>
 
       {mode === "sweep" ? (
         <MyFloridaSweep
@@ -166,13 +218,21 @@ export default function MyFloridaPanel() {
         codes: selectedCodes.length,
         statuses: sweepStatuses.length,
         maxBids: sweepMaxBids,
+        account: accountBlocked ? null : activeAccount?.label ?? null,
       })}>
         <div className="flex items-center gap-2">
           <StopButton run={run} onError={setError} />
           <LiveMonitor run={run} portal="myflorida" />
           <StartButton
             onClick={() => handleStart()}
-            disabled={(mode !== "sweep" && !selected) || nothingSelected || starting || isRunning}
+            disabled={
+              (mode !== "sweep" && !selected) ||
+              nothingSelected ||
+              starting ||
+              isRunning ||
+              accountBlocked ||
+              !account
+            }
             running={isRunning}
             starting={starting}
           >
@@ -237,17 +297,28 @@ function ModeTabs({
 function launchSummary(
   mode: PanelMode,
   nothingSelected: boolean,
-  counts: { keywords: number; codes: number; statuses: number; maxBids: number | null },
+  counts: {
+    keywords: number;
+    codes: number;
+    statuses: number;
+    maxBids: number | null;
+    account: string | null;
+  },
 ): string {
+  // Which account a run signs in as is not a detail — it is whose bids come
+  // back. So it leads the line, next to the button, rather than being something
+  // you have to scroll up to check.
+  if (!counts.account) return "Choose a configured account to run.";
+  const as = `Runs as ${counts.account}`;
   if (mode === "sweep") {
-    if (nothingSelected) return "Pick at least one ad status to run a sweep.";
+    if (nothingSelected) return `${as} · pick at least one ad status to run a sweep.`;
     const cap = counts.maxBids ? ` · capped at ${counts.maxBids} ads` : "";
-    return `${counts.statuses} ${counts.statuses === 1 ? "status" : "statuses"} · every ad classified into a niche${cap}`;
+    return `${as} · ${counts.statuses} ${counts.statuses === 1 ? "status" : "statuses"} · every ad classified into a niche${cap}`;
   }
   if (nothingSelected) {
-    return `Select at least one ${mode === "keywords" ? "keyword" : "commodity code"} to run a search.`;
+    return `${as} · select at least one ${mode === "keywords" ? "keyword" : "commodity code"} to run a search.`;
   }
   return mode === "keywords"
-    ? `${counts.keywords} ${counts.keywords === 1 ? "search" : "searches"} · one per keyword`
-    : `${counts.codes} ${counts.codes === 1 ? "code" : "codes"} in a single search`;
+    ? `${as} · ${counts.keywords} ${counts.keywords === 1 ? "search" : "searches"} · one per keyword`
+    : `${as} · ${counts.codes} ${counts.codes === 1 ? "code" : "codes"} in a single search`;
 }

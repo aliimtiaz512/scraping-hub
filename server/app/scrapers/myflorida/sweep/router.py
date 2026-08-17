@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from app.core import jobs, run_manager
 from app.core.filenames import sanitize_filename
 from app.db import get_session
+from app.scrapers.myflorida import accounts
 from app.scrapers.myflorida.scraper import AD_STATUS_LABELS
 from app.scrapers.myflorida.sweep.config import OTHER, get_config, reload_config
 from app.scrapers.myflorida.sweep.models import SweepBid
@@ -32,8 +33,17 @@ class SweepRequest(BaseModel):
     # sweep with no filter at all is almost never what someone intends, and it
     # is the most expensive run the system can start.
     ad_statuses: list[str] = ["open"]
+    # Which vendor login to run as — the same two accounts as the niche flow,
+    # since a sweep signs in through the same form.
+    account: str = accounts.DEFAULT_ACCOUNT
     # Optional ceiling for trial runs. None = every advertisement found.
     max_bids: int | None = None
+
+
+@router.get("/accounts")
+def list_accounts() -> dict:
+    """The logins a sweep can use — the same two the niche flow offers."""
+    return {"accounts": accounts.catalog(), "default": accounts.DEFAULT_ACCOUNT}
 
 
 @router.get("/niches")
@@ -84,6 +94,14 @@ def start_scrape(
         )
     if request.max_bids is not None and request.max_bids < 1:
         raise HTTPException(status_code=400, detail="max_bids must be at least 1")
+    # Checked before the run exists: a sweep is the most expensive run here, and
+    # it opens a visible browser someone has to answer an OTP at.
+    try:
+        selected = accounts.require(request.account)
+    except accounts.UnknownAccount as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except accounts.AccountNotConfigured as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     search = f"status={'/'.join(statuses)}"
     now = datetime.now()
@@ -100,10 +118,15 @@ def start_scrape(
             "max_bids": request.max_bids,
             "excel_exported": False,
             "live_preview": live_preview,
+            "account": selected.key,
+            "account_label": selected.label,
         },
     )
     jobs.submit(run["run_id"], execute_run, run["run_id"], statuses, request.max_bids)
-    return {"run_id": run["run_id"], "search": search, "folder": run["folder"]}
+    return {
+        "run_id": run["run_id"], "search": search, "folder": run["folder"],
+        "account": selected.key,
+    }
 
 
 @router.get("/scrape/status/{run_id}")

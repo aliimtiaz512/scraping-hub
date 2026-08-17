@@ -5,12 +5,13 @@ Three changes to the MFMP flows, and the reasoning behind each.
 | Layer | File |
 | --- | --- |
 | Login, search, per-bid crawl (both flows) | `server/app/scrapers/myflorida/scraper.py` |
+| The two vendor logins | `server/app/scrapers/myflorida/accounts.py` |
 | Ad-status sweep (subclass) | `server/app/scrapers/myflorida/sweep/scraper.py` |
 | Output layout | `server/app/scrapers/myflorida/storage.py` |
 | Summary sheet | `server/app/scrapers/myflorida/workbook.py` |
 | Capture-only persistence | `server/app/scrapers/myflorida/sweep/export.py` |
 | Packaging | `server/app/core/exports.py` |
-| UI | `client/src/components/RunStatus.tsx`, `MyFloridaSweepResults.tsx` |
+| UI | `client/src/components/MyFloridaPanel.tsx`, `RunStatus.tsx`, `MyFloridaSweepResults.tsx` |
 
 ## 1. The login waits for a person
 
@@ -108,10 +109,65 @@ next to the documents it indexes, so the file has to exist at packaging time
 whatever the database is doing. A DB failure sets `db_save_failed`, which tells
 the download path to serve the sheet on disk rather than regenerate an empty one.
 
+## Two accounts
+
+A run signs in as one of two vendor logins — **Hoope Lab** or **Auston Lucas** —
+chosen in the console. Both see the same catalogue of advertisements, unlike the
+RideMetro switch where the login decides which supplier network gets swept, so
+the choice is about *whose* registration does the searching and which inbox the
+one-time password lands in. Both flows share it, because a sweep signs in
+through the same form.
+
+**Accounts are named for their client, not for their position.** "Account 1"
+tells the person at the dashboard nothing — they know whose bids they are after,
+not which slot in a config file it occupies — and it goes stale the moment a
+third is added or the order changes. Hoope Lab is spelled the way
+`ridemetro/accounts.py` already spells it, so one client reads the same way on
+both portals. The `.env` keys stay `MYFLORIDA_ACC1_*`/`ACC2_*`: they are what is
+deployed, and renaming a key holding a working credential buys nothing. The old
+`account_1`/`account_2` values still resolve, so a saved link keeps working.
+
+`accounts.py` mirrors `app/scrapers/ridemetro/accounts.py` deliberately: two
+portals with an account switch should not have two different ideas of what an
+account is.
+
+**The account is checked before the run is created.** That gate earns more here
+than anywhere else in the codebase: an MFMP run opens a *visible* browser and
+stops at an OTP challenge for a person to type into. A run started with
+credentials that were never going to work does not just waste a process — it
+wastes somebody sitting in front of it waiting to type a code. An unconfigured
+account is a 503 on the button naming the `.env` keys to set, and the picker
+shows it as unavailable rather than offering it.
+
+**Nothing about a credential reaches the screen.** The catalog the picker is
+built from carries a label and a `configured` flag, never a username. The
+address appears once, in the run log, masked to `ac…@example.com` — enough to
+know which account signed in, not enough to be the address. The MFMP run log is
+streamed to the dashboard, so a full address there would be on screen.
+
+```
+[JOB INITIALIZED]: Portal: MyFloridaMarketPlace (MFMP)
+ ├── [ACCOUNT SELECTED]: Auston Lucas (au…)
+ ├── [LAUNCHING BROWSER]: Headed mode for manual OTP verification...
+ └── [AUTHENTICATION]: Injecting Auston Lucas credentials into login form...
+```
+
 ## Settings
 
 ```ini
 # server/.env
 MFMP_MANUAL_OTP=true        # visible browser + wait for a human at the OTP
 MFMP_OTP_WAIT_SECONDS=120   # how long to wait before giving up
+
+# The two vendor logins: ACC1 is Hoope Lab, ACC2 is Auston Lucas. An account
+# with either key blank is shown as unavailable in the picker.
+MYFLORIDA_ACC1_USERNAME=...
+MYFLORIDA_ACC1_PASSWORD=...
+MYFLORIDA_ACC2_USERNAME=...
+MYFLORIDA_ACC2_PASSWORD=...
+
+# Hoope Lab falls back to these when MYFLORIDA_ACC1_* are unset, so a
+# deployment that predates the switch keeps running untouched.
+MFMP_EMAIL=...
+MFMP_PASSWORD=...
 ```

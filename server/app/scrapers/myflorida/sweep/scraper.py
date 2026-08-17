@@ -388,8 +388,14 @@ class SweepScraper(MFMPScraper):
         run_manager.update_run(self.run_id, status="running")
         records: list[dict[str, Any]] = []
         try:
+            # The account switch is inherited from MFMPScraper along with the
+            # login it feeds — a sweep signs in through the same form.
+            self._select_account()
             # Visible for the same reason the niche flow is: the login stops for
             # a one-time password that a person has to type in.
+            logger.info(" ├── [LAUNCHING BROWSER]: %s",
+                        "Headed mode for manual OTP verification..."
+                        if settings.mfmp_manual_otp else "Manual OTP is off for this deployment")
             self.start_driver(headless=False if settings.mfmp_manual_otp else None)
             self.login()
             self.open_advertisements()

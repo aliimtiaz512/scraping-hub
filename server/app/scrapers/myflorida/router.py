@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from app.core import jobs, run_manager
 from app.core.filenames import sanitize_filename
 from app.db import get_session
+from app.scrapers.myflorida import accounts
 from app.scrapers.myflorida.commodity_codes import CATEGORIES, get_codes, get_keywords
 from app.scrapers.myflorida.models import Bid
 from app.scrapers.myflorida.scraper import AD_TYPE_LABELS, execute_run
@@ -34,6 +35,21 @@ class ScrapeRequest(BaseModel):
     ad_statuses: list[str] = []
     # Any key from AD_TYPE_LABELS; empty = no filter (every ad type).
     ad_types: list[str] = []
+    # Which vendor login to run as. Blank keeps the account a run used before
+    # there was a choice, so an existing caller is unaffected.
+    account: str = accounts.DEFAULT_ACCOUNT
+
+
+@router.get("/accounts")
+def list_accounts() -> dict:
+    """The logins a run can use, for the console's account picker.
+
+    Served rather than hardcoded in the dashboard so that which accounts exist
+    and which are usable stays the server's to say — an account with no
+    credentials in `.env` is shown as unavailable rather than offered as a
+    button that fails at the login form.
+    """
+    return {"accounts": accounts.catalog(), "default": accounts.DEFAULT_ACCOUNT}
 
 
 @router.get("/categories")
@@ -76,6 +92,15 @@ def start_scrape(request: ScrapeRequest, live_preview: bool = False) -> dict:
         raise HTTPException(status_code=400, detail=f"Unknown category: {request.category}")
     if request.mode not in SEARCH_MODES:
         raise HTTPException(status_code=400, detail=f"Unknown search mode: {request.mode}")
+    # Resolved before the run exists so a bad or unconfigured account is a 400
+    # on the button rather than a run that opens a visible browser and fails at
+    # the login form with someone sitting there waiting to type an OTP.
+    try:
+        selected = accounts.require(request.account)
+    except accounts.UnknownAccount as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except accounts.AccountNotConfigured as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     # De-duplicate while preserving order; an empty list means "no status filter".
     ad_statuses = list(dict.fromkeys(request.ad_statuses))
     unknown = [s for s in ad_statuses if s not in AD_STATUS_OPTIONS]
@@ -120,6 +145,10 @@ def start_scrape(request: ScrapeRequest, live_preview: bool = False) -> dict:
             "keywords": keywords,
             "excel_exported": False,
             "live_preview": live_preview,
+            # Key and label only — the run state is served to the console, and
+            # the login address has no business on a screen.
+            "account": selected.key,
+            "account_label": selected.label,
         },
     )
     jobs.submit(run["run_id"], execute_run, run["run_id"], codes, ad_statuses, ad_types, keywords)
@@ -129,6 +158,7 @@ def start_scrape(request: ScrapeRequest, live_preview: bool = False) -> dict:
         "codes": codes,
         "keywords": keywords,
         "folder": run["folder"],
+        "account": selected.key,
     }
 
 

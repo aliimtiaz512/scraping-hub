@@ -23,9 +23,16 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    # MyFloridaMarketPlace
+    # MyFloridaMarketPlace. Two vendor logins, chosen per run — same flow either
+    # way, so only the credentials differ. `mfmp_email`/`mfmp_password` are the
+    # keys from before there was a choice and stand in for Hoope Lab, so a
+    # deployment that predates the switch keeps running untouched.
     mfmp_email: str = ""
     mfmp_password: str = ""
+    myflorida_acc1_username: str = ""
+    myflorida_acc1_password: str = ""
+    myflorida_acc2_username: str = ""
+    myflorida_acc2_password: str = ""
     mfmp_login_url: str = "https://vendor.myfloridamarketplace.com/login"
     # MFMP challenges a login with a one-time password sent to the account's
     # email/phone. Nothing on this side can produce that code, so the browser is

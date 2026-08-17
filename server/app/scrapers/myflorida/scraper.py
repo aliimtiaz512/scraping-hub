@@ -30,7 +30,7 @@ from app.config import settings
 from app.core import run_manager
 from app.core.base_scraper import BaseScraper, StopRequested
 from app.core.filenames import sanitize_filename
-from app.scrapers.myflorida import storage
+from app.scrapers.myflorida import accounts, storage
 from app.scrapers.myflorida.ingest import ingest_excel
 from app.scrapers.myflorida.workbook import merge_exports
 from app.core.exports import archive_run
@@ -168,6 +168,11 @@ class MFMPScraper(BaseScraper):
         # Likewise for Ad Type — empty means every type.
         self.ad_types = [t for t in (ad_types or []) if t in AD_TYPE_LABELS]
         self.excel_path: Path | None = None
+        # Resolved at the top of run() rather than here: a constructor that can
+        # raise on a missing credential turns a misconfigured account into an
+        # exception where the caller expects a scraper, instead of a run that
+        # fails with a reason someone can act on.
+        self.account: accounts.Account | None = None
 
     @property
     def keyword_mode(self) -> bool:
@@ -207,11 +212,14 @@ class MFMPScraper(BaseScraper):
                     self.driver.execute_script("window.stop();")
                 except WebDriverException:
                     pass
+        account = self.account or accounts.get(None)
+        logger.info(" └── [AUTHENTICATION]: Injecting %s credentials into login form...",
+                    account.label)
         email.clear()
-        email.send_keys(settings.mfmp_email)
+        email.send_keys(account.username)
         password = self.driver.find_element(*SEL["login_password"])
         password.clear()
-        password.send_keys(settings.mfmp_password)
+        password.send_keys(account.password)
         self.driver.find_element(*SEL["login_submit"]).click()
         self._await_authenticated()
 
@@ -820,14 +828,43 @@ class MFMPScraper(BaseScraper):
             run_manager.update_run(self.run_id, no_results=True)
         self._finalize(exports, found)
 
+    def _select_account(self) -> None:
+        """Resolve this run's login and confirm it can actually be used.
+
+        The endpoint already checked this before creating the run; doing it
+        again here covers a run started any other way, and means the browser is
+        never launched for a login that cannot succeed. On MFMP that is worth
+        more than elsewhere: the browser opens *visible* and a person waits at
+        it to type a one-time password, so a run that was never going to sign in
+        wastes someone's attention rather than just a process. `require` raises
+        with the `.env` keys to fix, which becomes the run's error.
+        """
+        self.set_step("selecting_account")
+        requested = (run_manager.get_run(self.run_id) or {}).get("account")
+        self.account = accounts.require(requested)
+        # Key and label only: the run state goes to the console. The address is
+        # logged instead, masked, where it helps and is not on anyone's screen.
+        run_manager.update_run(
+            self.run_id,
+            account=self.account.key,
+            account_label=self.account.label,
+        )
+        logger.info("[JOB INITIALIZED]: Portal: MyFloridaMarketPlace (MFMP)")
+        logger.info(" ├── [ACCOUNT SELECTED]: %s (%s)",
+                    self.account.label, accounts.mask(self.account.username))
+
     def run(self) -> None:
         run_manager.update_run(self.run_id, status="running")
         try:
+            self._select_account()
             # Visible, always, while manual OTP is on: the run stops at the
             # one-time password and waits for a person to type it in, and there
             # is nothing to type into in a headless window. Not left to the
             # per-run "Live preview" flag — a run started without it would hang
             # at the challenge until the wait expired, with no way to answer.
+            logger.info(" ├── [LAUNCHING BROWSER]: %s",
+                        "Headed mode for manual OTP verification..."
+                        if settings.mfmp_manual_otp else "Manual OTP is off for this deployment")
             self.start_driver(headless=False if settings.mfmp_manual_otp else None)
             self.login()
             if self.keyword_mode:

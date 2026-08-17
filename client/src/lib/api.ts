@@ -362,6 +362,31 @@ export type AdType =
   | "request_for_statement_of_qualifications"
   | "single_source";
 
+/**
+ * One of the two MyFlorida vendor logins a run can use. Two clients, two
+ * registrations, the same catalogue of ads — so the choice decides whose
+ * account does the searching, not what there is to find.
+ *
+ * `configured` is the server's answer to "can this one actually run": an
+ * account with no credentials in `.env` is shown as unavailable rather than
+ * offered as a button that fails at the login form. No username is served —
+ * the console identifies an account by its label.
+ */
+export interface MyFloridaAccount {
+  key: string;
+  label: string;
+  configured: boolean;
+  username_env: string;
+  password_env: string;
+}
+
+export function getMyFloridaAccounts(): Promise<{
+  accounts: MyFloridaAccount[];
+  default: string;
+}> {
+  return request("/myflorida/accounts");
+}
+
 export interface StartMyFloridaScrapeOptions {
   category: string;
   mode: SearchMode;
@@ -370,6 +395,8 @@ export interface StartMyFloridaScrapeOptions {
   keywords?: string[];
   adStatuses?: AdStatus[];
   adTypes?: AdType[];
+  /** Which vendor login to run as. Blank keeps the server's default. */
+  account?: string;
   livePreview?: boolean;
 }
 
@@ -385,6 +412,7 @@ export function startMyFloridaScrape({
   keywords = [],
   adStatuses = [],
   adTypes = [],
+  account,
   livePreview = false,
 }: StartMyFloridaScrapeOptions): Promise<{
   run_id: string;
@@ -392,6 +420,7 @@ export function startMyFloridaScrape({
   codes: string[];
   keywords: string[];
   folder: string;
+  account: string;
 }> {
   return request(`/myflorida/scrape${livePreviewQuery(livePreview)}`, {
     method: "POST",
@@ -402,6 +431,7 @@ export function startMyFloridaScrape({
       keywords,
       ad_statuses: adStatuses,
       ad_types: adTypes,
+      ...(account ? { account } : {}),
     }),
   });
 }
@@ -917,18 +947,32 @@ export function getSweepNiches(): Promise<SweepNichesResponse> {
   return request("/myflorida/sweep/niches");
 }
 
+export function getMyFloridaSweepAccounts(): Promise<{
+  accounts: MyFloridaAccount[];
+  default: string;
+}> {
+  return request("/myflorida/sweep/accounts");
+}
+
 export function startMyFloridaSweep({
   adStatuses,
   maxBids = null,
+  account,
   livePreview = false,
 }: {
   adStatuses: AdStatusOption[];
   maxBids?: number | null;
+  /** Which vendor login to run as. Blank keeps the server's default. */
+  account?: string;
   livePreview?: boolean;
-}): Promise<{ run_id: string; search: string; folder: string }> {
+}): Promise<{ run_id: string; search: string; folder: string; account: string }> {
   return request(`/myflorida/sweep/scrape${livePreviewQuery(livePreview)}`, {
     method: "POST",
-    body: JSON.stringify({ ad_statuses: adStatuses, max_bids: maxBids }),
+    body: JSON.stringify({
+      ad_statuses: adStatuses,
+      max_bids: maxBids,
+      ...(account ? { account } : {}),
+    }),
   });
 }
 
