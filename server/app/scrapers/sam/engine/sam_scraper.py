@@ -167,13 +167,24 @@ class SAMGovScraper:
         award_notice: bool = False,
         run_id: str | None = None,
     ):
-        self.award_notice = award_notice     # must be set BEFORE _load_config() reads it
+        # Both are read by _load_config(), so both are set before it runs.
+        # `run_id` used to be left as a bare local in this signature and read by
+        # name inside _load_config, where it does not exist — every construction
+        # raised NameError, so no SAM run could start at all.
+        self.award_notice = award_notice
+        self.run_id = run_id
         self._load_config()
 
         self.headless     = headless
         self.date_filter  = date_filter      # YYYY-MM-DD  (from / start of range)
         self.date_to      = date_to          # YYYY-MM-DD  (to   / end   of range)
-        self.naics_codes  = naics_codes or []  # list of 6-digit NAICS codes to filter
+        # The codes the user entered, normalised once. They are both what gets
+        # typed into the portal's filter and what every extracted bid is checked
+        # against — the same list on the way out as on the way in.
+        self.naics_codes = [str(c).strip() for c in (naics_codes or []) if str(c).strip()]
+        #: How many bids the portal returned whose primary NAICS was not one of
+        #: them. Reported at the end of the run.
+        self.naics_dropped = 0
 
         # Parsed datetime objects
         self.filter_date_from = None        # start of range
@@ -257,9 +268,10 @@ class SAMGovScraper:
         # and each deletes a notice's folder once it has read the text out of
         # it; sharing one directory meant the first to finish deleted the
         # documents the second was still reading. A per-instance root keeps
-        # them apart. `run_id` is set by the hub's runner; a standalone run
-        # falls back to the object's id, which is equally unique in-process.
-        self._temp_docs_dir = _SAM_DIR / "temp_docs" / str(run_id or f"local-{id(self)}")
+        # them apart. `self.run_id` is set by the hub's runner (assigned in
+        # __init__ before this method runs); a standalone run falls back to the
+        # object's id, which is equally unique in-process.
+        self._temp_docs_dir = _SAM_DIR / "temp_docs" / str(self.run_id or f"local-{id(self)}")
         self._temp_docs_dir.mkdir(parents=True, exist_ok=True)
 
         # Convenience shortcuts
@@ -328,8 +340,25 @@ class SAMGovScraper:
     # ------------------------------------------------------------------
     # NAICS code filter
     # ------------------------------------------------------------------
+    def _naics_allowed(self, extracted_naics: str) -> bool:
+        """Is this bid's primary NAICS one of the codes the user entered?
+
+        An empty list means no NAICS filter was set, so nothing is out of scope
+        and every bid passes — this narrows a search, it never invents one.
+
+        A bid whose NAICS could not be read does *not* pass when a list was
+        given. "We could not tell" is not "it matches", and letting those
+        through would leave the hole open for exactly the records whose
+        provenance is least clear.
+        """
+        if not self.naics_codes:
+            return True
+        return str(extracted_naics or "").strip() in self.naics_codes
+
     def _apply_naics_filter(self):
         """Delegates to navigation.apply_naics_filter."""
+        if self.naics_codes:
+            logger.info("[SEARCH EXECUTED]: Filters Applied -> NAICS: %s", self.naics_codes)
         _apply_naics_filter(self.driver, self.naics_codes)
 
     # ------------------------------------------------------------------
@@ -602,6 +631,32 @@ class SAMGovScraper:
 
             data["NAICS Code"]  = naics_code
             data["NAICS Title"] = naics_title
+
+            # ── NAICS guardrail: drop anything outside the entered codes ──
+            # SAM's results are not taken on trust. It returns an opportunity
+            # whose *secondary* NAICS is one of the requested codes, and the
+            # detail page states only the primary — so a bid asked for under
+            # 541511 arrives reading 238210 and is, for our purposes, a bid for
+            # something else entirely. Nothing downstream could tell, because
+            # nothing downstream knows what was asked for.
+            #
+            # Dropped here rather than marked, because a code that was never
+            # entered is not a bid to review and reject — it is not wanted in
+            # the spreadsheet at all. Same `return None` the DoD/DLA and
+            # version-count skips below use.
+            #
+            # Placed immediately after the code is known and before the
+            # attachments are fetched: everything past this point is expensive
+            # and none of it can change the answer.
+            if not self._naics_allowed(naics_code):
+                self.naics_dropped += 1
+                logger.info(
+                    "[NAICS MISMATCH DROPPED]: Bid #%s has NAICS '%s' — not in the "
+                    "entered list (%s)",
+                    data.get("Notice ID") or "unknown", naics_code or "(none stated)",
+                    ", ".join(self.naics_codes),
+                )
+                return None
 
             # ── Re-verify version/date rule against detail-page Updated Date
             #    (uses raw string that still contains the version count)
@@ -921,6 +976,16 @@ class SAMGovScraper:
                     logger.info(f"[OK] {extracted_count} rows saved -> {_dest}")
 
             page += 1
+
+        # What the guardrail kept out, said once at the end. A row count alone
+        # cannot tell "the portal had 12" from "the portal had 15 and three of
+        # them were for codes nobody entered".
+        if self.naics_codes:
+            logger.info(
+                " └── [BATCH SUMMARY]: %d kept | %d dropped via the NAICS guardrail "
+                "(entered codes: %s)",
+                extracted_count, self.naics_dropped, ", ".join(self.naics_codes),
+            )
 
         # All rows already written live via _append_row().
         # Log the final summary and return the absolute file path.

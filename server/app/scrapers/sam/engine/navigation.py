@@ -307,6 +307,16 @@ def apply_ui_date_filters(
 
 # ── NAICS code filter ──────────────────────────────────────────────────────
 
+def _option_matches(text: str, code: str) -> bool:
+    """Does this autocomplete row belong to `code`?
+
+    True when the row's text starts with the code as a whole token:
+    "541511 - Custom Computer Programming Services" does; "5415 - …" (the
+    parent), "541512 - …" (a sibling) and "5415110" do not.
+    """
+    return bool(re.match(rf"^\s*{re.escape(code.strip())}\b", text or ""))
+
+
 def apply_naics_filter(driver, naics_codes: list[str]) -> None:
     """
     Fill SAM.gov's NAICS combobox with each code from the list.
@@ -363,32 +373,51 @@ def apply_naics_filter(driver, naics_codes: list[str]) -> None:
             el.send_keys(code)
             time.sleep(2)
 
-            selected = False
+            # Wait for the dropdown, then read every row it rendered. Position 0
+            # has no special standing — it is just the row SAM put first.
             try:
-                option = WebDriverWait(driver, 5).until(
-                    EC.element_to_be_clickable((By.ID, "naics-resultItem-0"))
+                WebDriverWait(driver, 5).until(
+                    EC.presence_of_element_located((By.ID, "naics-resultItem-0"))
                 )
-                option.click()
-                selected = True
-                logger.info(f"NAICS code {code}: selected via resultItem-0")
             except Exception:
                 pass
 
-            if not selected:
+            options = []
+            for locator in (
+                (By.CSS_SELECTOR, "[id^='naics-resultItem-']"),
+                (By.CSS_SELECTOR, "li.sds-autocomplete__item"),
+            ):
                 try:
-                    option = WebDriverWait(driver, 3).until(
-                        EC.element_to_be_clickable((
-                            By.CSS_SELECTOR, "li.sds-autocomplete__item"
-                        ))
-                    )
-                    option.click()
-                    selected = True
-                    logger.info(f"NAICS code {code}: selected via sds-autocomplete__item")
+                    options = [o for o in driver.find_elements(*locator) if o.is_displayed()]
                 except Exception:
-                    pass
+                    options = []
+                if options:
+                    break
 
-            if not selected:
-                logger.warning(f"NAICS code {code}: no dropdown item found to click")
+            # Click the row that *is* this code, never merely the first one.
+            # This used to click `naics-resultItem-0` whatever it said and then
+            # log the code it had typed as the one it selected — so when SAM put
+            # a parent category ("5415 - Computer Systems Design…") in position
+            # 0, the portal filtered on a code nobody entered and the log said
+            # it had succeeded. That is one of the ways bids for other codes
+            # arrived in the sheet.
+            texts = [(o, (o.text or "").strip()) for o in options]
+            match = next((o for o, text in texts if _option_matches(text, code)), None)
+
+            if match is None:
+                logger.error(
+                    f"NAICS code {code}: no dropdown option matched it "
+                    f"(offered: {[t for _, t in texts][:5]}). NOT clicking — "
+                    f"clicking the first row would filter on a code you did not enter."
+                )
+                continue
+
+            chosen = next(text for o, text in texts if o is match)
+            try:
+                match.click()
+            except Exception:
+                driver.execute_script("arguments[0].click();", match)
+            logger.info(f"NAICS code {code}: selected {chosen!r}")
 
             time.sleep(1)
 
