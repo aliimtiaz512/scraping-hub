@@ -60,7 +60,9 @@ from app.config import settings
 from app.core import run_manager
 from app.core.base_scraper import BaseScraper, StopRequested
 from app.core.exports import archive_run
-from app.scrapers.philadelphia import details, export, search, storage
+from app.scrapers.philadelphia import (
+    details, evaluation, export, flags, search, storage,
+)
 from app.services.notifier import notify_scrape_completion
 
 logger = logging.getLogger(__name__)
@@ -914,6 +916,12 @@ class PhiladelphiaScraper(BaseScraper):
             row.get("description") or "—",
             row.get("bid_opening_date") or "—",
         )
+        # The bid is kept either way — the city's list is the deliverable, and a
+        # bid dropped from it is one nobody can check. Saying so here means a
+        # reviewer knows before the sheet exists which rows will be red.
+        matched = flags.check(row)[1]
+        if matched:
+            flags.log_match(row, matched)
 
     # -- pagination -----------------------------------------------------------
 
@@ -1462,6 +1470,16 @@ class PhiladelphiaScraper(BaseScraper):
 
         record["items"] = self.scrape_items(bid_number)
         record["item_count"] = len(record["items"])
+
+        # The shared evaluation matrix — the same Rule A/B/C funnel SAM and
+        # Unison use. Run here, after the items are read, because the item table
+        # is what proves a Philadelphia bid is a supply: a one-line description
+        # cannot, and without that evidence the funnel sends most bids to
+        # MANUAL_REVIEW. The verdict is a column, never a filter — every bid
+        # stays in the report, keeps its folder and keeps its documents.
+        verdict = evaluation.evaluate(record)
+        record.update(verdict)
+        evaluation.log_verdict(record, verdict)
 
         folder = storage.bid_folder(self.run_dir, bid_number)
         self._write_items_file(record)

@@ -18,7 +18,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from app.core import excel_style
 from app.db import SessionLocal
-from app.scrapers.philadelphia import details, storage
+from app.scrapers.philadelphia import details, flags, storage
 from app.scrapers.philadelphia.models import (
     EXCEL_COLUMNS,
     PhiladelphiaBid,
@@ -34,6 +34,8 @@ _BID_FIELDS = (
     "detail_url", "documents_downloaded",
     # Promoted out of the header table so the sheet can be sorted on them.
     "fiscal_year", "solicitation_type", "pre_bid_conference",
+    # The shared matrix's verdict, stored as it was decided.
+    "decision", "reason", "rule", "requirement_type",
 )
 _JSON_FIELDS = ("extra_header_data", "file_paths", "document_errors", "items")
 
@@ -189,6 +191,12 @@ def _cell(source: Any, attr: str) -> Any:
     shipped in the ZIP.
     """
     getter = source.get if isinstance(source, dict) else lambda k: getattr(source, k, None)
+    if attr in ("flag_status", "flag_reason"):
+        # Derived from the description/title on the row, so a sheet rebuilt from
+        # the database marks the same bids as the one that shipped.
+        record = {field: getter(field) for field in flags.INSPECTED_FIELDS}
+        record["bid_number"] = getter("bid_number")
+        return flags.status(record) if attr == "flag_status" else flags.reason(record)
     if attr == "folder":
         return storage.folder_reference(getter("bid_number") or "")
     if attr == "item_count":
@@ -202,12 +210,25 @@ def _cell(source: Any, attr: str) -> Any:
     return getter(attr)
 
 
+#: Which position in a written row carries the Status cell. Read from the column
+#: list rather than hardcoded, so inserting a column cannot silently move the
+#: highlight onto the wrong one.
+_STATUS_INDEX = [attr for attr, _ in EXCEL_COLUMNS].index("flag_status")
+
+
 def _write_workbook(rows: list[Any], out_path: str | Path) -> int:
+    """The summary sheet, with excluded-niche bids filled red.
+
+    The highlight reads the Status cell that was already written rather than
+    re-running the matcher: two passes over the same text could disagree, and a
+    row shaded red with an empty Status column is worse than either answer.
+    """
     workbook, sheet = excel_style.new_workbook("Open Bids")
     count = excel_style.write_table(
         sheet,
         [header for _, header in EXCEL_COLUMNS],
         ([_cell(row, attr) for attr, _ in EXCEL_COLUMNS] for row in rows),
+        highlight=lambda values: bool(values[_STATUS_INDEX]),
     )
     workbook.save(str(out_path))
     return count

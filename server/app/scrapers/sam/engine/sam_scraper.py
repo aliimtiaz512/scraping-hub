@@ -185,6 +185,10 @@ class SAMGovScraper:
         #: How many bids the portal returned whose primary NAICS was not one of
         #: them. Reported at the end of the run.
         self.naics_dropped = 0
+        #: Codes the portal's own filter would not accept. A non-empty list
+        #: means the search ran broader than requested and the extraction
+        #: guardrail is the only thing keeping the output clean.
+        self.naics_filter_failures: list[str] = []
 
         # Parsed datetime objects
         self.filter_date_from = None        # start of range
@@ -356,10 +360,19 @@ class SAMGovScraper:
         return str(extracted_naics or "").strip() in self.naics_codes
 
     def _apply_naics_filter(self):
-        """Delegates to navigation.apply_naics_filter."""
-        if self.naics_codes:
-            logger.info("[SEARCH EXECUTED]: Filters Applied -> NAICS: %s", self.naics_codes)
-        _apply_naics_filter(self.driver, self.naics_codes)
+        """Delegates to navigation.apply_naics_filter, keeping what failed."""
+        if not self.naics_codes:
+            # Said out loud, because the extraction guardrail below is a no-op
+            # without a list to check against: an unfiltered run returns whatever
+            # SAM has, and nothing downstream will call that wrong. A run that
+            # was *meant* to be filtered looks exactly like this in the log.
+            logger.warning(
+                "[SEARCH EXECUTED]: no NAICS codes were given — this run searches "
+                "EVERY code, and the NAICS guardrail is inactive for it."
+            )
+            return
+        logger.info("[SEARCH EXECUTED]: Filters Applied -> NAICS: %s", self.naics_codes)
+        self.naics_filter_failures = _apply_naics_filter(self.driver, self.naics_codes) or []
 
     # ------------------------------------------------------------------
     # Timing helpers
@@ -986,6 +999,12 @@ class SAMGovScraper:
                 "(entered codes: %s)",
                 extracted_count, self.naics_dropped, ", ".join(self.naics_codes),
             )
+            if self.naics_filter_failures:
+                logger.error(
+                    "     the portal would not accept %s — that is why bids for "
+                    "other codes reached the guardrail at all",
+                    self.naics_filter_failures,
+                )
 
         # All rows already written live via _append_row().
         # Log the final summary and return the absolute file path.

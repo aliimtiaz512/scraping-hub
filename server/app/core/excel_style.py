@@ -29,13 +29,16 @@ through as the portal produced it.
 
 from __future__ import annotations
 
-from typing import Any, Iterable, Sequence
+import logging
+from typing import Any, Callable, Iterable, Sequence
 
 from openpyxl import Workbook
 from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
+
+logger = logging.getLogger(__name__)
 
 # -- the standard ------------------------------------------------------------
 
@@ -171,22 +174,49 @@ def new_workbook(title: str) -> tuple[Workbook, Worksheet]:
     return workbook, sheet
 
 
+#: The look of a flagged row — Excel's own "Bad" style, which is what a reader
+#: already recognises from conditional formatting elsewhere. Light enough that
+#: the black cell text stays readable, unlike a saturated red.
+FLAG_FILL = PatternFill("solid", fgColor="FFC7CE")
+FLAG_FONT = Font(color="9C0006", bold=True)
+
+
 def write_table(
     sheet: Worksheet,
     headers: Sequence[Any],
     rows: Iterable[Sequence[Any]],
     freeze: bool = True,
+    highlight: Callable[[Sequence[Any]], bool] | None = None,
 ) -> int:
     """Write a header row and `rows` beneath it, formatted. Returns the row count.
 
     This is the whole body of a plain portal export: the caller decides the
     columns and produces the values, and everything about how the result looks
     is decided here.
+
+    `highlight` is an optional predicate over a row's values. Rows it returns
+    True for are filled red across every column — for a portal that marks some
+    of its rows as out of scope and wants them findable at a glance rather than
+    by reading a Status column. Omitted, nothing is highlighted and the output
+    is byte-for-byte what it was before.
     """
     sheet.append([sanitize_cell(header) for header in headers])
     written = 0
+    flagged = 0
     for row in rows:
-        sheet.append([sanitize_cell(value) for value in row])
+        values = [sanitize_cell(value) for value in row]
+        sheet.append(values)
         written += 1
+        if highlight is not None and highlight(values):
+            # `sheet.max_row` rather than a counter: append() is what decides
+            # where the row landed, and reading it back cannot drift from that.
+            for cell in sheet[sheet.max_row]:
+                cell.fill = FLAG_FILL
+                cell.font = FLAG_FONT
+            flagged += 1
+    # After the body, so the header keeps its own fill: a highlight predicate
+    # that matched every row would otherwise leave the header red too.
     format_excel_headers(sheet, freeze=freeze)
+    if flagged:
+        logger.info("%d of %d row(s) highlighted", flagged, written)
     return written

@@ -317,13 +317,14 @@ def _option_matches(text: str, code: str) -> bool:
     return bool(re.match(rf"^\s*{re.escape(code.strip())}\b", text or ""))
 
 
-def apply_naics_filter(driver, naics_codes: list[str]) -> None:
+def apply_naics_filter(driver, naics_codes: list[str]) -> list[str]:
     """
     Fill SAM.gov's NAICS combobox with each code from the list.
     Expands the accordion, types the code, selects the autocomplete result.
     """
     if not naics_codes:
-        return
+        return []
+    failed: list[str] = []
 
     # Step 1: Expand the "Product or Service Information" accordion
     try:
@@ -410,6 +411,7 @@ def apply_naics_filter(driver, naics_codes: list[str]) -> None:
                     f"(offered: {[t for _, t in texts][:5]}). NOT clicking — "
                     f"clicking the first row would filter on a code you did not enter."
                 )
+                failed.append(code)
                 continue
 
             chosen = next(text for o, text in texts if o is match)
@@ -422,10 +424,24 @@ def apply_naics_filter(driver, naics_codes: list[str]) -> None:
             time.sleep(1)
 
         except Exception as exc:
-            logger.warning(f"Failed to apply NAICS code {code}: {exc}")
+            logger.error(f"Failed to apply NAICS code {code}: {exc}")
+            failed.append(code)
 
     time.sleep(3)
-    logger.info(f"Applied {len(naics_codes)} NAICS code(s)")
+    applied = len(naics_codes) - len(failed)
+    logger.info(f"Applied {applied} of {len(naics_codes)} NAICS code(s)")
+    if failed:
+        # A partly-applied filter is how a run comes back with families nobody
+        # asked for: SAM returns the broader set and, before this was reported,
+        # nothing said the search had been widened. The extraction guardrail
+        # still keeps the output clean — but the run has to say it was leaning
+        # on it rather than on the portal.
+        logger.error(
+            f"NAICS filter INCOMPLETE — {failed} could not be applied on the "
+            f"portal, so this search is broader than requested. The extraction "
+            f"guardrail is what keeps non-matching bids out of the output."
+        )
+    return failed
 
 
 # ── Date-window boundary detector ─────────────────────────────────────────

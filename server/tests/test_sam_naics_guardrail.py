@@ -42,6 +42,65 @@ def _scraper(entered_codes):
 # =============================================================================
 
 
+# -- driving the sidebar without a browser ------------------------------------
+
+
+class _FakeOption:
+    """One autocomplete row, and whether it got the click."""
+
+    def __init__(self, text):
+        self.text = text
+        self.clicked = False
+
+    def is_displayed(self):
+        return True
+
+    def click(self):
+        self.clicked = True
+
+
+class _FakeDriver:
+    """A driver whose NAICS dropdown renders whatever the test scripts."""
+
+    def __init__(self, options_by_code):
+        self.options_by_code = options_by_code
+        self._current: list = []
+        self.field = _FakeOption("")
+        self.field.clear = lambda: None
+        self.field.send_keys = self._typed
+
+    def _typed(self, value):
+        if isinstance(value, str) and value.strip().isdigit():
+            self._current = self.options_by_code.get(value, [])
+
+    def find_elements(self, by, selector):
+        if "resultItem" in selector or "autocomplete" in selector:
+            return self._current
+        return []
+
+    def find_element(self, by, selector):
+        return self.field
+
+    def execute_script(self, script, *args):
+        return None
+
+
+def _run_filter(monkeypatch, options_by_code, codes):
+    """Drive apply_naics_filter over a scripted dropdown."""
+    driver = _FakeDriver(options_by_code)
+
+    class _Wait:
+        def __init__(self, *a, **k):
+            pass
+
+        def until(self, fn):
+            return driver.field
+
+    monkeypatch.setattr(navigation, "WebDriverWait", _Wait)
+    monkeypatch.setattr(navigation.time, "sleep", lambda *_: None)
+    return driver, navigation.apply_naics_filter(driver, codes)
+
+
 @pytest.mark.parametrize("extracted,kept", [
     ("541511", True),
     ("518210", True),
@@ -174,3 +233,55 @@ def test_a_standalone_run_without_a_run_id_still_gets_its_own_folder(no_browser)
 
     assert scraper.run_id is None
     assert scraper._temp_docs_dir.name.startswith("local-")
+
+
+# =============================================================================
+# The reported case: 39 of 189 records in the 11xxxx agriculture family
+# =============================================================================
+
+
+@pytest.mark.parametrize("code", [
+    "111998",  # All Other Miscellaneous Crop Farming
+    "112990",  # All Other Animal Production
+    "113310",  # Logging
+    "114111",  # Finfish Fishing
+    "115310",  # Support Activities for Forestry
+])
+def test_the_agriculture_family_is_dropped_when_it_was_not_entered(code):
+    """The reported symptom: 39 of 189 records came back in NAICS 11xxxx, a
+    family that was not among the codes entered."""
+    entered = ["541511", "541512", "541611", "518210", "622110", "561790"]
+
+    assert _scraper(entered)._naics_allowed(code) is False
+
+
+def test_an_unfiltered_run_keeps_everything_and_that_is_the_only_way_11xxxx_survives():
+    """The guardrail cannot pass an 11xxxx bid when codes were entered, so a run
+    that returned them either had no codes to check against or predates the
+    guardrail. Both are now stated on the run rather than left to be inferred
+    from the output."""
+    assert _scraper([])._naics_allowed("112990") is True
+    assert _scraper(["541511"])._naics_allowed("112990") is False
+
+
+def test_a_code_the_portal_would_not_accept_is_reported_not_swallowed(monkeypatch):
+    """A partly-applied filter is how a run comes back with families nobody
+    asked for: SAM returns the broader set, and before this the run said
+    nothing about having been widened."""
+    wrong = _FakeOption("112990 - All Other Animal Production")
+    driver, failed = _run_filter(monkeypatch, {"541511": [wrong]}, ["541511"])
+
+    assert not wrong.clicked, "an unrelated code was selected on the portal"
+    assert failed == ["541511"]
+
+
+def test_every_code_that_could_not_be_applied_comes_back(monkeypatch):
+    good = _FakeOption("541511 - Custom Computer Programming Services")
+    driver, failed = _run_filter(
+        monkeypatch,
+        {"541511": [good], "541512": [], "541611": [_FakeOption("5416 - parent")]},
+        ["541511", "541512", "541611"],
+    )
+
+    assert good.clicked
+    assert sorted(failed) == ["541512", "541611"]

@@ -167,6 +167,35 @@ def execute_run(
         run_manager.update_run(run_id, step="scraping")
         scraper.run(max_records=1000)
 
+        # What the NAICS guardrail did, on the run record rather than only in a
+        # log file nobody reads until something looks wrong.
+        dropped = int(getattr(scraper, "naics_dropped", 0) or 0)
+        unapplied = list(getattr(scraper, "naics_filter_failures", []) or [])
+        if naics_codes:
+            run_manager.update_run(
+                run_id, naics_requested=naics_codes, naics_dropped=dropped,
+            )
+        if dropped:
+            run_manager.add_warning(
+                run_id,
+                f"{dropped} bid(s) came back with a primary NAICS outside the "
+                f"{len(naics_codes)} code(s) requested and were dropped before "
+                f"their documents were fetched",
+            )
+        if unapplied:
+            run_manager.add_error(
+                run_id,
+                f"the portal would not accept {', '.join(unapplied)} in its NAICS "
+                f"filter, so this run searched more broadly than requested — the "
+                f"extraction guardrail is what kept the output clean",
+            )
+        elif not naics_codes:
+            run_manager.add_warning(
+                run_id,
+                "no NAICS codes were given, so this run covers every code and the "
+                "NAICS guardrail did not apply",
+            )
+
         # No close-date reporting: the filter is gone, so there is nothing to
         # reconcile. `min_days_until_close` is deliberately left unset on the
         # run — the UI keys its "closing soon" banner off that field, so

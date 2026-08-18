@@ -98,6 +98,18 @@ class PhiladelphiaBid(Base):
     pre_bid_conference: Mapped[str | None] = mapped_column(Text)
     #: Every label/value pair under "Header Information", as published.
     extra_header_data: Mapped[dict] = mapped_column(JSONB, default=dict)
+    # -- the evaluation matrix ------------------------------------------------
+    #: The shared Rule A/B/C funnel's verdict (see philadelphia/evaluation.py),
+    #: the same engine SAM and Unison use. Stored rather than re-derived when a
+    #: sheet is rebuilt: the kill-word list is editable, and re-running the
+    #: matrix months later would silently rewrite a verdict someone acted on.
+    decision: Mapped[str | None] = mapped_column(String(20))
+    reason: Mapped[str | None] = mapped_column(Text)
+    #: Which rule settled it — "B10", "C6", "none". String(16), as on SamBid.
+    rule: Mapped[str | None] = mapped_column(String(16))
+    #: HARDWARE | SERVICE, as the funnel classified it.
+    requirement_type: Mapped[str | None] = mapped_column(String(20))
+
     #: The bid's line items, one dict per item, as read from the detail page.
     #: Kept so the item sheet can be rebuilt from the database rather than only
     #: from a workspace that is deleted when the run ends.
@@ -135,19 +147,40 @@ class PhiladelphiaBid(Base):
 #
 # `Folder` stays: it is what maps a row in this sheet to a directory in the
 # unpacked ZIP, and without it the sheet stops being an index of the archive.
+# `Status` and `Flag Reason` are derived at render time from the description and
+# title (see export._cell -> flags), not stored: the answer is a pure function of
+# columns the row already carries, so deriving it means a sheet rebuilt from the
+# database months later marks exactly the same rows as the one that shipped in
+# the ZIP — and the excluded-niche list can be corrected without a migration or a
+# re-scrape.
 EXCEL_COLUMNS: list[tuple[str, str]] = [
+    # 1. What the bid is. A reader identifies the row before anything judges it,
+    #    so the city's own facts lead and the verdict follows them — the sheet
+    #    reads the way someone reads a bid, not the way the pipeline computes it.
     ("bid_number", "Bid #"),
+    ("description", "Description"),
     ("organization", "Organization"),
     ("buyer", "Buyer"),
-    ("description", "Description"),
     ("bid_opening_date", "Bid Opening Date"),
     ("fiscal_year", "Fiscal Year"),
     ("solicitation_type", "Procurement / Solicitation Type"),
     ("pre_bid_conference", "Pre-Bid Conference Date / Details"),
+    ("alternate_id", "Alternate Id"),
+
+    # 2. What this run makes of it. `Niche Flag` rather than `Status`: two
+    #    columns both called Status, one from the matrix and one from the niche
+    #    list, is the kind of thing a reader has to stop and decode.
+    ("decision", "Evaluation Status"),
+    ("requirement_type", "Requirement Type"),
+    ("rule", "Matrix Rule"),
+    ("reason", "Evaluation Reason"),
+    ("flag_status", "Niche Flag"),
+    ("flag_reason", "Niche Flag Reason"),
+
+    # 3. Where its files are, and how to get back to the portal.
     ("documents_downloaded", "Total Document Count"),
     ("item_count", "Line Items"),
-    ("alternate_id", "Alternate Id"),
-    ("additional_header", "Additional Header Information"),
     ("folder", "Folder"),
+    ("additional_header", "Additional Header Information"),
     ("detail_url", "Detail URL"),
 ]
