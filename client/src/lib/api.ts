@@ -799,6 +799,44 @@ export function getNaicsCodes(q: string, page: number, limit = 50): Promise<Naic
   return request(`/naics?${params.toString()}`);
 }
 
+/** What a spreadsheet of NAICS codes yielded, and what it cost. */
+export interface NaicsImportResult {
+  /** The six-digit codes to put in the picker, in file order, de-duplicated. */
+  codes: string[];
+  count: number;
+  /** Entries that could not be used, each with why — so an import that took 40
+   *  of 45 rows can say which five it dropped rather than quietly shrinking. */
+  skipped: { value: string; reason: string }[];
+  /** Short entries expanded to their six-digit children: "54151" -> 4 codes. */
+  expanded: { entry: string; codes: number }[];
+  duplicates: number;
+  /** Which column the codes were read from, for the summary line. */
+  source: string;
+}
+
+/**
+ * Read NAICS codes out of a .csv / .xlsx / .xls.
+ *
+ * The file is sent base64 in JSON rather than as multipart: parsing happens on
+ * the server, where the NAICS reference table is — which is what lets a
+ * five-digit entry be expanded to its real children and an invented code be
+ * rejected, neither of which the browser could do alone.
+ */
+export async function importNaicsFile(file: File): Promise<NaicsImportResult> {
+  const content = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error(`Could not read ${file.name}`));
+    // readAsDataURL gives "data:...;base64,XXXX"; the server tolerates the
+    // prefix, so there is nothing to strip here.
+    reader.onload = () => resolve(String(reader.result ?? ""));
+    reader.readAsDataURL(file);
+  });
+  return request("/naics/import", {
+    method: "POST",
+    body: JSON.stringify({ filename: file.name, content }),
+  });
+}
+
 export function startNaicsScrape(): Promise<{ run_id: string }> {
   return request("/naics/scrape", { method: "POST" });
 }

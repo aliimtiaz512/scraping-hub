@@ -8,6 +8,10 @@ pydantic-settings
 sqlalchemy
 psycopg2-binary
 openpyxl
+# Legacy .xls only — openpyxl reads .xlsx and cannot open the old binary
+# format, which is still what a client's spreadsheet arrives as. Used by
+# app/scrapers/naics/importer.py.
+xlrd
 # Vendored SAM / Unison / NAICS engine dependencies (app/scrapers/*/engine/).
 beautifulsoup4
 lxml

@@ -210,28 +210,70 @@ def _cell(source: Any, attr: str) -> Any:
     return getter(attr)
 
 
-#: Which position in a written row carries the Status cell. Read from the column
-#: list rather than hardcoded, so inserting a column cannot silently move the
-#: highlight onto the wrong one.
-_STATUS_INDEX = [attr for attr, _ in EXCEL_COLUMNS].index("flag_status")
+#: Where each cell the tinting reads sits in a written row. Taken from the
+#: column list rather than hardcoded, so inserting a column cannot silently move
+#: the colour onto the wrong one.
+_COLUMN_INDEX = {attr: position for position, (attr, _) in enumerate(EXCEL_COLUMNS)}
+
+
+def _row_style(values: list[Any]) -> str | None:
+    """How this row should be tinted, from the cells already written.
+
+    Red is "out of scope", and it has two sources that mean the same thing: the
+    matrix returned REJECT, or the bid sits in one of the client's excluded
+    niches. Giving them one colour rather than two is the point — a reader
+    skimming for what to ignore does not care which list said so, and the
+    Evaluation Reason and Niche Flag columns say which when they do.
+
+    Yellow is "nobody has decided this yet". Everything else is left clean, so
+    the rows worth reading are the ones without a colour.
+
+    Read off the written cells rather than re-derived: a second pass over the
+    same record could disagree with the first, and a row tinted red whose
+    Evaluation Status says PURSUE is worse than either answer alone.
+    """
+    decision = str(values[_COLUMN_INDEX["decision"]] or "").strip().upper()
+    flagged = bool(values[_COLUMN_INDEX["flag_status"]])
+
+    if "REJECT" in decision or flagged:
+        return "reject"
+    if "REVIEW" in decision or "PENDING" in decision:
+        return "review"
+    return None
 
 
 def _write_workbook(rows: list[Any], out_path: str | Path) -> int:
-    """The summary sheet, with excluded-niche bids filled red.
-
-    The highlight reads the Status cell that was already written rather than
-    re-running the matcher: two passes over the same text could disagree, and a
-    row shaded red with an empty Status column is worse than either answer.
-    """
+    """The summary sheet, tinted by what each row's verdict means."""
     workbook, sheet = excel_style.new_workbook("Open Bids")
+    written = [
+        [_cell(row, attr) for attr, _ in EXCEL_COLUMNS] for row in rows
+    ]
     count = excel_style.write_table(
         sheet,
         [header for _, header in EXCEL_COLUMNS],
-        ([_cell(row, attr) for attr, _ in EXCEL_COLUMNS] for row in rows),
-        highlight=lambda values: bool(values[_STATUS_INDEX]),
+        written,
+        row_style=_row_style,
     )
+    _log_styling(written)
     workbook.save(str(out_path))
     return count
+
+
+def _log_styling(rows: list[list[Any]]) -> None:
+    """Say which rows were tinted and why, as the sheet is built."""
+    if not rows:
+        return
+    logger.info("[EXCEL STYLING]: Processing PHL Master Sheet...")
+    colours = {"reject": "RED", "review": "YELLOW"}
+    for position, values in enumerate(rows, start=1):
+        style = _row_style(values)
+        logger.info(
+            " %s Bid #%s | Decision: %-14s -> Row %s",
+            "└──" if position == len(rows) else "├──",
+            values[_COLUMN_INDEX["bid_number"]] or "unknown",
+            str(values[_COLUMN_INDEX["decision"]] or "—"),
+            f"highlighted [{colours[style]}]" if style else "left [CLEAN / UNCOLORED]",
+        )
 
 
 def generate_excel(run_id: str, out_path: str | Path) -> int:

@@ -174,11 +174,21 @@ def new_workbook(title: str) -> tuple[Workbook, Worksheet]:
     return workbook, sheet
 
 
-#: The look of a flagged row — Excel's own "Bad" style, which is what a reader
-#: already recognises from conditional formatting elsewhere. Light enough that
-#: the black cell text stays readable, unlike a saturated red.
-FLAG_FILL = PatternFill("solid", fgColor="FFC7CE")
-FLAG_FONT = Font(color="9C0006", bold=True)
+#: How a row can be tinted, by what the tint *means* rather than by its colour.
+#: A caller returns one of these names and the palette is decided here, so two
+#: portals cannot end up with two different reds for the same idea.
+#:
+#: Pastel fills with dark type: saturated colour across twenty columns makes the
+#: text harder to read, and the point of the tint is to let someone skim the
+#: sheet rather than to decorate it. Nothing is defined for "clean" — an
+#: in-scope row is left exactly as written, which is what makes the tinted ones
+#: stand out at all.
+ROW_STYLES: dict[str, tuple[PatternFill, Font]] = {
+    # Out of scope — the matrix rejected it, or it sits in an excluded niche.
+    "reject": (PatternFill("solid", fgColor="FADBD8"), Font(color="78281F", bold=True)),
+    # Undecided — a person still has to look at this one.
+    "review": (PatternFill("solid", fgColor="FCF3CF"), Font(color="7D6608", bold=True)),
+}
 
 
 def write_table(
@@ -186,7 +196,7 @@ def write_table(
     headers: Sequence[Any],
     rows: Iterable[Sequence[Any]],
     freeze: bool = True,
-    highlight: Callable[[Sequence[Any]], bool] | None = None,
+    row_style: Callable[[Sequence[Any]], str | None] | None = None,
 ) -> int:
     """Write a header row and `rows` beneath it, formatted. Returns the row count.
 
@@ -194,29 +204,34 @@ def write_table(
     columns and produces the values, and everything about how the result looks
     is decided here.
 
-    `highlight` is an optional predicate over a row's values. Rows it returns
-    True for are filled red across every column — for a portal that marks some
-    of its rows as out of scope and wants them findable at a glance rather than
-    by reading a Status column. Omitted, nothing is highlighted and the output
-    is byte-for-byte what it was before.
+    `row_style` is an optional function over a row's values returning a key of
+    `ROW_STYLES` — or None to leave the row clean. It lets a portal tint by what
+    a row *means* (out of scope, needs a person) without deciding what colour
+    that is. Omitted, nothing is tinted and the output is what it was before.
     """
     sheet.append([sanitize_cell(header) for header in headers])
     written = 0
-    flagged = 0
+    tinted: dict[str, int] = {}
     for row in rows:
         values = [sanitize_cell(value) for value in row]
         sheet.append(values)
         written += 1
-        if highlight is not None and highlight(values):
-            # `sheet.max_row` rather than a counter: append() is what decides
-            # where the row landed, and reading it back cannot drift from that.
-            for cell in sheet[sheet.max_row]:
-                cell.fill = FLAG_FILL
-                cell.font = FLAG_FONT
-            flagged += 1
-    # After the body, so the header keeps its own fill: a highlight predicate
-    # that matched every row would otherwise leave the header red too.
+        style = row_style(values) if row_style is not None else None
+        if style is None:
+            continue
+        fill, font = ROW_STYLES[style]
+        # `sheet.max_row` rather than a counter: append() is what decides where
+        # the row landed, and reading it back cannot drift from that.
+        for cell in sheet[sheet.max_row]:
+            cell.fill = fill
+            cell.font = font
+        tinted[style] = tinted.get(style, 0) + 1
+    # After the body, so the header keeps its own fill: a style function that
+    # matched every row would otherwise leave the header tinted too.
     format_excel_headers(sheet, freeze=freeze)
-    if flagged:
-        logger.info("%d of %d row(s) highlighted", flagged, written)
+    if tinted:
+        logger.info(
+            "%d of %d row(s) tinted (%s)", sum(tinted.values()), written,
+            ", ".join(f"{count} {name}" for name, count in sorted(tinted.items())),
+        )
     return written

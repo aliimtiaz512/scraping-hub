@@ -126,10 +126,14 @@ def _sheet(records):
 
 
 def _is_red(cell) -> bool:
-    return str(cell.fill.fgColor.rgb or "").endswith("FFC7CE")
+    """Soft red — "out of scope", whether the matrix or the niche list said so."""
+    return str(getattr(cell.fill.fgColor, "rgb", "") or "").endswith("FADBD8")
 
 
 def test_a_flagged_bid_is_red_across_the_whole_row():
+    """Red means out of scope. The row colour is driven by the Evaluation Status
+    column, and an excluded niche counts as out of scope too — so a flagged bid
+    is red whether or not the matrix has also judged it."""
     sheet = _sheet([{"bid_number": "23-10495",
                      "description": "Annual Custodial Services for City Facilities"}])
 

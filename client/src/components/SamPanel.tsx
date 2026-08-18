@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import NaicsFileImport from "@/components/NaicsFileImport";
 import NaicsSelect from "@/components/NaicsSelect";
 import RunStatusPanel from "@/components/RunStatus";
 import SamResults from "@/components/SamResults";
@@ -84,9 +85,10 @@ export default function SamPanel() {
           <div className="sm:col-span-2">
             <label className="mb-1.5 block text-xs font-semibold text-ink-700">NAICS codes</label>
             <NaicsSelect selected={naicsCodes} onChange={setNaicsCodes} disabled={isRunning} />
+            <NaicsFileImport onCodes={setNaicsCodes} disabled={isRunning} />
             <p className="mt-1.5 text-xs text-ink-500">
-              Type part of a code or an industry name and pick from the catalogue. Leave empty to
-              search every NAICS.
+              Type part of a code or an industry name and pick from the catalogue, or upload a
+              spreadsheet of them. Leave empty to search every NAICS.
             </p>
           </div>
         </div>

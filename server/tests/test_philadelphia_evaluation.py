@@ -357,3 +357,114 @@ def test_the_two_kinds_of_status_are_not_both_called_status():
     assert "Evaluation Status" in headers
     assert "Niche Flag" in headers
     assert "Status" not in headers
+
+
+# =============================================================================
+# The sheet's colours: red is out, yellow needs a person, clean is worth reading
+# =============================================================================
+
+
+def _styled_sheet(records):
+    from openpyxl import load_workbook
+
+    for record in records:
+        record.update(evaluation.evaluate(record))
+    out = Path(tempfile.mkdtemp())
+    export.generate_excel_from_records(records, storage.summary_path(out))
+    return load_workbook(storage.summary_path(out)).active
+
+
+def _fill(cell) -> str:
+    return str(getattr(cell.fill.fgColor, "rgb", "") or "")[-6:]
+
+
+def _font(cell) -> str:
+    colour = getattr(cell.font.color, "rgb", None)
+    return str(colour)[-6:] if isinstance(colour, str) else ""
+
+
+@pytest.mark.parametrize("description,items,decision,fill,font", [
+    ("Custodial Service and Maintenance Supplies", [], "REJECT", "FADBD8", "78281F"),
+    ("Annual requirement", [], "MANUAL_REVIEW", "FCF3CF", "7D6608"),
+    ("Jackhammers", [{"name": "Jackhammer", "quantity": "4", "unit": "EA"}], "PURSUE", "", ""),
+])
+def test_a_rows_colour_says_what_its_verdict_means(description, items, decision, fill, font):
+    sheet = _styled_sheet([{"bid_number": "B1", "description": description, "items": items}])
+    headers = [c.value for c in sheet[1]]
+
+    assert sheet.cell(2, headers.index("Evaluation Status") + 1).value == decision
+    assert _fill(sheet.cell(2, 1)) == (fill or "000000")
+    if font:
+        assert _font(sheet.cell(2, 1)) == font
+        assert sheet.cell(2, 1).font.bold is True
+
+
+def test_a_pursued_bid_is_left_completely_alone():
+    """The rows worth reading are the ones without a colour — so nothing is
+    applied to them at all, not even a white fill."""
+    sheet = _styled_sheet([
+        {"bid_number": "B1", "description": "Jackhammers",
+         "items": [{"name": "Jackhammer", "quantity": "4", "unit": "EA"}]},
+    ])
+
+    assert all(_fill(cell) in ("", "000000") for cell in sheet[2])
+    assert not any(cell.font.bold for cell in sheet[2])
+
+
+def test_the_whole_row_is_tinted_not_just_the_status_cell():
+    sheet = _styled_sheet([
+        {"bid_number": "B1", "description": "Custodial Service and Maintenance Supplies"},
+    ])
+
+    assert {_fill(cell) for cell in sheet[2]} == {"FADBD8"}
+
+
+def test_the_header_keeps_its_own_styling_whatever_the_rows_do():
+    """Row tinting runs before the header is styled, so a sheet where every bid
+    is rejected cannot leave the header red."""
+    sheet = _styled_sheet([
+        {"bid_number": "B1", "description": "Custodial Service and Maintenance Supplies"},
+        {"bid_number": "B2", "description": "Elevator inspection and repair services"},
+    ])
+
+    assert _fill(sheet.cell(1, 1)) == "1F4E78"
+    assert {_fill(sheet.cell(r, 1)) for r in (2, 3)} == {"FADBD8"}
+
+
+def test_an_excluded_niche_is_red_even_without_a_matrix_verdict():
+    """Red means out of scope and the niche list is one of the two things that
+    can say so. One colour for one meaning — the Niche Flag column says which
+    list it was."""
+    sheet = _styled_sheet([{"bid_number": "B1", "description": "Annual Custodial Services"}])
+    headers = [c.value for c in sheet[1]]
+
+    assert sheet.cell(2, headers.index("Niche Flag") + 1).value == "FLAGGED"
+    assert _fill(sheet.cell(2, 1)) == "FADBD8"
+
+
+def test_the_colour_is_read_off_the_written_cells_not_re_derived():
+    """A second pass over the same record could disagree with the first, and a
+    row tinted red whose Evaluation Status reads PURSUE is worse than either
+    answer alone."""
+    from app.scrapers.philadelphia.export import _COLUMN_INDEX, _row_style
+
+    values = [""] * len(EXCEL_COLUMNS)
+    values[_COLUMN_INDEX["decision"]] = "REJECT"
+    assert _row_style(values) == "reject"
+
+    values[_COLUMN_INDEX["decision"]] = "MANUAL_REVIEW"
+    assert _row_style(values) == "review"
+
+    values[_COLUMN_INDEX["decision"]] = "PURSUE"
+    assert _row_style(values) is None
+
+
+def test_an_unevaluated_bid_is_not_silently_treated_as_pursued():
+    """PENDING is an evaluation that failed, not a verdict — it needs a person,
+    so it gets the yellow rather than passing as clean."""
+    from app.scrapers.philadelphia.export import _COLUMN_INDEX, _row_style
+
+    values = [""] * len(EXCEL_COLUMNS)
+    values[_COLUMN_INDEX["decision"]] = "PENDING"
+
+    assert _row_style(values) == "review"
