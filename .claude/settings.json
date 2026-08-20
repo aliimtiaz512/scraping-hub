@@ -53,10 +53,15 @@
       "Bash(cd \"/home/akif-aziz/Public/Head office scrappers/scraping-hub/server\" && echo \"=== who owns the lock message ===\" && grep -rn \"wdm-lock\\\\|Timed out waiting for webdriver-manager\" app/ | head -5 && echo && echo \"=== the lock file on disk ===\" && ls -la /home/akif-aziz/.wdm/ 2>/dev/null | head && echo && echo \"=== lock content \\(owner PID?\\) ===\" && cat /home/akif-aziz/.wdm/.wdm-lock-chromedriver-linux64 2>/dev/null; echo && echo \"=== chrome/chromedriver processes alive ===\" && pgrep -af \"chromedriver|chrome\" | head -5 || echo \"\\(none\\)\")",
       "Read(//home/akif-aziz/.wdm/**)",
       "Bash(.venv/bin/pip show *)",
-      "Bash(rm -f /home/akif-aziz/.wdm/.wdm-lock-chromedriver-linux64)"
+      "Bash(rm -f /home/akif-aziz/.wdm/.wdm-lock-chromedriver-linux64)",
+      "Bash(cd \"/home/akif-aziz/Public/Head office scrappers/scraping-hub/server/app/scrapers/sam/engine\" && echo \"=== config.yml evaluation section ===\" && sed -n \"/^\\\\s*evaluation:/,/^\\\\s*[a-z_]*:\\\\s*$/p\" config.yml | head -60)",
+      "Bash(python3 -c ' *)",
+      "Bash(.venv/bin/python -)",
+      "Bash(.venv/bin/python -c \"import main; from app.scrapers.emma import scraper, evaluation; print\\('full server + emma imports OK'\\)\")"
     ],
     "additionalDirectories": [
-      "/home/akif-aziz/Public/Head office scrappers/scraping-hub/client/.next"
+      "/home/akif-aziz/Public/Head office scrappers/scraping-hub/client/.next",
+      "/home/akif-aziz/Public/Head office scrappers/scraping-hub/server/app/scrapers/sam/engine"
     ]
   }
 }

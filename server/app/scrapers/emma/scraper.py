@@ -36,7 +36,7 @@ from app.core.base_scraper import BaseScraper, StopRequested
 from app.core.closing_filter import MIN_DAYS_UNTIL_CLOSE, days_until_close
 from app.core.exports import archive_run
 from app.core.filenames import sanitize_filename
-from app.scrapers.emma import export
+from app.scrapers.emma import evaluation, export
 from app.services.notifier import notify_scrape_completion
 
 logger = logging.getLogger(__name__)
@@ -147,6 +147,8 @@ class EmmaScraper(BaseScraper):
         # Close-date filter tallies (see app/core/closing_filter).
         self._skipped_closing_soon = 0
         self._kept_unreadable_close = 0
+        # Bids dropped by the keyword blocklist (see app/scrapers/emma/evaluation).
+        self._rejected_by_keyword = 0
 
     # -- helpers ------------------------------------------------------------
 
@@ -643,11 +645,72 @@ class EmmaScraper(BaseScraper):
             rec["documents"] = names
             total += len(names)
             since_recycle += 1
+
+            # Screen this bid now that its documents are on disk: the blocklist
+            # reads the bid's own text and every downloaded document. Rejected
+            # bids are dropped from the run and their documents deleted, so the
+            # Excel and the ZIP carry only the ones that passed.
+            self._screen_bid(rec, code)
+
             run_manager.update_run(self.run_id, documents_downloaded=total)
             logger.info("[run %s] %s: %s document(s) (running total %s)",
                         self.run_id, code, len(names), total)
-        logger.info("[run %s] downloaded %s documents across %s solicitations",
-                    self.run_id, total, len(self._records))
+
+        # A bid the crawl never reached (the browser died, or it had no detail
+        # URL) still gets screened — on its own text alone — so an interrupted
+        # run reports those bids rather than silently dropping them.
+        for rec in self._records:
+            if not rec.get("decision"):
+                self._screen_bid(rec, rec.get("bpm_code") or rec.get("emma_id") or "bid")
+
+        # Keep only the bids that passed the keyword screen.
+        passed = [r for r in self._records if r.get("decision") == "PASS"]
+        logger.info(
+            "[run %s] keyword screen: %s passed, %s rejected (of %s)",
+            self.run_id, len(passed), self._rejected_by_keyword, len(self._records),
+        )
+        self._records = passed
+        run_manager.update_run(
+            self.run_id,
+            bids_found=len(passed),
+            bids_processed=len(passed),
+            bids_rejected_by_keyword=self._rejected_by_keyword,
+            bids=[{**r, "error": None} for r in passed[:PREVIEW_LIMIT]],
+        )
+        logger.info("[run %s] downloaded %s documents across the kept solicitations", self.run_id, total)
+
+    def _screen_bid(self, rec: dict[str, Any], code: str) -> None:
+        """Apply the keyword blocklist to one bid and record the verdict.
+
+        A rejected bid has its downloaded documents deleted straight away, so a
+        long run never accumulates files for bids that will not be reported.
+        """
+        try:
+            doc_text = evaluation.document_text(rec.get("_bid_folder"))
+            verdict = evaluation.evaluate(rec, doc_text)
+        except Exception:  # noqa: BLE001 — screening must never fail a run
+            logger.exception("[run %s] keyword screen failed for %s", self.run_id, code)
+            rec.update(decision="PASS", matched_keyword="", matched_in="")
+            return
+
+        rec.update(
+            decision=verdict["decision"],
+            matched_keyword=verdict["matched_keyword"],
+            matched_in=verdict["matched_in"],
+        )
+        if verdict["decision"] != "REJECT":
+            rec.pop("_bid_folder", None)  # internal — keep it out of the stored record
+            return
+
+        self._rejected_by_keyword += 1
+        logger.info(
+            "[run %s] %s REJECTED — %r found in %s",
+            self.run_id, code, verdict["matched_keyword"], verdict["matched_in"],
+        )
+        folder = rec.pop("_bid_folder", None)
+        if folder:
+            shutil.rmtree(folder, ignore_errors=True)
+        rec["documents"] = []
 
     def _restart_browser(self) -> bool:
         """Tear down and relaunch the browser, then re-login. Returns True on
@@ -760,6 +823,9 @@ class EmmaScraper(BaseScraper):
         title = rec.get("title") or ""
         bid_folder = self.run_dir / f"{code} - {_safe_title(title)}"
         bid_folder.mkdir(parents=True, exist_ok=True)
+        # Remembered so the keyword screen can read this bid's documents, and so
+        # a rejected bid's folder can be removed from the run.
+        rec["_bid_folder"] = str(bid_folder)
 
         saved: list[str] = []
         for filename, href in links:
