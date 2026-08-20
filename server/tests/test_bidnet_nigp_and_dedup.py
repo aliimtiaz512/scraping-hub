@@ -35,29 +35,91 @@ from app.scrapers.bidnet.scraper import BidnetScraper, LinkHarvest  # noqa: E402
 # The catalog
 # =============================================================================
 
-# The codes the client specified, verbatim. Written out here rather than read
-# from the catalog so this is a check, not a restatement — a code dropped or
-# mistyped in niches.py fails here.
-EXPECTED_CODES = {
-    "graphic_design": ["965-46", "915-48", "915-22", "915-09", "82131603"],
-    "commercial_printing": ["966-00", "966-18", "966-28", "966-55", "966-86"],
-    "software_development": ["920-40", "920-45", "920-03", "918-29", "81111500"],
-    "ai_analytics": ["920-04", "918-30", "920-24", "81111508"],
-    "pcb_electronics": ["287-54", "287-00", "936-25", "32101501"],
-}
+#: True while the catalog is deliberately empty — every niche's terms were
+#: cleared on 2026-08-20 pending a fresh dataset. The content checks below skip
+#: on it rather than being deleted: they are the guard that a niche is not
+#: half-configured, and the moment terms are added back they start guarding
+#: again with no edit here.
+CATALOG_EMPTY = not any(
+    entry.get("keywords") or entry.get("nigp_codes")
+    for entry in catalog.NICHES.values()
+)
+_needs_terms = pytest.mark.skipif(
+    CATALOG_EMPTY,
+    reason="the niche catalog is intentionally empty pending the new dataset",
+)
 
 
-@pytest.mark.parametrize("key,codes", EXPECTED_CODES.items())
-def test_each_niche_carries_its_configured_nigp_codes(key, codes):
-    assert catalog.NICHES[key]["nigp_codes"] == codes
+def test_every_niche_keeps_its_identity_and_its_two_term_lists():
+    """What the purge must NOT have taken. A niche is its key, label, slug,
+    order and notes; the terms are data that comes and goes."""
+    assert set(catalog.NICHES) == {
+        "graphic_design", "commercial_printing", "software_development",
+        "ai_analytics", "pcb_electronics",
+    }
+    for key, entry in catalog.NICHES.items():
+        assert entry.get("label"), f"{key} lost its label"
+        assert entry.get("slug"), f"{key} lost its slug"
+        assert entry.get("notes"), f"{key} lost its notes"
+        assert isinstance(entry.get("keywords"), list), f"{key} lost its keyword list"
+        assert isinstance(entry.get("nigp_codes"), list), f"{key} lost its code list"
 
 
+@_needs_terms
 def test_every_niche_has_codes_and_keywords():
     """A niche with codes but no keywords (or the reverse) would silently halve
     what the sector searches."""
     for key, entry in catalog.NICHES.items():
         assert entry.get("keywords"), f"{key} has no keywords"
         assert entry.get("nigp_codes"), f"{key} has no NIGP codes"
+
+
+@_needs_terms
+def test_every_code_is_the_five_digit_class_item_form_the_client_uses():
+    """The client's document writes class-item numbers unhyphenated and five
+    digits wide: 90640 is class 906, item 40. An earlier catalog hyphenated them
+    ("965-46"); either is a real way to write a code, but the run types what is
+    stored, so the two must not be mixed in one list."""
+    import re
+
+    for key, entry in catalog.NICHES.items():
+        for code in entry["nigp_codes"]:
+            assert re.fullmatch(r"\d{5}", code), (
+                f"{key}: {code!r} is not a five-digit NIGP class-item code"
+            )
+
+
+@_needs_terms
+def test_a_leading_zero_is_kept():
+    """Unlike NAICS, an NIGP class-item code really can start with a zero —
+    03752 is class 037, item 52. Storing it as "3752" would search for a code
+    that does not exist, and it is exactly what a spreadsheet does to it."""
+    codes = [c for entry in catalog.NICHES.values() for c in entry["nigp_codes"]]
+    leading_zero = [c for c in codes if c.startswith("0")]
+
+    assert leading_zero, "expected codes with a leading zero in this catalog"
+    assert all(len(c) == 5 for c in leading_zero)
+
+
+@_needs_terms
+def test_keywords_are_stored_lowercased_and_collapsed():
+    """The run types them verbatim, so a stray capital or double space is a
+    different search from the one intended."""
+    for key, entry in catalog.NICHES.items():
+        for keyword in entry["keywords"]:
+            assert keyword == " ".join(keyword.lower().split()), (
+                f"{key}: {keyword!r} is not normalised"
+            )
+
+
+@_needs_terms
+def test_no_niche_repeats_a_term():
+    """The catalog table is unique on (niche_key, term); a repeat inside one
+    niche would cost that niche its whole term list at seed time."""
+    for key, entry in catalog.NICHES.items():
+        terms = entry["keywords"] + entry["nigp_codes"]
+        duplicates = {t for t in terms if terms.count(t) > 1}
+        assert not duplicates, f"{key} repeats {sorted(duplicates)}"
 
 
 def test_a_code_is_never_also_a_keyword():
@@ -112,7 +174,11 @@ def test_a_missing_kind_column_falls_back_to_the_catalog_file(caplog):
 
     kinds = [t.kind for t in terms]
     assert kinds == [KIND_KEYWORD] * kinds.count(KIND_KEYWORD) + [KIND_NIGP] * kinds.count(KIND_NIGP)
-    assert [t.term for t in terms if t.kind == KIND_NIGP] == EXPECTED_CODES["graphic_design"]
+    # The file's own codes, whatever they currently are — this covers the
+    # fallback path, not the contents of the catalog.
+    assert [t.term for t in terms if t.kind == KIND_NIGP] == (
+        catalog.NICHES["graphic_design"]["nigp_codes"]
+    )
     assert any("add_bidnet_niche_kind.sql" in r.getMessage() for r in caplog.records)
 
 
