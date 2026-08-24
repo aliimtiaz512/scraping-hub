@@ -30,7 +30,6 @@ logger = logging.getLogger(__name__)
 
 XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
-<<<<<<< HEAD
 # Portals whose runs download real document files → their download is a ZIP.
 DOC_PORTALS = {"myflorida", "myflorida_sweep", "bidnet", "northdakota", "philadelphia"}
 

@@ -10,12 +10,19 @@ which is why the real Log in button must be clicked (never a bare form.submit).
 
 Flow: sign in -> open the "Sourcing" nav dropdown and click "Public Solicitations"
 (/page.aspx/en/rfp/request_browse_public) -> optionally apply the filter bar
-(Main Category / Solicitation Type / Status) and Search -> page through the whole
-results grid (#body_x_grid_grd), storing every row -> keep only solicitations
-still >= 7 days from close (shared closing_filter) -> open each kept
-solicitation's detail page and download its RFx Documents into a per-bid folder
--> persist to the DB -> build the per-run Excel from the DB and package the run
-(Excel + documents) into one archive ZIP.
+(Keywords / Status / Category) and Search -> page through the whole results grid
+(#body_x_grid_grd) -> keep only solicitations still >= 7 days from close (shared
+closing_filter) -> screen every bid against the keyword blocklist (see
+`evaluation`) -> persist the ones that pass -> build one Excel from the DB.
+
+Screening runs in two stages, which is what makes a run affordable. The first
+sees only the grid fields the search already returned, so a bid rejected on its
+own text never has its detail page opened at all (about 40% of a live run). The
+second runs after the bid's RFx Documents have been read.
+
+Documents are read, never kept: they are downloaded only so their text can be
+screened, then deleted — pass or reject. The spreadsheet of passing bids is the
+entire deliverable, which is why EMMA is an EXCEL_ONLY portal.
 """
 
 import logging
