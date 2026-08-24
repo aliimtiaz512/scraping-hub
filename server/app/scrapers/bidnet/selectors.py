@@ -171,6 +171,31 @@ PAGINATION_BACK = (
     "a.first:not(.disabled), a.previous:not(.disabled), a[rel='prev']:not(.disabled)"
 )
 
+# -- documents -----------------------------------------------------------------
+#
+# Measured against live solicitation pages (they predate the download feature
+# being retired and are unchanged by it — the handles describe the portal, not
+# what we do with what they find).
+#
+# The tab body is rendered lazily: until the tab is opened, the attachment
+# anchors are simply not in the DOM. Both the desktop tab and its `_mobile`
+# duplicate are accepted, because the portal renders both and hides one by CSS —
+# which one is visible depends on the viewport a run happens to use.
+DOCS_TAB_SELECTORS = (
+    "#docs-itemsAbstractTab a",
+    "#docs-itemsAbstractTab_mobile a",
+    "a[href*='innerTabId=docs-items']",
+)
+# Every attachment link the portal renders. The id prefix is the reliable one;
+# the href match also catches an anchor rendered without that id.
+ATTACHMENT_SELECTOR = "a[id^='attachmentDownloadLnk'], a[href*='attachment-download']"
+# The tab's own count. Read with `textContent`, never `innerText`: one of the
+# desktop/mobile pair is always hidden by CSS and has no *rendered* text, so
+# innerText returns "" there — which is exactly how a bid with attachments used
+# to be recorded as having none.
+DOCS_TAB_IDS = ("docs-itemsAbstractTab", "docs-itemsAbstractTab_mobile")
+DOCS_TAB_BADGE = ".tabCount"
+
 # -- detail page -------------------------------------------------------------
 
 DETAIL_FIELD = ".mets-field"            # a labelled field block on a bid page

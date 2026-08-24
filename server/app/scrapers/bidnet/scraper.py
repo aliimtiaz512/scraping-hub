@@ -187,14 +187,29 @@ APPLY_DATE_FILTERS = True
 # off the detail page itself. Dropping the downloads takes a solicitation down
 # to a single page load and a niche folder down to a single file.
 #
-# `Documents Count` went with them, out of the export as well as out of the
-# scrape: it was read off the documents tab's badge, so keeping the column would
-# have meant keeping the render it exists to count.
+# **Counting them is a separate question, and the answer there is yes** — see
+# `count_documents` on the scraper and `_count_documents` below. A member agency
+# sweep reports how many attachments each solicitation carries, which is a
+# useful triage signal (a bid with fourteen documents is a different proposition
+# from one with none) and costs a tab render rather than a file transfer. What
+# stays gone is fetching the bytes and the per-bid folder that held them.
 #
 # This is a constant rather than a setting because it is not a choice a run
 # makes — nothing in the pipeline (packaging, email, the console) expects
-# documents any more.
+# document *files* any more.
 DOWNLOAD_DOCUMENTS = False
+
+# How long to wait for the documents tab's AJAX to put the attachment anchors in
+# the DOM, once the tab has been opened. Lower than the 30s the download path
+# used: a sweep pays this per bid across a couple of thousand of them, and a tab
+# that has not rendered in this long is not about to.
+DOC_TAB_TIMEOUT = 15
+# Confirmation wait for a bid whose badge positively reads "0". Short, because
+# there is nothing to wait for — but not skipped, so a mis-rendered badge still
+# gets one look at the tab body.
+DOC_ZERO_TIMEOUT = 3
+# Poll interval while waiting for those anchors.
+DOC_POLL = 0.25
 
 # The result-group tab the scraper scrapes ("Member Agency Bids"). Its header
 # carries the authoritative hit count for the current search:
@@ -453,6 +468,10 @@ class BidnetScraper(BaseScraper):
         # Closing Date.
         self._skipped_closing_soon = 0
         self._kept_unreadable_close = 0
+        # Attachments counted across the run (not downloaded). Reported so a
+        # sweep whose Documents column is all zeros is visible as such rather
+        # than being taken at face value.
+        self._documents_counted = 0
         # Solicitations the portal gated behind a required acknowledgement.
         # Collected so the run can list exactly which bids need a human Accept
         # rather than burying them among genuine extraction failures.
@@ -461,6 +480,12 @@ class BidnetScraper(BaseScraper):
         # and reported because each one is a submission the issuing agency can
         # see — a run should never accept things without saying which.
         self._accepted_acknowledgements: list[dict[str, str]] = []
+        # Whether to count each bid's attachments (never to fetch them — see
+        # DOWNLOAD_DOCUMENTS). Off here and on for the member agency sweep,
+        # which is the mode whose export carries a Documents column: counting
+        # costs a tab render per bid, and a niche run that would not print the
+        # number should not pay for it.
+        self.count_documents = False
 
     # -- live debugging -----------------------------------------------------
 
@@ -1813,12 +1838,28 @@ class BidnetScraper(BaseScraper):
 
         # A detail page that renders nothing used to be indistinguishable from a
         # solicitation with no data: every field came back "" and the blank
-        # record flowed on as if it were real. Retry once — a single slow load is
-        # the common cause — then flag whatever we end up with.
+        # record flowed on as if it were real. Retry once — then flag whatever
+        # we end up with.
+        #
+        # **The session is checked before the retry**, and that is the whole
+        # value of this branch on a long run. BidNet expires a session after
+        # about an hour, and it does not do so with an error: it simply serves
+        # a signed-out page, which has no `.mets-field` on it, so every field
+        # comes back "" and the bid is filed as EXTRACTION_FAILED. A member
+        # agency sweep opens a couple of thousand detail pages back to back and
+        # crosses that hour in the middle — one real run read 1,321 bids
+        # correctly and then failed the remaining 538 in a row, every one of
+        # them a page the portal would have served fine to a signed-in browser.
+        #
+        # Reloading alone could never fix that; signing in again does, and the
+        # cost when the session is healthy is a single DOM lookup, paid only by
+        # a bid that already failed to read.
         if not any(record.values()):
             logger.warning(
-                "[run %s] no fields could be read from %s — reloading once", self.run_id, link
+                "[run %s] no fields could be read from %s — checking the session "
+                "and reloading once", self.run_id, link,
             )
+            self.ensure_logged_in()
             record = self._scrape_detail(link)
             gate = self._acknowledgement_gate()
             if gate:
@@ -1852,9 +1893,15 @@ class BidnetScraper(BaseScraper):
                 self._skipped_closing_soon += 1
                 return None
 
-        # This is where the documents tab used to be opened and every
-        # attachment fetched into `<reference> - <title>/`. Retired — the record
-        # is complete as it stands, and the run moves straight to the next bid.
+        # The documents tab is opened to *count* the attachments, never to
+        # fetch them (DOWNLOAD_DOCUMENTS) and never into a per-bid folder. Left
+        # absent rather than set to 0 when the count could not be read, so the
+        # export can tell "no attachments" from "we could not tell".
+        if self.count_documents:
+            count = self._count_documents(link)
+            if count is not None:
+                record["documents_count"] = str(count)
+                self._documents_counted += count
         return record
 
     # Every labelled field on the page in one pass, matched against the labels
@@ -1879,6 +1926,157 @@ class BidnetScraper(BaseScraper):
     }
     return '';
     """
+
+    # -- attachments, counted but never fetched -----------------------------
+
+    # Every attachment anchor currently in the DOM, deduplicated by href.
+    #
+    # Deduplication is the difference between "links on the page" and "documents
+    # this bid has": the portal routinely renders the same attachment twice (a
+    # row link and an icon link), and reporting the raw anchor count would
+    # overstate every such bid.
+    #   arguments[0]: the attachment selector
+    _JS_COUNT_ATTACHMENTS = """
+    const seen = new Set();
+    for (const a of document.querySelectorAll(arguments[0])) {
+      const href = a.getAttribute('href') || a.href || '';
+      if (!href || href.toLowerCase().startsWith('javascript')) continue;
+      seen.add(href);
+    }
+    return seen.size;
+    """
+
+    # The Documents tab's own count. Informational only — never a gate on
+    # whether to look, because reading it as one is precisely what produced
+    # false zeros on bids that did have attachments.
+    #   arguments[0]: the tab ids to try, arguments[1]: the badge selector
+    _JS_DOC_BADGE = """
+    for (const id of arguments[0]) {
+      const tab = document.getElementById(id);
+      if (!tab) continue;
+      const badge = tab.querySelector(arguments[1]);
+      const text = badge ? (badge.textContent || '') : (tab.textContent || '');
+      const digits = text.replace(/[^0-9]/g, '');
+      if (digits !== '') return parseInt(digits, 10);
+    }
+    return null;
+    """
+
+    def _count_documents(self, link: str = "") -> int | None:
+        """How many attachments this solicitation carries. **Nothing is fetched.**
+
+        Returns the count, or None when the page cannot be read at all — which
+        callers must keep distinct from 0, since "no attachments" and "we could
+        not tell" are different facts about a bid.
+
+        Three steps, cheapest first, because a sweep pays this once per bid
+        across a couple of thousand of them:
+
+        1. **Look at the DOM as it stands.** Some solicitations render their
+           attachment anchors without the tab being touched, and those cost
+           nothing at all.
+        2. **Read the tab's badge.** If anchors are already present and the badge
+           agrees with them, the answer is settled and no tab is opened.
+        3. **Open the tab and wait for the anchors.** Only when the first two do
+           not agree — the tab body is rendered lazily, so until it is opened the
+           anchors genuinely are not there.
+
+        The anchor count wins over the badge wherever both are available: the
+        badge is what the portal claims, the anchors are what it actually
+        serves, and where they disagree it is the badge that has been wrong.
+        """
+        found = self._attachment_count()
+        badge = self._document_badge()
+
+        # Settled without touching the page: what is rendered matches what the
+        # tab claims.
+        if found and badge is not None and found == badge:
+            return found
+
+        # A badge that positively reads 0 and no anchors on the page is almost
+        # certainly a bid with no attachments — confirmed with a short look at
+        # the tab body rather than trusted outright.
+        timeout = DOC_ZERO_TIMEOUT if (badge == 0 and not found) else DOC_TAB_TIMEOUT
+        if not self._open_documents_tab():
+            # No tab to open. Whatever is on the page is the whole answer.
+            if found:
+                return found
+            return badge
+
+        settled = self._await_attachments(timeout, expected=badge)
+        if settled:
+            return settled
+        # The tab rendered nothing countable. Fall back to the badge, then to
+        # whatever was on the page before it was opened.
+        if badge is not None:
+            if badge:
+                logger.info(
+                    "[run %s] documents tab reports %s file(s) but none could be "
+                    "counted%s — recording the tab's own number",
+                    self.run_id, badge, f" for {link}" if link else "",
+                )
+            return badge
+        return found or None
+
+    def _attachment_count(self) -> int:
+        try:
+            value = self.driver.execute_script(
+                self._JS_COUNT_ATTACHMENTS, selectors.ATTACHMENT_SELECTOR
+            )
+        except Exception:  # noqa: BLE001 — an unreadable page is 0 found, not a fault
+            return 0
+        return int(value) if isinstance(value, (int, float)) else 0
+
+    def _document_badge(self) -> int | None:
+        try:
+            value = self.driver.execute_script(
+                self._JS_DOC_BADGE, list(selectors.DOCS_TAB_IDS), selectors.DOCS_TAB_BADGE
+            )
+        except Exception:  # noqa: BLE001
+            return None
+        return int(value) if isinstance(value, (int, float)) else None
+
+    def _open_documents_tab(self) -> bool:
+        """Click the Documents tab so the portal renders its body.
+
+        A scripted click, not a native one: the tab anchors sit under a sticky
+        header on some layouts, where a native click lands on the header and the
+        tab body is never requested.
+        """
+        for selector in selectors.DOCS_TAB_SELECTORS:
+            try:
+                elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
+            except WebDriverException:
+                continue
+            for element in elements:
+                try:
+                    self.driver.execute_script(
+                        "arguments[0].scrollIntoView({block:'center'});", element
+                    )
+                    self.driver.execute_script("arguments[0].click();", element)
+                    return True
+                except WebDriverException:
+                    continue
+        return False
+
+    def _await_attachments(self, timeout: int, expected: int | None) -> int:
+        """Wait for the tab body's anchors, and return how many there are.
+
+        Stops early once the badge's number has been reached — waiting the full
+        timeout after every anchor has arrived is time a sweep cannot spare.
+        """
+        best = 0
+
+        def _ready(_driver) -> bool:
+            nonlocal best
+            best = max(best, self._attachment_count())
+            return bool(best) and (expected is None or best >= expected)
+
+        try:
+            WebDriverWait(self.driver, timeout, poll_frequency=DOC_POLL).until(_ready)
+        except (TimeoutException, WebDriverException):
+            pass
+        return best
 
     def _extract_agency(self, link: str = "") -> str:
         """The issuing agency from the detail page, or "" if none is labelled.
@@ -1943,6 +2141,10 @@ class BidnetScraper(BaseScraper):
         record["status"] = STATUS_ACK_REQUIRED
         record["error"] = message
         record["acknowledgement"] = {k: v for k, v in gate.items() if v}
+        # The documents sit behind the same wall as the fields do, so there is
+        # nothing to count — and 0 is the honest answer for what we can reach.
+        if self.count_documents:
+            record["documents_count"] = "0"
         return record
 
     def _page_heading(self) -> str:

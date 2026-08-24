@@ -50,13 +50,24 @@ class BidnetBid(Base):
     solicitation_number: Mapped[str | None] = mapped_column(String(128))
     solicitation_type: Mapped[str | None] = mapped_column(String(128))
     title: Mapped[str | None] = mapped_column(Text)
-    publication_date: Mapped[str | None] = mapped_column(String(64))
-    question_acceptance_deadline: Mapped[str | None] = mapped_column(String(64))
-    closing_date: Mapped[str | None] = mapped_column(String(64))
-    # Historical only. The scraper stopped opening the documents tab when
-    # attachment downloading was retired (scraper.DOWNLOAD_DOCUMENTS), so rows
-    # written from then on leave this NULL. The column is kept so rows scraped
-    # before that still read back, and is no longer exported.
+    # Text, not String(64), despite the names. These are whatever the issuing
+    # agency typed into a date field, and across five hundred member agencies
+    # that is regularly not a date — "See specification for the submission
+    # schedule", a date plus a timezone plus a parenthetical, an instruction to
+    # refer to an addendum. At 64 characters one such value raised
+    # StringDataRightTruncation, and because the run saves in one transaction it
+    # took all 1,859 of that run's bids down with it. Nothing reads these as
+    # dates in the database (the close-date rule parses them in Python), so
+    # there was never anything for the limit to protect.
+    publication_date: Mapped[str | None] = mapped_column(Text)
+    question_acceptance_deadline: Mapped[str | None] = mapped_column(Text)
+    closing_date: Mapped[str | None] = mapped_column(Text)
+    # How many attachments the solicitation carries. Counted off the documents
+    # tab, never downloaded (scraper.DOWNLOAD_DOCUMENTS is off and stays off).
+    # NULL means the count could not be read, which is deliberately distinct
+    # from "0" — a bid we could not ask about is not a bid with no documents.
+    # Populated by the member agency sweep; a niche run leaves it NULL rather
+    # than pay a tab render per bid for a column its sheet does not carry.
     documents_count: Mapped[str | None] = mapped_column(String(32))
     # Every keyword of the run's niche that surfaced this solicitation, comma-
     # joined — the niche is searched one keyword at a time and the same bid is
@@ -116,9 +127,39 @@ EXCEL_COLUMNS: list[tuple[str, str]] = [
     ("closing_date", "Closing Date"),
     ("matched_keyword", "Matched Keyword"),
     ("detail_url", "Detail URL"),
-    # The last two, in this order, in both modes: `Niche` names the search that
+    # The last two, in this order, in every mode: `Niche` names the search that
     # surfaced the bid (the niche's label, or the issuing member agency in the
     # sweep), and `Status` says how completely we read it.
+    ("niche", "Niche"),
+    ("status", "Status"),
+]
+
+# The member agency sweep's own layout. It differs from the niche layout above
+# in exactly two places, and both follow from the mode searching **no keywords**:
+#
+# * **`Matched Keyword` is gone.** A niche run searches twenty-odd terms one at a
+#   time and that column says which of them surfaced the bid — the single most
+#   useful thing to know about a row there. A sweep types nothing into the box
+#   at all, so the column could only ever be blank, and a column that is blank
+#   in every row of every sheet is noise the reader has to learn to skip.
+# * **`Documents` is present**, immediately before `Niche`. It is the triage
+#   signal a keyword-less sweep is short of: a bid carrying fourteen attachments
+#   is a different proposition from one carrying none, and with nothing else
+#   narrowing the list it is often the fastest way to sort it.
+#
+# The tail is deliberately the same shape as the niche layout — the bid's own
+# fields, then how it reached us, then how completely we read it — so the two
+# sheets can still be read side by side.
+MEMBER_AGENCY_EXCEL_COLUMNS: list[tuple[str, str]] = [
+    ("reference_number", "Reference Number"),
+    ("solicitation_number", "Solicitation Number"),
+    ("solicitation_type", "Solicitation Type"),
+    ("title", "Title"),
+    ("publication_date", "Publication Date"),
+    ("question_acceptance_deadline", "Question Acceptance Deadline"),
+    ("closing_date", "Closing Date"),
+    ("detail_url", "Detail URL"),
+    ("documents_count", "Documents"),
     ("niche", "Niche"),
     ("status", "Status"),
 ]

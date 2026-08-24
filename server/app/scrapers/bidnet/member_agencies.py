@@ -54,6 +54,7 @@ from app.core import run_manager
 from app.core.base_scraper import StopRequested
 from app.core.exports import archive_run
 from app.scrapers.bidnet import export, storage
+from app.scrapers.bidnet.models import MEMBER_AGENCY_EXCEL_COLUMNS
 from app.scrapers.bidnet.filters import SidebarFilterRequest
 from app.scrapers.bidnet.scraper import (
     HEADLESS_MODE,
@@ -105,6 +106,28 @@ MAX_SWEEP_BIDS = 5000
 HARVEST_SLACK = 5
 HARVEST_SLACK_RATIO = 0.02
 
+# How often, in solicitations, to confirm the session is still signed in while
+# reading detail pages.
+#
+# BidNet expires a session after roughly an hour, and it expires it *silently* —
+# a signed-out page has none of the fields on it, so the bid reads as
+# EXTRACTION_FAILED rather than as a session problem. A niche run never noticed:
+# it signs in again before every keyword, and its keywords are minutes apart. A
+# sweep makes one search and then spends over an hour on detail pages, so it
+# crosses the expiry with nothing in the flow to catch it — 538 consecutive bids
+# were lost that way before this existed.
+#
+# `process_bid` also recovers on its own when a page reads empty, so this is the
+# cheaper half of the pair: it keeps the session alive so that recovery rarely
+# has to fire, at one DOM lookup per hundred bids.
+SESSION_CHECK_EVERY = 100
+
+# How many agencies to name in the run's `[AGENCIES]` summary line. The full
+# tally still reaches the run record (and the spreadsheet has every row); this
+# is only about the log, where a sweep across 549 agencies otherwise emits a
+# single unreadable 15KB line.
+AGENCIES_LOGGED = 15
+
 
 class MemberAgencySweepScraper(BidnetScraper):
     """A BidnetScraper that searches nothing and collects the whole group.
@@ -118,6 +141,10 @@ class MemberAgencySweepScraper(BidnetScraper):
 
     def __init__(self, run_id: str, filters: SidebarFilterRequest | None = None):
         super().__init__(run_id, [], filters, niche_label=SWEEP_LABEL)
+        # This mode's sheet carries a Documents column, so this mode pays for
+        # it: each bid's attachments are counted off the documents tab. Nothing
+        # is downloaded — see scraper.DOWNLOAD_DOCUMENTS.
+        self.count_documents = True
         # The day the sweep belongs to, fixed at construction so a run that
         # crosses midnight writes one filename rather than two.
         run = run_manager.get_run(run_id) or {}
@@ -140,7 +167,9 @@ class MemberAgencySweepScraper(BidnetScraper):
         self.set_step("generating_excel")
         out_path = self.excel_path
         try:
-            written = export.generate_excel_from_records(records, out_path)
+            written = export.generate_excel_from_records(
+                records, out_path, MEMBER_AGENCY_EXCEL_COLUMNS
+            )
             run_manager.update_run(
                 self.run_id, excel_path=str(out_path), excel_name=out_path.name
             )
@@ -199,6 +228,34 @@ class MemberAgencySweepScraper(BidnetScraper):
             self._ensure_filters_live()
             self.filter_member_agency()
         return self.result_count()
+
+    def _report_documents(self, records: list[dict]) -> None:
+        """What the Documents column actually holds, across the run.
+
+        Reported because a column of zeros has two very different causes — a
+        portal whose bids genuinely carry no attachments, and a tab we stopped
+        being able to read — and the sheet alone cannot tell them apart.
+        """
+        counted = [r for r in records if r.get("documents_count") not in (None, "")]
+        with_docs = [r for r in counted if (r.get("documents_count") or "0") != "0"]
+        logger.info(
+            "[DOCUMENTS] run %s | counted on %d of %d bid(s) | %d carry attachments "
+            "| %d attachment(s) in total (none downloaded)",
+            self.run_id, len(counted), len(records), len(with_docs),
+            self._documents_counted,
+        )
+        run_manager.update_run(
+            self.run_id,
+            documents_counted=self._documents_counted,
+            bids_with_documents=len(with_docs),
+        )
+        unread = len(records) - len(counted)
+        if unread:
+            run_manager.add_warning(
+                self.run_id,
+                f"the documents tab could not be read for {unread} of {len(records)} "
+                f"bid(s) — their Documents cell is blank rather than 0",
+            )
 
     def _reconcile_harvest(self, count: int | None, harvest) -> None:
         """What the portal said it had, against what the walk actually brought
@@ -313,6 +370,19 @@ class MemberAgencySweepScraper(BidnetScraper):
                 record: dict[str, Any] | None = {
                     "reference_number": None, "title": None, "error": None,
                 }
+                # Long before the portal drops us, not after. See
+                # SESSION_CHECK_EVERY — a silently expired session reads as a
+                # page with no fields on it, which is indistinguishable from a
+                # bid that has none.
+                if index % SESSION_CHECK_EVERY == 0:
+                    try:
+                        self.ensure_logged_in()
+                    except (TimeoutException, WebDriverException) as exc:
+                        logger.warning(
+                            "[run %s] session check failed (%s) — carrying on; the "
+                            "next unreadable bid will retry it",
+                            self.run_id, exc.__class__.__name__,
+                        )
                 try:
                     record = self.process_bid(link)
                     if record is not None:
@@ -348,6 +418,7 @@ class MemberAgencySweepScraper(BidnetScraper):
                     )
 
             self._report(count, links, all_records)
+            self._report_documents(all_records)
             self.write_excel(all_records)
 
             run = run_manager.get_run(self.run_id) or {"run_id": self.run_id}
@@ -421,10 +492,13 @@ class MemberAgencySweepScraper(BidnetScraper):
 
         agencies = Counter((r.get("niche") or UNKNOWN_AGENCY) for r in records)
         if agencies:
+            top = agencies.most_common(AGENCIES_LOGGED)
+            listing = "; ".join(f"{name} ({n})" for name, n in top)
+            if len(agencies) > len(top):
+                listing += f"; …and {len(agencies) - len(top)} more"
             logger.info(
-                "[AGENCIES] run %s | %d agency/agencies: %s",
-                self.run_id, len(agencies),
-                "; ".join(f"{name} ({n})" for name, n in agencies.most_common()),
+                "[AGENCIES] run %s | %d agency/agencies, top %d by bid count: %s",
+                self.run_id, len(agencies), len(top), listing,
             )
             run_manager.update_run(
                 self.run_id,

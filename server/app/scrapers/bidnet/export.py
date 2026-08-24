@@ -15,9 +15,56 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from app.core import excel_style
 from app.db import SessionLocal
-from app.scrapers.bidnet.models import EXCEL_COLUMNS, BidnetBid, BidnetRun
+from app.scrapers.bidnet.models import (
+    EXCEL_COLUMNS,
+    MEMBER_AGENCY_EXCEL_COLUMNS,
+    BidnetBid,
+    BidnetRun,
+)
+
+Columns = list[tuple[str, str]]
 
 logger = logging.getLogger(__name__)
+
+# The declared width of every length-limited column on BidnetBid, read off the
+# model so it cannot drift from the schema.
+_COLUMN_LIMITS: dict[str, int] = {
+    column.name: column.type.length
+    for column in BidnetBid.__table__.columns
+    if getattr(column.type, "length", None)
+}
+
+
+def _fit(values: dict[str, Any]) -> dict[str, Any]:
+    """Trim any value that is longer than the column meant to hold it.
+
+    Postgres does not truncate an oversized value — it raises, and the raise
+    aborts the transaction, which here means the **whole run's** insert. One
+    solicitation whose Closing Date read "See specification, Section 4, for the
+    submission schedule…" is enough to lose every other bid in the run, and that
+    is exactly what happened: 1,859 records rolled back over a single cell.
+
+    Widening the columns (see the migration) fixes the case we know about. This
+    fixes the shape of the failure: these are free text the portal fills however
+    a given agency pleases, and a sweep across five hundred agencies will always
+    find a field none of us predicted. Losing the tail of one string is a fair
+    trade for keeping the run.
+
+    Truncation is logged with the field and the run — a silently shortened value
+    would be its own small lie.
+    """
+    trimmed: list[str] = []
+    for key, limit in _COLUMN_LIMITS.items():
+        value = values.get(key)
+        if isinstance(value, str) and len(value) > limit:
+            values[key] = value[: limit - 1] + "…"
+            trimmed.append(f"{key} ({len(value)}>{limit})")
+    if trimmed:
+        logger.warning(
+            "[run %s] trimmed %d oversized value(s) to fit their column: %s",
+            values.get("run_id"), len(trimmed), ", ".join(trimmed),
+        )
+    return values
 
 # Columns actually present on BidnetBid (used to filter a scraped record dict).
 _BID_FIELDS = {
@@ -112,6 +159,8 @@ def save_bids(run: dict[str, Any], records: list[dict[str, Any]]) -> int:
         for record in records:
             values: dict[str, Any] = {k: (record.get(k) or None) for k in _BID_FIELDS}
             values["run_id"] = run["run_id"]
+            # Before anything is sent: no single field may abort the run's save.
+            _fit(values)
             values["raw_data"] = _jsonable({k: v for k, v in record.items() if k != "documents"})
 
             ref = values.get("reference_number")
@@ -168,20 +217,44 @@ def _all_rows() -> list[BidnetBid]:
         session.close()
 
 
-def _write_workbook(rows: list[BidnetBid], out_path: str | Path) -> int:
+def _write_workbook(
+    rows: list[BidnetBid], out_path: str | Path, columns: Columns | None = None
+) -> int:
+    columns = columns or EXCEL_COLUMNS
     workbook, sheet = excel_style.new_workbook("BidNet Bids")
     excel_style.write_table(
         sheet,
-        [header for _, header in EXCEL_COLUMNS],
-        ([getattr(bid, attr, None) for attr, _ in EXCEL_COLUMNS] for bid in rows),
+        [header for _, header in columns],
+        ([getattr(bid, attr, None) for attr, _ in columns] for bid in rows),
     )
     workbook.save(str(out_path))
     return len(rows)
 
 
+def columns_for_run(run_id: str) -> Columns:
+    """Which column layout this run's sheet uses.
+
+    A member agency sweep drops `Matched Keyword` (it searches none) and carries
+    `Documents` instead; every other run keeps the niche layout. Decided from
+    the run record rather than passed in, because the generic packaging path
+    (`core.exports.excel_bytes`) calls `generate_excel(run_id, path)` for every
+    portal and has no way to know one BidNet run from another.
+
+    Falls back to the niche layout for a run the manager no longer holds — the
+    older and far more common shape, and the one whose columns are a superset.
+    """
+    from app.core import run_manager
+
+    try:
+        run = run_manager.get_run(run_id) or {}
+    except Exception:  # noqa: BLE001 — never fail an export over run bookkeeping
+        return EXCEL_COLUMNS
+    return MEMBER_AGENCY_EXCEL_COLUMNS if run.get("member_agency_sweep") else EXCEL_COLUMNS
+
+
 def generate_excel(run_id: str, out_path: str | Path) -> int:
     """Build this run's Excel sheet from bidnet_bids. Returns the row count."""
-    count = _write_workbook(_rows_for_run(run_id), out_path)
+    count = _write_workbook(_rows_for_run(run_id), out_path, columns_for_run(run_id))
     logger.info("[run %s] wrote %d rows to %s", run_id, count, out_path)
     return count
 
@@ -236,7 +309,9 @@ def generate_excel_for_runs(run_ids: list[str], out_path: str | Path) -> int:
     return count
 
 
-def generate_excel_from_records(records: list[dict[str, Any]], out_path: str | Path) -> int:
+def generate_excel_from_records(
+    records: list[dict[str, Any]], out_path: str | Path, columns: Columns | None = None
+) -> int:
     """Build this run's Excel sheet straight from the in-memory scraped records.
 
     **Every record is written.** This used to skip records with no reference
@@ -249,11 +324,12 @@ def generate_excel_from_records(records: list[dict[str, Any]], out_path: str | P
     Returns the number of rows written, which callers must log rather than the
     length of what they passed in.
     """
+    columns = columns or EXCEL_COLUMNS
     workbook, sheet = excel_style.new_workbook("BidNet Bids")
     count = excel_style.write_table(
         sheet,
-        [header for _, header in EXCEL_COLUMNS],
-        ([record.get(attr) for attr, _ in EXCEL_COLUMNS] for record in records),
+        [header for _, header in columns],
+        ([record.get(attr) for attr, _ in columns] for record in records),
     )
     workbook.save(str(out_path))
     return count
