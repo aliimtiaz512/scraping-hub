@@ -51,6 +51,19 @@ REJECT_KEYWORDS: list[str] = [
     "Property Management",
 ]
 
+# Master-contract solicitations are skipped too: they are open only to existing
+# master-contract holders, so they are not biddable for us. EMMA has no
+# free-text summary field, so these are matched over the same text as the
+# blocklist above — the bid's own fields and its documents. Singular/plural is
+# handled automatically, so "Master Contract" also catches "Master Contracts"
+# and "Master Contractor" also catches "Master Contractors".
+MASTER_CONTRACT_PHRASES: list[str] = [
+    "Only Master Contracts",
+    "Master Contract",
+    "Master Contractor",
+    "Master Contract Holder",
+]
+
 # Bid fields whose text is screened alongside the documents.
 _TEXT_FIELDS = (
     "title",
@@ -79,7 +92,12 @@ def _compile(phrase: str) -> re.Pattern[str]:
     return re.compile(r"\b" + r"\s+".join(words) + r"\b", re.IGNORECASE)
 
 
-_PATTERNS: list[tuple[str, re.Pattern[str]]] = [(k, _compile(k)) for k in REJECT_KEYWORDS]
+# (phrase, matcher, why) — "why" distinguishes a blocklist hit from a
+# master-contract skip in the run log and the stored record.
+_PATTERNS: list[tuple[str, re.Pattern[str], str]] = (
+    [(k, _compile(k), "keyword") for k in REJECT_KEYWORDS]
+    + [(k, _compile(k), "master_contract") for k in MASTER_CONTRACT_PHRASES]
+)
 
 
 def bid_text(record: dict[str, Any]) -> str:
@@ -108,29 +126,31 @@ def document_text(folder: Path | str | None) -> str:
         return ""
 
 
-def find_match(text: str) -> str | None:
-    """The first blocked phrase present in `text`, or None."""
+def find_match(text: str) -> tuple[str, str] | None:
+    """The first blocked/skip phrase in `text` as (phrase, why), or None."""
     if not text:
         return None
-    for keyword, pattern in _PATTERNS:
+    for phrase, pattern, why in _PATTERNS:
         if pattern.search(text):
-            return keyword
+            return phrase, why
     return None
 
 
 def evaluate(record: dict[str, Any], doc_text: str = "") -> dict[str, Any]:
-    """Screen one bid against the blocklist.
+    """Screen one bid against the blocklist and the master-contract skip list.
 
-    Returns ``{"decision": "PASS"|"REJECT", "matched_keyword", "matched_in"}``.
-    The bid's own text is checked first so a hit there is reported as such;
-    otherwise the documents are checked.
+    Returns ``{"decision": "PASS"|"REJECT", "matched_keyword", "matched_in",
+    "matched_rule"}``. The bid's own text is checked first so a hit there is
+    reported as such; otherwise the documents are checked.
     """
-    hit = find_match(bid_text(record))
-    if hit:
-        return {"decision": "REJECT", "matched_keyword": hit, "matched_in": "bid"}
-
-    hit = find_match(doc_text)
-    if hit:
-        return {"decision": "REJECT", "matched_keyword": hit, "matched_in": "documents"}
-
-    return {"decision": "PASS", "matched_keyword": "", "matched_in": ""}
+    for source, text in (("bid", bid_text(record)), ("documents", doc_text)):
+        hit = find_match(text)
+        if hit:
+            phrase, why = hit
+            return {
+                "decision": "REJECT",
+                "matched_keyword": phrase,
+                "matched_in": source,
+                "matched_rule": why,
+            }
+    return {"decision": "PASS", "matched_keyword": "", "matched_in": "", "matched_rule": ""}

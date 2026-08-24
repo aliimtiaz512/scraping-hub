@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 # Portals whose runs download real document files → their download is a ZIP.
-DOC_PORTALS = {"myflorida", "myflorida_sweep", "bidnet", "northdakota", "emma", "philadelphia"}
+DOC_PORTALS = {"myflorida", "myflorida_sweep", "bidnet", "northdakota", "philadelphia"}
 
 # Portals whose run produces nothing but the spreadsheet, so wrapping it in a
 # ZIP adds a folder to unpack for no gain. SAM downloads each bid's attachments
@@ -44,7 +44,10 @@ DOC_PORTALS = {"myflorida", "myflorida_sweep", "bidnet", "northdakota", "emma", 
 # deleted them. It keeps them now (the classifier is gone from that pipeline),
 # so its runs deliver the same ZIP the niche flow does — a summary sheet beside
 # the documents it indexes.
-EXCEL_ONLY_PORTALS = {"sam", "septa", "ridemetro", "unison"}
+# EMMA is here for the same reason as SAM: it opens each solicitation's
+# documents only to screen their text against the keyword blocklist, then
+# deletes them — the spreadsheet of passing bids is the entire deliverable.
+EXCEL_ONLY_PORTALS = {"sam", "septa", "ridemetro", "unison", "emma"}
 
 # Portals whose export module can rebuild the run's Excel from the DB via
 # `generate_excel(run_id, path)`. MyFlorida is absent on purpose: its workbook

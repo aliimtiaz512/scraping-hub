@@ -85,6 +85,6 @@ EXCEL_COLUMNS: list[tuple[str, str]] = [
     ("time_remaining", "Time Remaining"),
     ("award_status", "Award Status"),
     ("procurement_officer", "Procurement Officer / Buyer"),
-    ("detail_url", "Detail URL"),
+    ("detail_url", "Bid Link"),
     ("matched_filters", "Matched Filters"),
 ]

@@ -594,6 +594,13 @@ class EmmaScraper(BaseScraper):
             if not url:
                 continue
 
+            code = rec.get("bpm_code") or rec.get("emma_id") or f"bid{index}"
+            # Cheap pre-screen on the grid fields the search already gave us. A
+            # bid rejected on its own text needs no detail page and no document
+            # download at all — on live data this skips roughly a third of them.
+            if self._screen_bid(rec, code, doc_text="", stage="pre") == "REJECT":
+                continue
+
             # Proactively recycle the browser so a very long crawl doesn't grow
             # the session until Chrome is killed.
             if since_recycle >= RECYCLE_EVERY:
@@ -607,8 +614,7 @@ class EmmaScraper(BaseScraper):
                     )
                     break
 
-            code = rec.get("bpm_code") or rec.get("emma_id") or f"bid{index}"
-            self.set_step(f"downloading_documents:{code}")
+            self.set_step(f"reading_documents:{code}")
             try:
                 names = self._download_solicitation_docs(url, rec)
             except StopRequested:
@@ -679,38 +685,54 @@ class EmmaScraper(BaseScraper):
         )
         logger.info("[run %s] downloaded %s documents across the kept solicitations", self.run_id, total)
 
-    def _screen_bid(self, rec: dict[str, Any], code: str) -> None:
-        """Apply the keyword blocklist to one bid and record the verdict.
+    def _screen_bid(
+        self,
+        rec: dict[str, Any],
+        code: str,
+        doc_text: str | None = None,
+        stage: str = "full",
+    ) -> str:
+        """Screen one bid and record the verdict; returns "PASS" or "REJECT".
 
-        A rejected bid has its downloaded documents deleted straight away, so a
-        long run never accumulates files for bids that will not be reported.
+        Runs twice per bid. The "pre" stage sees only the grid fields the search
+        already returned, so a bid rejected there is dropped before its detail
+        page is ever opened. The "full" stage runs after its documents have been
+        read, and passes their text in.
+
+        Documents are read, never kept: the spreadsheet is the whole deliverable,
+        so a bid's files are deleted as soon as they have been screened — pass or
+        reject.
         """
         try:
-            doc_text = evaluation.document_text(rec.get("_bid_folder"))
+            if doc_text is None:
+                doc_text = evaluation.document_text(rec.get("_bid_folder"))
             verdict = evaluation.evaluate(rec, doc_text)
         except Exception:  # noqa: BLE001 — screening must never fail a run
             logger.exception("[run %s] keyword screen failed for %s", self.run_id, code)
-            rec.update(decision="PASS", matched_keyword="", matched_in="")
-            return
+            verdict = {"decision": "PASS", "matched_keyword": "", "matched_in": "", "matched_rule": ""}
 
         rec.update(
             decision=verdict["decision"],
             matched_keyword=verdict["matched_keyword"],
             matched_in=verdict["matched_in"],
+            matched_rule=verdict["matched_rule"],
         )
-        if verdict["decision"] != "REJECT":
-            rec.pop("_bid_folder", None)  # internal — keep it out of the stored record
-            return
 
-        self._rejected_by_keyword += 1
-        logger.info(
-            "[run %s] %s REJECTED — %r found in %s",
-            self.run_id, code, verdict["matched_keyword"], verdict["matched_in"],
-        )
         folder = rec.pop("_bid_folder", None)
         if folder:
             shutil.rmtree(folder, ignore_errors=True)
-        rec["documents"] = []
+        if stage != "pre":
+            rec["documents_read"] = len(rec.get("documents") or [])
+            rec["documents"] = []
+
+        if verdict["decision"] == "REJECT":
+            self._rejected_by_keyword += 1
+            logger.info(
+                "[run %s] %s REJECTED (%s, %s) — %r found in %s",
+                self.run_id, code, stage, verdict["matched_rule"],
+                verdict["matched_keyword"], verdict["matched_in"],
+            )
+        return verdict["decision"]
 
     def _restart_browser(self) -> bool:
         """Tear down and relaunch the browser, then re-login. Returns True on
