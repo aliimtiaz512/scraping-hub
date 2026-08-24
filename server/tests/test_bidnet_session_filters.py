@@ -175,7 +175,7 @@ def driven(monkeypatch, tmp_path):
         "collect_links": record(
             "collect", lambda: LinkHarvest(links=["https://b/1"], rows_detected=1, rows_parsed=1)
         ),
-        "process_bid": lambda link, folder: {"reference_number": "1", "title": link, "documents": []},
+        "process_bid": lambda link: {"reference_number": "1", "title": link},
         "_write_master_excel": lambda records: None,
         "_save_run_row": lambda: None,
         "cleanup": lambda: None,
@@ -342,14 +342,19 @@ class FakePagedResults:
     """A results page that knows which page it is on and whether the way back
     works."""
 
-    def __init__(self, page, back_works=True):
+    def __init__(self, page, back_works=True, total=9):
         self.page = page
+        self.total = total
         self.back_works = back_works
         self.clicked = 0
 
     def execute_script(self, script, *args):
-        if "parseInt" in script and "bar" in script:
-            return self.page
+        # The pagination bar reports {current, total} — the shape `_page_state`
+        # reads. A bare number here is what the bar used to be asked for, and
+        # reading one page number without the total is what let a walk end early
+        # and call it the end of the list.
+        if "bar" in script and "arguments[1]" in script:
+            return {"current": self.page, "total": self.total}
         self.clicked += 1                       # the click on the First link
         if self.back_works:
             self.page = 1

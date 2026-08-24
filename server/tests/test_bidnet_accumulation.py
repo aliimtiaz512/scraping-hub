@@ -54,8 +54,8 @@ def driven(monkeypatch, tmp_path):
             links=list(links), rows_detected=len(links), rows_parsed=len(links)
         )
 
-    def process_bid(link, _folder):
-        return {"reference_number": link.rsplit("/", 1)[-1], "title": link, "documents": []}
+    def process_bid(link):
+        return {"reference_number": link.rsplit("/", 1)[-1], "title": link}
 
     for name, value in {
         "start_driver": lambda *a, **k: None,

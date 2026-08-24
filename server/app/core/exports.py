@@ -1,12 +1,18 @@
-"""Result packaging: every run ends as one complete ZIP, nothing on local disk.
+"""Result packaging: every run ends as one archive, nothing left on local disk.
 
-While a run is going, its documents land in a scratch workspace folder
+While a run is going, its output lands in a scratch workspace folder
 (settings.work_root — system temp). On completion `archive_run` packages the
 whole run into a single ZIP — the cumulative Excel report (built fresh from the
-DB) plus every downloaded bid document, keeping the original niche-wise folder
+DB) plus any downloaded bid documents, keeping the original niche-wise folder
 structure — stores it in settings.archive_root, and deletes the workspace.
 That one ZIP is what the Download button serves and what the completion email
 attaches/links, and nothing is ever written into data/documents.
+
+Some runs deliver a bare .xlsx instead, because a ZIP around a single
+spreadsheet is a folder to unpack for nothing. That is usually a property of the
+portal (EXCEL_ONLY_PORTALS) and sometimes of the individual run — BidNet ships
+ZIPs for its niche runs and one sheet for its member-agency sweep. `is_excel_only`
+is the single question both the packaging step and the download endpoint ask.
 """
 
 import importlib
@@ -24,6 +30,7 @@ logger = logging.getLogger(__name__)
 
 XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
+<<<<<<< HEAD
 # Portals whose runs download real document files → their download is a ZIP.
 DOC_PORTALS = {"myflorida", "myflorida_sweep", "bidnet", "northdakota", "philadelphia"}
 
@@ -49,6 +56,18 @@ DOC_PORTALS = {"myflorida", "myflorida_sweep", "bidnet", "northdakota", "philade
 # deletes them — the spreadsheet of passing bids is the entire deliverable.
 EXCEL_ONLY_PORTALS = {"sam", "septa", "ridemetro", "unison", "emma"}
 
+
+def is_excel_only(run: dict[str, Any]) -> bool:
+    """Does this run deliver a bare .xlsx rather than a ZIP?
+
+    Normally a property of the portal (EXCEL_ONLY_PORTALS above), but not
+    always: BidNet ships ZIPs for its niche runs and a single consolidated sheet
+    for the "all member agency bids" sweep, so that one run says so for itself
+    with `excel_only`. Both the packaging step and the download endpoint ask
+    here, so the two cannot disagree about what a run produced.
+    """
+    return bool(run.get("excel_only")) or run.get("scraper") in EXCEL_ONLY_PORTALS
+
 # Portals whose export module can rebuild the run's Excel from the DB via
 # `generate_excel(run_id, path)`. MyFlorida is absent on purpose: its workbook
 # is downloaded from the portal itself and merged on disk (run["excel_path"]).
@@ -66,6 +85,13 @@ _EXPORT_MODULES = {"myflorida_sweep": "app.scrapers.myflorida.sweep.export"}
 def excel_name(run: dict[str, Any]) -> str:
     """Download filename for a regenerated sheet, following each portal's
     existing naming convention (criteria in the name, no timestamps)."""
+    # A run that already knows what its file should be called. Set by flows
+    # whose filename is part of the deliverable rather than derived from search
+    # criteria — BidNet's member agency sweep, whose sheet is named for the day
+    # it swept. Checked first so no later branch can rename it.
+    if run.get("download_name"):
+        return str(run["download_name"])
+
     scraper = run.get("scraper") or "results"
     search = (run.get("search") or "").strip()
     # BidNet names its sheet after the niche, matching the copy inside the
@@ -199,13 +225,17 @@ def archive_run(run_id: str) -> str | None:
     failure the workspace is kept so the download endpoint can still package it
     on demand. Returns the archive path, or None if packaging failed.
 
-    BidNet is the exception, and has two of its own paths. A single-niche run
+    BidNet is the exception, and has three of its own paths. A single-niche run
     accumulates into a shared per-day session root, so it packages the whole root
     and keeps it (see `_archive_bidnet`). A run belonging to a **batch** carries
     `batch_root` instead, and packages only its own niche folder — the isolation
     a batch exists for reaches all the way to the archive, or the ZIP would hand
     back the very niches the run was kept apart from (see `batch.archive_niche`).
     The two fields are mutually exclusive, so which one is set selects the path.
+    The third is the "all member agency bids" sweep, which belongs to no session
+    and no batch and carries `excel_only` — it falls through to the bare-sheet
+    path below, because one consolidated spreadsheet is the whole deliverable
+    and a ZIP around a single file is a folder to unpack for nothing.
     """
     from app.core import run_manager
 
@@ -223,7 +253,7 @@ def archive_run(run_id: str) -> str | None:
     # The run_id suffix keeps same-second runs from colliding in the archive.
     stem = settings.archive_root / (sanitize_filename(label, max_length=140) + f" [{run_id}]")
 
-    if run.get("scraper") in EXCEL_ONLY_PORTALS:
+    if is_excel_only(run):
         return _archive_excel(run_id, run, folder, stem.with_suffix(".xlsx"))
 
     out = stem.with_suffix(".zip")

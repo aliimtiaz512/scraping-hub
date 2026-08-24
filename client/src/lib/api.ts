@@ -297,6 +297,14 @@ export interface RunStatus {
   niches_completed?: number;
   niches_failed?: number;
   niche_results?: BidnetNicheResult[];
+  /** BidNet member agency sweep (POST /bidnet/scrape/member-agencies): the run
+   *  searched no niche, so `Niche` in its sheet holds the issuing agency. How
+   *  many distinct agencies it covered, and how many bids each contributed. */
+  member_agency_sweep?: boolean;
+  agency_total?: number;
+  agency_breakdown?: Record<string, number>;
+  /** True when the run delivers a bare .xlsx rather than a ZIP. */
+  excel_only?: boolean;
   // BidNet-only: the sidebar filters this run was launched with, and a one-line
   // rendering of them for the status panel.
   filters?: BidnetFilters;
@@ -616,9 +624,10 @@ export function startBidnetScrape(
 }
 
 /**
- * Run several niches in one execution, sequentially. Each niche gets its own
- * browser session, its own output folder and its own ZIP — nothing is shared
- * between them — and one niche failing does not stop the rest.
+ * Mode A — "Run all niches". Several niches in one execution, sequentially.
+ * Each niche gets its own browser session and its own output folder, and one
+ * niche failing does not stop the rest. The execution downloads as a single
+ * `BidNet_Niche_Bids_<date>.zip` holding one spreadsheet per niche.
  *
  * Omit `niches` to run every niche in the catalog. Returns the batch's run id,
  * which polls like any other run; `niche_results` on it names each niche's own
@@ -631,12 +640,38 @@ export function startBidnetBatch(
 ): Promise<{
   batch_id: string;
   workspace: string;
+  bundle_name?: string;
   niches: { key: string; label: string; keyword_count: number; nigp_count: number; search_count: number }[];
   filters: BidnetFilters;
 }> {
   return request(`/bidnet/scrape/batch${livePreviewQuery(livePreview)}`, {
     method: "POST",
     body: JSON.stringify(niches?.length ? { niches, filters } : { filters }),
+  });
+}
+
+/**
+ * Mode B — "Run all member agency bids". One sweep, no search terms at all:
+ * the sidebar filters are applied, the portal's "Member Agency Bids" group is
+ * selected with the keyword box left empty, and every page of it is collected
+ * into one consolidated `bidnet_member_agencie_<date>.xlsx`.
+ *
+ * No niche is involved, so the niche dropdown is irrelevant to this call — the
+ * filters are the only input. Downloads as a bare spreadsheet, not a ZIP.
+ */
+export function startBidnetMemberAgencySweep(
+  filters: BidnetFilters = {},
+  livePreview = false,
+): Promise<{
+  run_id: string;
+  excel_name: string;
+  folder: string;
+  filters: BidnetFilters;
+  filters_summary: string;
+}> {
+  return request(`/bidnet/scrape/member-agencies${livePreviewQuery(livePreview)}`, {
+    method: "POST",
+    body: JSON.stringify({ filters }),
   });
 }
 

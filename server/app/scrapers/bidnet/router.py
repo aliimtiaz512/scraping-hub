@@ -17,6 +17,7 @@ from app.scrapers.bidnet import (
     batch,
     export,
     filters,
+    member_agencies,
     niches as niche_catalog,
     storage,
 )
@@ -217,11 +218,13 @@ def start_batch(
     request: BatchRequest,
     live_preview: bool = False,
 ) -> dict:
-    """Run several niches sequentially in one execution.
+    """Run all niches — one execution, one ZIP of per-niche spreadsheets.
 
     One queued job, not one per niche: the niches run **in order, one at a
-    time**, each in its own browser session and its own output folder, and each
-    packaged into its own ZIP (plus one ZIP for the whole execution). A niche
+    time**, each in its own browser session and its own output folder. The
+    execution's deliverable is a single `BidNet_Niche_Bids_<date>.zip` holding
+    one spreadsheet per niche (a per-niche ZIP is also written as each one
+    lands, so a finished niche is downloadable before the sweep ends). A niche
     that fails is recorded and the batch carries on to the next.
 
     Returns at once with the batch's run id — poll it on
@@ -283,6 +286,8 @@ def start_batch(
     return {
         "batch_id": run["run_id"],
         "workspace": root_name,
+        # What the finished execution downloads as.
+        "bundle_name": storage.niche_bundle_name(),
         "niches": [
             {
                 "key": job.key,
@@ -294,6 +299,79 @@ def start_batch(
             for job in niche_jobs
         ],
         "filters": sidebar.model_dump(exclude_none=True),
+    }
+
+
+class MemberAgencyRequest(BaseModel):
+    """The broad sweep: every member agency bid the sidebar allows.
+
+    No niche and no search terms — that is the whole difference from
+    `ScrapeRequest`. The sidebar filters are the only thing narrowing it, which
+    is why they are the only field.
+    """
+
+    filters: SidebarFilterRequest = Field(default_factory=SidebarFilterRequest)
+
+
+@router.post("/scrape/member-agencies")
+def start_member_agency_sweep(
+    request: MemberAgencyRequest,
+    live_preview: bool = False,
+) -> dict:
+    """Run all member agency bids — one sweep, one consolidated spreadsheet.
+
+    Logs in, applies the sidebar filters, selects the portal's "Member Agency
+    Bids" result group with the keyword box left **empty**, and walks every page
+    of it. The deliverable is a single `bidnet_member_agencie_<date>.xlsx`, not a
+    ZIP: see app/scrapers/bidnet/member_agencies.py.
+
+    Returns at once with the run id — poll it on `/bidnet/scrape/status/{run_id}`
+    like any other run.
+    """
+    problems = filters.validate_request(request.filters)
+    if problems:
+        raise HTTPException(status_code=400, detail="; ".join(problems))
+
+    sidebar = request.filters
+    folder = storage.member_agency_folder()
+    download_name = storage.member_agency_excel_name()
+    run = run_manager.create_run(
+        "bidnet",
+        folder,
+        {
+            "label": member_agencies.SWEEP_LABEL,
+            "niche_label": member_agencies.SWEEP_LABEL,
+            # Names the sheet the download and the completion email hand over.
+            # Set here rather than derived at download time so the name is fixed
+            # to the day the sweep *ran*, not to whenever someone fetches it.
+            "download_name": download_name,
+            # This run ships a bare .xlsx. BidNet's other two flows ship ZIPs, so
+            # the difference belongs on the run rather than on the portal —
+            # see exports.is_excel_only.
+            "excel_only": True,
+            "member_agency_sweep": True,
+            "search": member_agencies.SWEEP_LABEL,
+            # No terms are searched at all; the status panel shows what the run
+            # is doing rather than a keyword it does not have.
+            "keyword": "all member agency bids (no keyword)",
+            "keyword_count": 0,
+            "nigp_count": 0,
+            "search_count": 0,
+            "excel_exported": False,
+            "live_preview": live_preview,
+            "filters": sidebar.model_dump(exclude_none=True),
+            "filters_summary": sidebar.summary(),
+        },
+    )
+    jobs.submit(
+        run["run_id"], member_agencies.execute_member_agency_sweep, run["run_id"], sidebar
+    )
+    return {
+        "run_id": run["run_id"],
+        "excel_name": download_name,
+        "folder": run["folder"],
+        "filters": sidebar.model_dump(exclude_none=True),
+        "filters_summary": sidebar.summary(),
     }
 
 

@@ -53,13 +53,27 @@ class BidnetBid(Base):
     publication_date: Mapped[str | None] = mapped_column(String(64))
     question_acceptance_deadline: Mapped[str | None] = mapped_column(String(64))
     closing_date: Mapped[str | None] = mapped_column(String(64))
+    # Historical only. The scraper stopped opening the documents tab when
+    # attachment downloading was retired (scraper.DOWNLOAD_DOCUMENTS), so rows
+    # written from then on leave this NULL. The column is kept so rows scraped
+    # before that still read back, and is no longer exported.
     documents_count: Mapped[str | None] = mapped_column(String(32))
     # Every keyword of the run's niche that surfaced this solicitation, comma-
     # joined — the niche is searched one keyword at a time and the same bid is
     # often found by several.
     matched_keyword: Mapped[str | None] = mapped_column(Text)
-    # Which niche the run searched (a run is always exactly one).
-    niche: Mapped[str | None] = mapped_column(String(64), index=True)
+    # Which of our searches surfaced this bid. A niche run stores its niche
+    # label; the member-agency sweep (member_agencies.py) searches no niche at
+    # all and stores the issuing agency instead — same column, because it
+    # answers the same question ("under what heading did this reach us") and
+    # occupies the same place in the export.
+    #
+    # 255, not the 64 that sized it when a niche label was all it ever held:
+    # agencies name themselves at length ("City and County of Denver Climate
+    # Action, Sustainability & Resiliency" is 68 characters) and one overlong
+    # value aborts the whole run's insert, not just its own row. The scraper
+    # caps what it writes as well — see member_agencies.MAX_AGENCY_LENGTH.
+    niche: Mapped[str | None] = mapped_column(String(255), index=True)
     # How complete this record is — see scraper.RECORD_STATUSES. Every bid the
     # run opened is stored, including ones whose detail page could not be read,
     # so a scraped solicitation is never silently absent from the output.
@@ -75,11 +89,24 @@ class BidnetBid(Base):
     run: Mapped["BidnetRun"] = relationship(back_populates="bids")
 
 
-# Column order for the generated Excel, mapped to friendly headers (matches the
-# original on-demand export).
+# Column order for the generated Excel, mapped to friendly headers. **The same
+# list for both execution modes** — a per-niche sheet from "Run all niches" and
+# the consolidated sheet from "Run all member agency bids" have identical
+# columns in identical order, so the two can be read (and pasted) side by side.
+#
+# The bid leads and the run's own bookkeeping follows it. `Status` and `Niche`
+# used to sit in A and B, which put two columns a reader rarely sorts on in
+# front of the reference number they identify the row by — and pushed the title
+# and the dates far enough right to need scrolling. They are now the last two:
+# every column up to `Detail URL` is what the portal published about the
+# solicitation, then `Niche` (which of our searches surfaced it) and `Status`
+# (how completely we read it).
+#
+# Nothing reads these by position. Both export paths iterate this list to build
+# the header row and each data row, and `excel_style.write_table` sizes the
+# columns from what it is given — so this list is the whole of the column order,
+# and reordering it is the whole of the change.
 EXCEL_COLUMNS: list[tuple[str, str]] = [
-    ("status", "Status"),
-    ("niche", "Niche"),
     ("reference_number", "Reference Number"),
     ("solicitation_number", "Solicitation Number"),
     ("solicitation_type", "Solicitation Type"),
@@ -87,7 +114,11 @@ EXCEL_COLUMNS: list[tuple[str, str]] = [
     ("publication_date", "Publication Date"),
     ("question_acceptance_deadline", "Question Acceptance Deadline"),
     ("closing_date", "Closing Date"),
-    ("documents_count", "Documents Count"),
     ("matched_keyword", "Matched Keyword"),
     ("detail_url", "Detail URL"),
+    # The last two, in this order, in both modes: `Niche` names the search that
+    # surfaced the bid (the niche's label, or the issuing member agency in the
+    # sweep), and `Status` says how completely we read it.
+    ("niche", "Niche"),
+    ("status", "Status"),
 ]

@@ -5,20 +5,17 @@ together instead of shipping one ZIP per niche:
 
     BidNet_Exports_2026-08-04/          <- the session root, one per day
     ├── IT Services/                    <- one folder per niche actually run
-    │   ├── IT Services_Bids.xlsx
-    │   └── documents/
-    │       ├── REF-101 - Network Refresh/
-    │       │   └── bid_101_spec.pdf
-    │       └── REF-102 - Helpdesk/
-    │           └── bid_102_rfp.pdf
+    │   └── IT Services_Bids.xlsx
     └── Construction/
-        ├── Construction_Bids.xlsx
-        └── documents/
-            └── REF-201 - Bridge Deck/
-                └── bid_201_drawing.pdf
+        └── Construction_Bids.xlsx
 
 Only niches that actually ran get a folder — the tree is built as runs happen,
 never pre-created for the whole catalog.
+
+**A niche folder holds exactly one file.** It used to hold a `documents/`
+subtree as well, with a folder per bid inside it; attachment downloading is
+retired (`scraper.DOWNLOAD_DOCUMENTS`), so a run's entire output is its
+spreadsheet and nothing here creates a directory per solicitation any more.
 
 Two consequences shape the rest of this module:
 
@@ -63,9 +60,20 @@ _SESSION_RE = re.compile(rf"^{re.escape(SESSION_PREFIX)}_(\d{{4}}-\d{{2}}-\d{{2}
 BATCH_PREFIX = "BidNet_Batch"
 _BATCH_RE = re.compile(rf"^{re.escape(BATCH_PREFIX)}_(\d{{4}}-\d{{2}}-\d{{2}})_\d{{6}}$")
 
-# The per-niche documents folder, and the suffix on a niche's spreadsheet.
-DOCUMENTS_DIRNAME = "documents"
+# The suffix on a niche's spreadsheet.
 EXCEL_SUFFIX = "_Bids.xlsx"
+
+# "Run all niches" ships one ZIP holding every niche's spreadsheet, named for
+# the day it ran rather than for the workspace that produced it — it is a file a
+# human receives, and "which day's niche sweep is this" is the only question its
+# name has to answer. Two sweeps on one day write the same name: the later one
+# replaces the earlier, which is what re-running a sweep means.
+NICHE_BUNDLE_PREFIX = "BidNet_Niche_Bids"
+
+# "Run all member agency bids" ships a bare spreadsheet — no ZIP, because a
+# single consolidated sheet is the whole deliverable. The spelling is the
+# client's, verbatim.
+MEMBER_AGENCY_PREFIX = "bidnet_member_agencie"
 
 # How long a session root is kept in the workspace after its day. It has to
 # outlive the day itself (a run finishing at 23:59 must still bundle it), and a
@@ -148,19 +156,6 @@ def niche_folder(root: Path, niche_label: str, niche_key: str = "", slug: str | 
     return folder
 
 
-def documents_folder(niche_dir: Path, create: bool = False) -> Path:
-    """The niche's `documents/` folder.
-
-    Not created by default: the download path makes each bid's subfolder with
-    `parents=True`, so `documents/` appears exactly when something lands in it.
-    A run that finds no bids then leaves no empty folder behind to be tidied.
-    """
-    folder = niche_dir / DOCUMENTS_DIRNAME
-    if create:
-        folder.mkdir(parents=True, exist_ok=True)
-    return folder
-
-
 def excel_filename(niche_label: str, niche_key: str = "", slug: str | None = None) -> str:
     """`<Niche>_Bids.xlsx` — the niche's spreadsheet, named after the niche."""
     return niche_dirname(niche_label, niche_key, slug) + EXCEL_SUFFIX
@@ -173,6 +168,29 @@ def excel_path(niche_dir: Path, niche_label: str, niche_key: str = "", slug: str
 def zip_name(root: Path) -> str:
     """The archive name for a session root — the root's own name."""
     return sanitize_filename(root.name, max_length=150) + ".zip"
+
+
+def niche_bundle_name(when: date | None = None) -> str:
+    """`BidNet_Niche_Bids_<date>.zip` — the "Run all niches" deliverable."""
+    return f"{NICHE_BUNDLE_PREFIX}_{(when or date.today()).isoformat()}.zip"
+
+
+def member_agency_excel_name(when: date | None = None) -> str:
+    """`bidnet_member_agencie_<date>.xlsx` — the broad-sweep deliverable."""
+    return f"{MEMBER_AGENCY_PREFIX}_{(when or date.today()).isoformat()}.xlsx"
+
+
+def member_agency_folder(when: date | None = None) -> Path:
+    """The sweep's own workspace folder, created on first use.
+
+    Its own, not a niche folder inside the day's session root: a sweep is not a
+    niche, and dropping it into that tree would put its consolidated sheet into
+    the niche bundle's ZIP — where a sheet covering every agency reads as one
+    more niche.
+    """
+    folder = settings.work_root / member_agency_excel_name(when).removesuffix(".xlsx")
+    folder.mkdir(parents=True, exist_ok=True)
+    return folder
 
 
 def is_session_root(path: Path) -> bool:

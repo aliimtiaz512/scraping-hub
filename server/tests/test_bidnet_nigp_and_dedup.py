@@ -265,7 +265,7 @@ def driven(monkeypatch, tmp_path):
         links = RESULTS[current["term"]]
         return LinkHarvest(links=list(links), rows_detected=len(links), rows_parsed=len(links))
 
-    def process_bid(link, _folder):
+    def process_bid(link):
         bid_id = BidnetScraper._bid_key(link)
         return {
             "reference_number": f"RFP-{bid_id}",
@@ -385,7 +385,7 @@ def test_two_links_that_turn_out_to_be_one_bid_are_one_row(monkeypatch, driven, 
     instance, exported = driven
     monkeypatch.setattr(
         instance, "process_bid",
-        lambda link, _folder: {
+        lambda link: {
             "reference_number": "RFP 2026-014",       # every link, one bid
             "title": "Citywide signage",
             "detail_url": link,
@@ -407,8 +407,8 @@ def test_bids_whose_reference_could_not_be_read_stay_separate(monkeypatch, drive
     instance, exported = driven
     monkeypatch.setattr(
         instance, "process_bid",
-        lambda link, _folder: {
-            "reference_number": "", "title": "", "detail_url": link, "documents": [],
+        lambda link: {
+            "reference_number": "", "title": "", "detail_url": link,
         },
     )
     instance.run()

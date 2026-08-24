@@ -16,6 +16,7 @@ import {
   refreshBidnetFilterOptions,
   runDownloadUrl,
   startBidnetBatch,
+  startBidnetMemberAgencySweep,
   startBidnetScrape,
   type BidnetFilterCatalog,
   type BidnetFilters as Filters,
@@ -121,9 +122,9 @@ export default function BidnetPanel() {
     }
   };
 
-  /** Every niche in one execution, one after another. The same filters apply to
-   *  all of them, and each niche is packaged into its own ZIP — so this is the
-   *  one control that ignores the niche dropdown. */
+  /** Mode A — every niche in one execution, one after another. The same filters
+   *  apply to all of them, and the execution downloads as one ZIP of per-niche
+   *  spreadsheets — so this is a control that ignores the niche dropdown. */
   const handleStartAll = async () => {
     setError(null);
     setStarting(true);
@@ -133,6 +134,23 @@ export default function BidnetPanel() {
       const { batch_id } = await startBidnetBatch(undefined, filters, showBrowser);
       setRun(await getRunStatus("bidnet", batch_id));
       poll(pollRef, batch_id, setRun);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setStarting(false);
+    }
+  };
+
+  /** Mode B — every member agency bid the sidebar allows, in one sheet. No
+   *  niche, no keywords: the filters are the entire input, which is why this
+   *  button is enabled by them alone. */
+  const handleStartMemberAgencies = async () => {
+    setError(null);
+    setStarting(true);
+    try {
+      const { run_id } = await startBidnetMemberAgencySweep(filters, showBrowser);
+      setRun(await getRunStatus("bidnet", run_id));
+      poll(pollRef, run_id, setRun);
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -160,12 +178,16 @@ export default function BidnetPanel() {
   const niche = niches.find((n) => n.key === selectedNiche) ?? null;
   // What stops *any* run, batch included — the niche dropdown is not one of
   // them, since running everything needs no selection.
+  const noGroupSelected =
+    noPurchasingGroup && "Select at least one purchasing group — BidNet returns nothing without one.";
   const blockedForAll =
     (niches.length === 0 &&
       "No niches configured — add them to server/app/scrapers/bidnet/niches.py and restart the API.") ||
-    (noPurchasingGroup &&
-      "Select at least one purchasing group — BidNet returns nothing without one.") ||
+    noGroupSelected ||
     null;
+  // The member agency sweep searches no niche and no keywords, so an empty
+  // niche catalog does not stop it — only an empty purchasing group does.
+  const blockedForSweep = noGroupSelected || null;
   const blocked = blockedForAll ?? (!selectedNiche ? "Select a niche to search." : null);
   const totalSearches = niches.reduce((sum, n) => sum + (n.search_count ?? n.keyword_count), 0);
 
@@ -198,8 +220,9 @@ export default function BidnetPanel() {
           blockedForAll ??
           (selectedNiche
             ? launchSummary(niche, filters, catalog)
-            : `Select a niche to search, or run all ${niches.length} niches in one go — ` +
-              `${totalSearches} searches, one ZIP per niche.`)
+            : `Select a niche to search, run all ${niches.length} niches in one go ` +
+              `(${totalSearches} searches, one ZIP of per-niche sheets), or sweep ` +
+              `every member agency bid into a single sheet.`)
         }
       >
         <div className="flex items-center gap-2">
@@ -213,10 +236,26 @@ export default function BidnetPanel() {
             title={
               blockedForAll ??
               `Run all ${niches.length} niches one after another — ${totalSearches} searches, ` +
-                "each niche in its own browser session and its own ZIP."
+                "each in its own browser session. Downloads as one ZIP holding a " +
+                "spreadsheet per niche."
             }
           >
             Run all niches
+          </Button>
+          <Button
+            variant="secondary"
+            size="lg"
+            onClick={() => void handleStartMemberAgencies()}
+            disabled={starting || isRunning || blockedForSweep !== null}
+            title={
+              blockedForSweep ??
+              "Search nothing: apply the sidebar filters, open BidNet's Member Agency " +
+                "Bids group and collect every page of it into one spreadsheet. Ignores " +
+                "niches and keywords entirely — the filters above are the only thing " +
+                "narrowing it, so set the date panels before running."
+            }
+          >
+            Run all member agencies bids
           </Button>
           <label
             className="flex items-center gap-2 whitespace-nowrap text-xs text-ink-600"
@@ -247,6 +286,7 @@ export default function BidnetPanel() {
       </LaunchBar>
 
       {run?.is_batch && <BatchProgress run={run} />}
+      {run?.member_agency_sweep && <AgencyBreakdown run={run} />}
       {run && <RunStatusPanel run={run} />}
       {run && !run.is_batch && <BidnetResults bids={run.bids} />}
     </div>
@@ -285,6 +325,39 @@ function BatchProgress({ run }: { run: RunStatus }) {
             </li>
           );
         })}
+      </ul>
+    </section>
+  );
+}
+
+/** What the member agency sweep is covering, by issuing agency.
+ *
+ *  The sweep's whole point is that it spans agencies rather than niches, and a
+ *  run that reports only a bid count cannot be checked against the portal by
+ *  anyone. Rendered only once the run has actually reported a breakdown — there
+ *  is nothing to show while it is still walking the results pages. */
+function AgencyBreakdown({ run }: { run: RunStatus }) {
+  const breakdown = run.agency_breakdown ?? {};
+  const rows = Object.entries(breakdown).sort((a, b) => b[1] - a[1]);
+  if (rows.length === 0) return null;
+
+  return (
+    <section className="rounded-xl border border-ink-200/70 bg-white shadow-sm shadow-ink-900/[0.03]">
+      <header className="flex items-baseline justify-between gap-4 border-b border-ink-100 px-5 py-4">
+        <h3 className="font-display text-base text-ink-900">
+          Member agencies — {rows.length}
+        </h3>
+        <p className="text-xs text-ink-500">
+          One consolidated sheet; the Niche column names the issuing agency.
+        </p>
+      </header>
+      <ul className="max-h-72 divide-y divide-ink-100 overflow-y-auto">
+        {rows.map(([agency, count]) => (
+          <li key={agency} className="flex items-center justify-between gap-4 px-5 py-2.5 text-sm">
+            <span className="min-w-0 truncate text-ink-900">{agency}</span>
+            <span className="shrink-0 text-xs text-ink-500">{count} bids</span>
+          </li>
+        ))}
       </ul>
     </section>
   );

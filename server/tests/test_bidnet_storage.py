@@ -5,10 +5,10 @@ it, and the packaging is exercised against a real temp workspace. What these
 pin down is the shape of the deliverable —
 
     BidNet_Exports_<date>/<Niche>/<Niche>_Bids.xlsx
-    BidNet_Exports_<date>/<Niche>/documents/<bid>/<file>
 
-— and the rule that matters most: a run must bundle *every* niche done that
-session, not just its own, and must never destroy a sibling niche's files.
+— one file per niche, since attachment downloading is retired — and the rule
+that matters most: a run must bundle *every* niche done that session, not just
+its own, and must never destroy a sibling niche's files.
 
     server/.venv/bin/python server/tests/test_bidnet_storage.py
 """
@@ -50,15 +50,11 @@ class _Workspace:
         return False
 
 
-def _make_niche(root: Path, label: str, bids: dict[str, list[str]]) -> Path:
-    """Build a niche folder the way a run does: a sheet plus per-bid documents."""
+def _make_niche(root: Path, label: str) -> Path:
+    """Build a niche folder the way a run does — which is now one sheet and
+    nothing else: no documents are downloaded, so no per-bid folder exists."""
     folder = storage.niche_folder(root, label)
     storage.excel_path(folder, label).write_bytes(b"xlsx-" + label.encode())
-    for bid, files in bids.items():
-        bid_dir = storage.documents_folder(folder) / bid
-        bid_dir.mkdir(parents=True, exist_ok=True)
-        for name in files:
-            (bid_dir / name).write_bytes(b"%PDF-1.4 " + name.encode())
     return folder
 
 
@@ -78,20 +74,19 @@ def test_only_executed_niches_get_a_folder():
     """5 niches exist in the catalog; running 2 must leave exactly 2 folders."""
     with _Workspace():
         root = storage.session_root()
-        _make_niche(root, "IT Services", {"REF-101 - Network": ["spec.pdf"]})
-        _make_niche(root, "Construction", {"REF-201 - Bridge": ["drawing.pdf"]})
+        _make_niche(root, "IT Services")
+        _make_niche(root, "Construction")
         names = [p.name for p in storage.niche_dirs(root)]
         assert names == ["Construction", "IT Services"], names
 
 
-def test_niche_folder_holds_a_sheet_and_a_documents_dir():
+def test_niche_folder_holds_its_sheet_and_nothing_else():
+    """One niche, one file. The `documents/` subtree the scraper used to fill
+    is gone with the downloads that filled it."""
     with _Workspace():
         root = storage.session_root()
-        folder = _make_niche(root, "IT Services", {"REF-101 - Network": ["spec.pdf", "rfp.pdf"]})
-        assert (folder / "IT Services_Bids.xlsx").is_file()
-        docs = folder / "documents"
-        assert docs.is_dir()
-        assert sorted(p.name for p in (docs / "REF-101 - Network").iterdir()) == ["rfp.pdf", "spec.pdf"]
+        folder = _make_niche(root, "IT Services")
+        assert [p.name for p in folder.iterdir()] == ["IT Services_Bids.xlsx"]
 
 
 def test_rerunning_a_niche_reuses_its_folder():
@@ -104,11 +99,11 @@ def test_rerunning_a_niche_reuses_its_folder():
         assert len(storage.niche_dirs(root)) == 1
 
 
-def test_documents_dir_is_not_created_until_something_lands_in_it():
+def test_a_new_niche_folder_starts_empty():
     with _Workspace():
         root = storage.session_root()
         folder = storage.niche_folder(root, "Empty Niche")
-        assert not storage.documents_folder(folder).exists()
+        assert list(folder.iterdir()) == []
 
 
 # -- packaging --------------------------------------------------------------
@@ -130,8 +125,8 @@ def test_zip_bundles_every_niche_in_the_session():
     """The whole point: a run's download carries the other niches too."""
     with _Workspace():
         root = storage.session_root()
-        _make_niche(root, "IT Services", {"REF-101 - Network": ["spec.pdf"]})
-        _make_niche(root, "Construction", {"REF-201 - Bridge": ["drawing.pdf"]})
+        _make_niche(root, "IT Services")
+        _make_niche(root, "Construction")
 
         out = Path(root.parent) / "bundle.zip"
         name = exports.build_zip(_run(root, "IT Services", "r1"), out)
@@ -141,30 +136,27 @@ def test_zip_bundles_every_niche_in_the_session():
             names = sorted(zf.namelist())
         assert f"{root.name}/IT Services/IT Services_Bids.xlsx" in names, names
         assert f"{root.name}/Construction/Construction_Bids.xlsx" in names, names
-        assert f"{root.name}/IT Services/documents/REF-101 - Network/spec.pdf" in names, names
-        assert f"{root.name}/Construction/documents/REF-201 - Bridge/drawing.pdf" in names, names
 
 
 def test_a_later_niche_does_not_overwrite_an_earlier_one():
-    """Two runs, two niches, one root — the first niche's files must survive."""
+    """Two runs, two niches, one root — the first niche's sheet must survive."""
     with _Workspace():
         root = storage.session_root()
-        _make_niche(root, "IT Services", {"REF-101 - Network": ["spec.pdf"]})
-        first = (root / "IT Services" / "documents" / "REF-101 - Network" / "spec.pdf").read_bytes()
+        _make_niche(root, "IT Services")
+        first = (root / "IT Services" / "IT Services_Bids.xlsx").read_bytes()
 
         # a second run, a different niche
-        _make_niche(root, "Construction", {"REF-201 - Bridge": ["drawing.pdf"]})
+        _make_niche(root, "Construction")
 
-        still_there = root / "IT Services" / "documents" / "REF-101 - Network" / "spec.pdf"
-        assert still_there.is_file(), "the earlier niche's documents were destroyed"
+        still_there = root / "IT Services" / "IT Services_Bids.xlsx"
+        assert still_there.is_file(), "the earlier niche's sheet was destroyed"
         assert still_there.read_bytes() == first
-        assert (root / "IT Services" / "IT Services_Bids.xlsx").is_file()
 
 
 def test_zip_excludes_internal_and_diagnostic_files():
     with _Workspace():
         root = storage.session_root()
-        folder = _make_niche(root, "IT Services", {"REF-101 - Network": ["spec.pdf"]})
+        folder = _make_niche(root, "IT Services")
         (folder / "_downloads").mkdir()
         (folder / "_downloads" / "partial.crdownload").write_bytes(b"x")
         (folder / "error_login_page.png").write_bytes(b"png")
@@ -175,13 +167,13 @@ def test_zip_excludes_internal_and_diagnostic_files():
             names = zf.namelist()
         assert not any("_downloads" in n for n in names), names
         assert not any(n.endswith("error_login_page.png") for n in names), names
-        assert any(n.endswith("spec.pdf") for n in names), names
+        assert any(n.endswith("IT Services_Bids.xlsx") for n in names), names
 
 
 def test_zip_of_a_session_with_one_niche_still_nests_under_the_root():
     with _Workspace():
         root = storage.session_root()
-        _make_niche(root, "IT Services", {"REF-101 - Network": ["spec.pdf"]})
+        _make_niche(root, "IT Services")
         out = Path(root.parent) / "bundle.zip"
         exports.build_zip(_run(root, "IT Services", "r1"), out)
         with zipfile.ZipFile(out) as zf:
@@ -221,9 +213,9 @@ def test_archive_run_bundles_all_niches_and_keeps_the_workspace():
     with _Workspace() as ws:
         root = storage.session_root()
         run_a = _register(root, "IT Services")
-        _make_niche(root, "IT Services", {"REF-101 - Network": ["spec.pdf"]})
+        _make_niche(root, "IT Services")
         run_b = _register(root, "Construction")
-        _make_niche(root, "Construction", {"REF-201 - Bridge": ["drawing.pdf"]})
+        _make_niche(root, "Construction")
 
         archive = exports.archive_run(run_b["run_id"])
         assert archive is not None, "packaging failed"
@@ -232,12 +224,12 @@ def test_archive_run_bundles_all_niches_and_keeps_the_workspace():
 
         # the session root is still on disk, with both niches intact
         assert root.is_dir(), "the session root was deleted — earlier niches lost"
-        assert (root / "IT Services" / "documents" / "REF-101 - Network" / "spec.pdf").is_file()
+        assert (root / "IT Services" / "IT Services_Bids.xlsx").is_file()
 
         with zipfile.ZipFile(archive) as zf:
             names = zf.namelist()
-        assert any(n.endswith("IT Services/documents/REF-101 - Network/spec.pdf") for n in names), names
-        assert any(n.endswith("Construction/documents/REF-201 - Bridge/drawing.pdf") for n in names), names
+        assert any(n.endswith("IT Services/IT Services_Bids.xlsx") for n in names), names
+        assert any(n.endswith("Construction/Construction_Bids.xlsx") for n in names), names
 
         # both runs of the session point at the same bundle, so downloading
         # from the earlier niche also gets the later one
@@ -250,13 +242,13 @@ def test_archive_run_is_rebuilt_as_each_niche_finishes():
     with _Workspace():
         root = storage.session_root()
         run_a = _register(root, "IT Services")
-        _make_niche(root, "IT Services", {"REF-101 - Network": ["spec.pdf"]})
+        _make_niche(root, "IT Services")
         first = exports.archive_run(run_a["run_id"])
         with zipfile.ZipFile(first) as zf:
             assert not any("Construction" in n for n in zf.namelist())
 
         run_b = _register(root, "Construction")
-        _make_niche(root, "Construction", {"REF-201 - Bridge": ["drawing.pdf"]})
+        _make_niche(root, "Construction")
         second = exports.archive_run(run_b["run_id"])
 
         assert second == first, "the session's ZIP should be one archive, refreshed"
@@ -277,7 +269,7 @@ def test_an_empty_db_does_not_wipe_the_scrapers_sheet():
     with _Workspace():
         root = storage.session_root()
         run = _register(root, "IT Services")
-        _make_niche(root, "IT Services", {"REF-101 - Network": ["spec.pdf"]})
+        _make_niche(root, "IT Services")
         sheet = root / "IT Services" / "IT Services_Bids.xlsx"
         original = sheet.read_bytes()
 
@@ -303,7 +295,7 @@ def test_a_populated_db_refreshes_the_sheet():
     with _Workspace():
         root = storage.session_root()
         run = _register(root, "IT Services")
-        _make_niche(root, "IT Services", {"REF-101 - Network": ["spec.pdf"]})
+        _make_niche(root, "IT Services")
         sheet = root / "IT Services" / "IT Services_Bids.xlsx"
 
         def populated(run_ids, out_path):

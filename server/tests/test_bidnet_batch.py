@@ -248,17 +248,21 @@ def test_each_niche_is_zipped_on_its_own(batch_env):
     assert not any("Construction" in n for n in names)
 
 
-def test_the_execution_bundle_holds_every_niche_as_a_subfolder(batch_env):
+def test_the_execution_bundle_is_a_flat_zip_of_niche_spreadsheets(batch_env):
+    """What "Run all niches" hands back: one dated ZIP, one sheet per niche, at
+    its root. No folder per niche — the sheets are what the client opens."""
+    from datetime import date
+
     _, _, tmp_path = batch_env
     jobs = config_loader(config=CONFIG)
     batch_module.execute_batch(_batch_run(jobs), jobs, SidebarFilterRequest())
 
     bundle = [p for p in (tmp_path / "archive").glob("*.zip") if "_IT" not in p.name and "_Con" not in p.name]
     assert len(bundle) == 1
+    assert bundle[0].name == f"BidNet_Niche_Bids_{date.today().isoformat()}.zip", bundle[0].name
     with zipfile.ZipFile(bundle[0]) as zf:
-        names = zf.namelist()
-    assert any("/IT_Services/" in n for n in names)
-    assert any("/Construction/" in n for n in names)
+        names = sorted(zf.namelist())
+    assert names == ["Construction_Bids.xlsx", "IT_Services_Bids.xlsx"], names
 
 
 def test_the_workspace_is_removed_when_the_batch_finishes(batch_env, caplog):

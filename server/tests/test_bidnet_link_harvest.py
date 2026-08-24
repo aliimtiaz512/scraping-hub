@@ -164,9 +164,8 @@ def test_rows_dropped_covers_both_kinds(scraper):
     assert harvest.rows_dropped == 3
 
 
-def test_the_pagination_sentinel_uses_the_same_fallbacks(scraper):
-    """The sentinel was pinned to the primary selector too, so a markup change
-    stopped the walk at page 1 on top of losing the rows."""
+def test_reading_the_first_row_uses_the_same_fallbacks(scraper):
+    """It must not disagree with the harvest about what a row's link is."""
     scraper.driver = FakeDriver(
         [FakeRow({FALLBACK: "https://bidnetdirect.com/private/supplier/interception/view-notice/1"})]
     )
@@ -175,7 +174,7 @@ def test_the_pagination_sentinel_uses_the_same_fallbacks(scraper):
     )
 
 
-def test_the_sentinel_is_none_when_there_are_no_rows(scraper):
+def test_the_first_row_is_none_when_there_are_no_rows(scraper):
     scraper.driver = FakeDriver([])
     assert scraper._first_row_link() is None
 

@@ -14,18 +14,6 @@ results.
   commodity-code category, filters by ad status/type, downloads each bid's
   documents, and downloads the portal's own Excel export which it ingests into
   the DB and merges into one workbook. See `plan.md`.
-- **BidNet Direct** — pick one **niche** in the console; the run searches every
-  keyword that niche owns **separately, one at a time** in a single session
-  (never combined into a boolean query, which loses bids). Keywords live in the
-  database (`bidnet_niches` / `bidnet_niche_keywords`, seeded from
-  `app/scrapers/bidnet/niches.py`) and are never sent to the browser. Filters to
-  "Member Agency Bids",
-  applies the **sidebar filters** chosen in the frontend (status, NIGP category,
-  organization, location, purchasing group, published/closing date, solicitation
-  type, general requirements — see `docs/bidnet-sidebar-filters.md`), paginates
-  the results, then opens each distinct solicitation once to scrape its fields
-  and download every document. Everything lands in **one project folder** with a
-  single master spreadsheet. See `plan_bidnet-direct.md`.
 - **North Dakota** (ND Buys / Ivalua) — supplier login via ND OAuth (Azure AD
   B2C). The sign-in carries a reCAPTCHA, so **manual-login mode** opens a visible
   Chrome window and waits for a human to solve it; a persistent profile lets
@@ -33,6 +21,32 @@ results.
 
 **List-only portals** (metadata → DB → generated Excel, no document downloads):
 
+- **BidNet Direct** — **metadata only**: attachments are never downloaded and no
+  per-bid folder is created, so a solicitation costs one page load. Every run
+  applies the **sidebar filters** chosen in the frontend (status, NIGP category,
+  organization, location, purchasing group, published/closing date, solicitation
+  type, general requirements — see `docs/bidnet-sidebar-filters.md`), scrapes the
+  "Member Agency Bids" group, paginates the results and opens each distinct
+  solicitation once. Three ways to launch one, differing only in what goes into
+  the search box:
+  - **One niche** — searches every keyword and NIGP code that niche owns
+    **separately, one at a time** in a single session (never combined into a
+    boolean query, which loses bids). Terms live in the database
+    (`bidnet_niches` / `bidnet_niche_keywords`, seeded from
+    `app/scrapers/bidnet/niches.py`) and are never sent to the browser. Writes
+    `<Niche>_Bids.xlsx` into the day's shared session root, whose whole ZIP is
+    the download.
+  - **Run all niches** — every niche in the catalog, one after another, each in
+    its own browser session and its own folder. Delivers one
+    `BidNet_Niche_Bids_<date>.zip` holding one spreadsheet per niche.
+  - **Run all member agencies bids** — no niche and no keywords at all: the
+    sidebar filters alone, applied to the whole Member Agency Bids list.
+    Delivers a single consolidated `bidnet_member_agencie_<date>.xlsx` with no
+    ZIP around it; its `Niche` column names the issuing agency. See
+    `app/scrapers/bidnet/member_agencies.py`.
+
+  Both sheets carry the same columns in the same order: the solicitation's own
+  fields, then `Niche`, then `Status`. See `plan_bidnet-direct.md`.
 - **RideMetro** (Bonfire / Euna Supplier Network) — logs in to the RideMetro
   portal, hops to **My Euna Supplier Network → My Network**, and sweeps every
   agency in the account's network whose registration Status is **Complete**
@@ -176,7 +190,7 @@ Cross-cutting and portal-specific extras:
 
 - **Downloads:** `GET /runs/{run_id}/download` — the run's archive ZIP
 - **MyFlorida:** `GET /myflorida/categories`
-- **BidNet:** `GET /bidnet/niches` (niche dropdown), `GET /bidnet/filters` (sidebar filter catalog), `POST /bidnet/filters/refresh` (re-harvest the full option lists), `GET /bidnet/export` (Excel of all stored bids)
+- **BidNet:** `GET /bidnet/niches` (niche dropdown), `GET /bidnet/filters` (sidebar filter catalog), `POST /bidnet/filters/refresh` (re-harvest the full option lists), `POST /bidnet/scrape` (one niche), `POST /bidnet/scrape/batch` (run all niches → one ZIP of per-niche sheets), `POST /bidnet/scrape/member-agencies` (run all member agency bids → one consolidated sheet), `GET /bidnet/export` (Excel of all stored bids)
 - **SAM:** `POST /sam/evaluate` (score a bid), `POST /sam/scrape/stop/{run_id}`, `GET /sam/screenshot/{run_id}`
 - **NAICS:** `GET /naics` (list), `GET /naics/search`
 - **Eval-config:** `GET /eval-config`, and `POST` / `DELETE` on `/eval-config/kill-words`, `/eval-config/excluded-services`, `/eval-config/allowed-services`

@@ -34,7 +34,7 @@ Flow, per run:
         confirm_filters_active              <- read-only; re-applies only on drift
         paginate, collecting solicitation links
     for each distinct solicitation:         <- deduplicated across every term
-        open it, scrape its fields, download every document
+        open it, scrape its fields                 <- metadata only, no downloads
         seen already?          -> skip      <- second dedup, on the reference no.
     write one master Excel, persist to the DB, package the run
 
@@ -53,9 +53,21 @@ page 1 before they are harvested (`_ensure_first_result_page`). Anything that
 does navigate — a re-login, a keyword that failed mid-page — marks the filters
 lost, and the next keyword re-establishes them before it searches.
 
-Everything lands in **one project folder** — per-bid document subfolders and the
-master spreadsheet at its root — because a run is a single niche and there is
-nothing to split apart.
+A run is **metadata only**. Attachment harvesting — the documents tab, the
+per-bid `<Reference> - <Title>/` folders and the HTTP downloads that filled
+them — is gone (see `DOWNLOAD_DOCUMENTS` below), so a solicitation costs exactly
+one page load and a niche folder holds exactly one file: its spreadsheet.
+
+Three ways to execute it, differing only in what goes into the search box and
+what comes out the other end:
+
+* **One niche** (this module) — the flow above, writing `<Niche>_Bids.xlsx`
+  into the day's shared session root.
+* **Run all niches** (`batch.py`) — one such run per niche in the catalog,
+  bundled as a single ZIP of per-niche spreadsheets.
+* **Run all member agency bids** (`member_agencies.py`) — no search terms at
+  all: the sidebar filters alone, the Member Agency Bids group, and every page
+  of it into one consolidated sheet.
 """
 
 import logging
@@ -67,7 +79,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-import requests
 from selenium.common.exceptions import TimeoutException, WebDriverException
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
@@ -79,7 +90,7 @@ from app.core.base_scraper import BaseScraper, StopRequested
 from app.core.closing_filter import MIN_DAYS_UNTIL_CLOSE, days_until_close
 from app.core.filenames import sanitize_filename
 from app.db import SessionLocal
-from app.scrapers.bidnet import documents, export, niches, selectors, storage
+from app.scrapers.bidnet import export, niches, selectors, storage
 from app.scrapers.bidnet.filters import SidebarFilterRequest
 from app.scrapers.bidnet.niches import KIND_NIGP, SearchTerm
 from app.scrapers.bidnet.sidebar import SidebarDriver
@@ -97,12 +108,26 @@ BASE_URL = "https://www.bidnetdirect.com"
 # than waiting a little longer for it.
 ELEMENT_TIMEOUT = 60       # search box, results table, detail-page fields
 PAGINATION_TIMEOUT = 30    # next page of results — absent rows can be a real end-of-list
-DETAIL_TIMEOUT = 45        # solicitation detail page and its documents tab
+DETAIL_TIMEOUT = 45        # solicitation detail page
 SEARCH_SETTLE_SECONDS = 5  # after switching result group / paging results
-# Attachment detection and download live in `documents.py`, which waits on the
-# documents tab's lazily-rendered links rather than sleeping a fixed interval,
-# and fetches the files over HTTP instead of clicking them one at a time.
 MAX_PAGES = 100  # pagination safety guard, same as the original
+
+# How many times a single page transition is retried before the walk gives up.
+# A next-page click that does not land is nearly always the grid still settling,
+# and one transient miss used to cost every page after it.
+PAGE_ADVANCE_ATTEMPTS = 3
+
+# Rows per results page, set through the grid's own "Results per page" dropdown
+# before anything is harvested.
+#
+# The portal defaults to 25, and 25 is what made the member-agency sweep a
+# 74-page walk that lost two thirds of its bids somewhere in the middle. Every
+# page transition is a postback that can be intercepted, go stale, or simply not
+# render, so the cheapest way to collect a large list reliably is to ask for
+# fewer transitions: 100 turns 1,850 bids from 74 pages into 19.
+#
+# 100 is the largest the dropdown offers (25 / 50 / 100).
+PAGE_SIZE = 100
 
 # The shared close-date rule (app/core/closing_filter): keep only solicitations
 # still at least MIN_DAYS_UNTIL_CLOSE days from closing. **Off for the testing
@@ -145,6 +170,32 @@ DEBUG_PAUSE_SECONDS = 1.5
 # are untouched; flipping this back to True restores them.
 APPLY_DATE_FILTERS = True
 
+# ---------------------------------------------------------------------------
+# Attachment harvesting — retired.
+# ---------------------------------------------------------------------------
+#
+# A run reads solicitation **metadata only**. It no longer opens the documents
+# tab, no longer detects attachment links, no longer creates the per-bid
+# `<Reference> - <Title>/` folder each bid's files used to land in, and no
+# longer fetches a single `.pdf` / `.docx` / `.xlsx` / addendum.
+#
+# Why it went: attachments were the entire cost of a run and none of its value.
+# A bid cost one detail page load plus a documents-tab render plus one HTTP
+# fetch per file, and a niche of a few hundred bids could pull gigabytes into
+# the workspace on its way to a ZIP nobody opened the documents in. The
+# deliverable is, and now only is, the spreadsheet — every column of which comes
+# off the detail page itself. Dropping the downloads takes a solicitation down
+# to a single page load and a niche folder down to a single file.
+#
+# `Documents Count` went with them, out of the export as well as out of the
+# scrape: it was read off the documents tab's badge, so keeping the column would
+# have meant keeping the render it exists to count.
+#
+# This is a constant rather than a setting because it is not a choice a run
+# makes — nothing in the pipeline (packaging, email, the console) expects
+# documents any more.
+DOWNLOAD_DOCUMENTS = False
+
 # The result-group tab the scraper scrapes ("Member Agency Bids"). Its header
 # carries the authoritative hit count for the current search:
 #
@@ -154,7 +205,31 @@ APPLY_DATE_FILTERS = True
 # which is what lets a zero-result keyword be skipped without waiting on rows
 # that are never coming. See `result_count`.
 MEMBER_AGENCY_GROUP_ID = "2085061601"
+# How that tab is found, most specific first. The id above is the portal's own
+# handle for the group and is what has always been used; the rest are text
+# fallbacks, because a numeric group id is exactly the kind of value a portal
+# renumbers without notice — and the "Run all member agency bids" sweep has
+# nothing else to fall back on. A niche run that loses this tab still has its
+# keyword results; the sweep IS this tab, so it fails loudly rather than
+# scraping whatever group happened to be selected.
+MEMBER_AGENCY_GROUP_LABEL = "Member Agency Bids"
 RESULTS_ROW = "table tbody tr.mets-table-row"
+
+# The issuing agency, as the detail page labels it. Tried in order and the first
+# non-empty answer wins — BidNet's member agencies do not all use the same
+# label, and the match is on the label *containing* the text, so the specific
+# ones have to be asked first or "Agency" would swallow them.
+#
+# Only the member-agency sweep reads these (see `_extract_agency`): a niche run
+# already knows what heading its bids arrived under, and re-deriving something
+# it is not going to export would be pure cost.
+AGENCY_FIELD_LABELS = (
+    "Issuing Agency",
+    "Agency Name",
+    "Purchasing Organization",
+    "Organization",
+    "Agency",
+)
 
 # One results row. Counted independently of the links read out of it: the badge
 # above is the portal's *pre-filter* number, so "rows the portal rendered" and
@@ -192,6 +267,22 @@ class LinkHarvest:
 def _shown(value: int | None) -> str:
     """A count for a log line, distinguishing zero from unreadable."""
     return "unknown" if value is None else str(value)
+
+
+def _as_int(value: Any) -> int | None:
+    """A DOM-read number as an int, or None when it is not one.
+
+    Everything the pagination bar and the page-size dropdown hand back arrives
+    as a string attribute or as JS's single number type, and a walk that reads
+    "not a number" as 0 or 1 stops early with a plausible-looking count. So the
+    conversion is explicit and its failure is None.
+    """
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return int(value)
+    digits = re.sub(r"[^0-9]", "", str(value))
+    return int(digits) if digits else None
 
 # How long to let the search's own AJAX finish before reading that count. Until
 # it does, the tab still shows the *previous* keyword's number, so reading early
@@ -254,11 +345,6 @@ DETAIL_FIELDS: dict[str, str] = {
 }
 
 
-def _safe_title(title: str) -> str:
-    cleaned = "".join(c for c in title if c.isalpha() or c.isdigit() or c == " ").rstrip()
-    return cleaned or "Bid"
-
-
 class BidnetScraper(BaseScraper):
     def __init__(
         self,
@@ -319,17 +405,16 @@ class BidnetScraper(BaseScraper):
         # lets out-of-window bids into the export.
         self._dates_applied_for: list[str] = []
         self._dates_missed_for: list[str] = []
-        # This run's niche folder inside the day's session root, and the
-        # `documents/` folder within it that every bid's attachments land in
-        # (per-bid subfolders — see storage.py). The spreadsheet sits beside
-        # `documents/`, at the root of the niche folder.
+        # This run's niche folder inside the day's session root. Since
+        # attachments are no longer downloaded (DOWNLOAD_DOCUMENTS) it holds
+        # exactly one file — the niche's spreadsheet — and no `documents/`
+        # subtree is created under it.
         run = run_manager.get_run(run_id) or {}
         folder = run.get("folder") or str(
             storage.niche_folder(storage.session_root(), self.niche_label)
         )
         self.niche_folder = Path(folder)
         self.niche_folder.mkdir(parents=True, exist_ok=True)
-        self.document_folder = storage.documents_folder(self.niche_folder)
         self.niche_key = run.get("niche") or ""
         self.niche_slug = run.get("niche_slug")
         # Terms the portal reported zero bids for — skipped without waiting
@@ -364,20 +449,10 @@ class BidnetScraper(BaseScraper):
         # stages that also drop rows for other reasons.
         self._link_duplicates = 0
         # Close-date filter tallies (see app/core/closing_filter): solicitations
-        # dropped for closing too soon (before their documents are downloaded),
-        # and those kept despite an unreadable Closing Date.
+        # dropped for closing too soon, and those kept despite an unreadable
+        # Closing Date.
         self._skipped_closing_soon = 0
         self._kept_unreadable_close = 0
-        # Document tallies for the run summary: how many attachments were
-        # detected across every bid, how many actually landed on disk, and how
-        # many bids had a tab badge that disagreed with the links found. A run
-        # where detected and downloaded diverge is the signal that documents are
-        # being lost, which the old code could not report at all.
-        self._documents_detected = 0
-        self._documents_downloaded = 0
-        self._documents_failed = 0
-        self._documents_duplicates = 0
-        self._doc_count_mismatches = 0
         # Solicitations the portal gated behind a required acknowledgement.
         # Collected so the run can list exactly which bids need a human Accept
         # rather than burying them among genuine extraction failures.
@@ -386,8 +461,6 @@ class BidnetScraper(BaseScraper):
         # and reported because each one is a submission the issuing agency can
         # see — a run should never accept things without saying which.
         self._accepted_acknowledgements: list[dict[str, str]] = []
-        # One pooled HTTP session for the whole run, cookies refreshed per bid.
-        self._session: requests.Session | None = None
 
     # -- live debugging -----------------------------------------------------
 
@@ -753,20 +826,199 @@ class BidnetScraper(BaseScraper):
             )
             time.sleep(SEARCH_SETTLE_SECONDS)
 
-    # Which results page is on screen: 1 for the first, n for a numbered page,
-    # 0 for "definitely not the first, number unknown" (a usable Previous/First
-    # link is the proof), and null when there is no pagination to read — a single
-    # page of results, which is page 1.
-    _JS_CURRENT_PAGE = """
+    # -- results per page ---------------------------------------------------
+
+    # Reads the grid's page-size dropdown, and switches it, in one pass.
+    #
+    # Driven through the DOM rather than through Selenium's `Select` because the
+    # portal binds its own `change` handler and re-runs the search from it: the
+    # value has to be set *and* the event dispatched, which is exactly what a
+    # native `select_by_value` cannot be relied on to do across drivers.
+    #
+    #   arguments[0]: the select's selector, arguments[1]: wanted page size
+    # Returns {found, current, changed, url} — `url` is the option's own
+    # `data-page-url`, the fallback route when the change event does not take.
+    _JS_SET_PAGE_SIZE = """
+    const select = document.querySelector(arguments[0]);
+    if (!select) return {found: false};
+    const wanted = String(arguments[1]);
+    const current = select.options[select.selectedIndex];
+    const option = Array.from(select.options).find(
+      o => o.getAttribute('data-page-size') === wanted
+    );
+    const state = {
+      found: true,
+      current: current ? current.getAttribute('data-page-size') : null,
+      offered: Array.from(select.options).map(o => o.getAttribute('data-page-size')),
+      url: option ? option.getAttribute('data-page-url') : null,
+      changed: false,
+    };
+    if (!option || state.current === wanted) return state;
+    select.value = option.value;
+    select.dispatchEvent(new Event('change', {bubbles: true}));
+    state.changed = true;
+    return state;
+    """
+
+    def set_page_size(self, size: int = PAGE_SIZE) -> int | None:
+        """Ask the results grid for `size` rows a page, and wait for the reload.
+
+        Returns the page size actually in force, or None when the dropdown is
+        not on the page at all (a result set small enough that the portal does
+        not render one — nothing to do, and nothing wrong).
+
+        **Best-effort throughout.** A grid that will not change page size still
+        pages perfectly well at 25; failing the run over it would trade a slow
+        harvest for no harvest. Every branch below therefore logs and carries
+        on, and the caller reads the returned size rather than assuming.
+
+        The reload is waited for rather than assumed: changing the size re-runs
+        the search from page 1, and harvesting during that postback reads the
+        old page's rows and then walks pagination that has been replaced
+        underneath it.
+        """
+        self.set_step(f"setting page size to {size}")
+        try:
+            state = self.driver.execute_script(
+                self._JS_SET_PAGE_SIZE, selectors.RESULTS_PER_PAGE_SELECT, size
+            )
+        # Every exception, not only WebDriverException: this is an optimisation
+        # sitting in the middle of the search loop, and "best-effort" has to
+        # mean it whatever the page (or the driver) does. A grid that will not
+        # resize still pages perfectly well at 25.
+        except Exception as exc:  # noqa: BLE001
+            logger.info(
+                "[run %s] could not read the results-per-page control (%s) — "
+                "harvesting at whatever size the grid is on",
+                self.run_id, exc.__class__.__name__,
+            )
+            return None
+
+        if not isinstance(state, dict) or not state.get("found"):
+            logger.info(
+                "[run %s] no results-per-page control on this page — one page of "
+                "results, nothing to resize", self.run_id,
+            )
+            return None
+
+        current = _as_int(state.get("current"))
+        if not state.get("changed"):
+            if current == size:
+                logger.info("[run %s] results per page already %s", self.run_id, size)
+            else:
+                logger.warning(
+                    "[run %s] the grid does not offer %s rows a page (offers %s) — "
+                    "harvesting at %s",
+                    self.run_id, size, state.get("offered"), _shown(current),
+                )
+            return current
+
+        # The change event has been dispatched; the portal re-runs the search
+        # from it. Wait for that round trip before believing anything on screen.
+        self._await_ajax_idle()
+        applied = self._current_page_size()
+        if applied == size:
+            logger.info(
+                "[run %s] [PAGE SIZE]: %s → %s rows a page; the walk now covers the "
+                "same results in a quarter of the page loads",
+                self.run_id, _shown(current), size,
+            )
+            return applied
+
+        # The select moved but the grid did not follow it. Each option carries a
+        # real GET that re-runs the current search at that size — the portal's
+        # own route, taken directly.
+        url = state.get("url")
+        if url:
+            logger.info(
+                "[run %s] the page-size change did not re-run the search — "
+                "following the option's own link instead", self.run_id,
+            )
+            try:
+                self.driver.get(self._abs_url(str(url)))
+                self._await_ajax_idle()
+                applied = self._current_page_size()
+            except Exception as exc:  # noqa: BLE001 — the fallback is optional too
+                logger.warning(
+                    "[run %s] page-size link failed (%s)", self.run_id, exc.__class__.__name__
+                )
+
+        if applied != size:
+            logger.warning(
+                "[run %s] could not set the page size to %s (it reads %s) — the "
+                "harvest will take more pages but collect the same bids",
+                self.run_id, size, _shown(applied),
+            )
+        return applied
+
+    def _current_page_size(self) -> int | None:
+        """The page size the grid is currently rendering, off its own dropdown."""
+        script = """
+        const select = document.querySelector(arguments[0]);
+        if (!select) return null;
+        const option = select.options[select.selectedIndex];
+        return option ? option.getAttribute('data-page-size') : null;
+        """
+        try:
+            value = self.driver.execute_script(script, selectors.RESULTS_PER_PAGE_SELECT)
+        except Exception:  # noqa: BLE001 — unreadable is "unknown", never a failure
+            return None
+        return _as_int(value)
+
+    # -- pagination ---------------------------------------------------------
+
+    # The pagination bar's own account of where the walk is: which page is on
+    # screen, and how many there are.
+    #
+    #   arguments[0]: the bar, [1]: the current-page mark, [2]: the Last link,
+    #   [3]: every numbered page link
+    #
+    # `total` comes from the Last link's `data-page-number` (19 on a 19-page
+    # result set), falling back to the highest page the bar lists when the whole
+    # range fits and no Last link is rendered. Null for either value means "the
+    # bar does not say", which callers must treat as unknown rather than as a
+    # number — a walk that reads a missing total as 1 stops after one page.
+    _JS_PAGE_STATE = """
     const bar = document.querySelector(arguments[0]);
     if (!bar) return null;
-    const current = bar.querySelector(arguments[1]);
-    if (current) {
-      const n = parseInt((current.textContent || '').replace(/[^0-9]/g, ''), 10);
-      if (n) return n;
+    const num = (el, attr) => {
+      if (!el) return null;
+      const raw = attr ? el.getAttribute(attr) : el.textContent;
+      const n = parseInt((raw || '').replace(/[^0-9]/g, ''), 10);
+      return Number.isFinite(n) ? n : null;
+    };
+    const current = num(bar.querySelector(arguments[1]));
+    let total = num(bar.querySelector(arguments[2]), 'data-page-number');
+    if (total === null) {
+      for (const a of bar.querySelectorAll(arguments[3])) {
+        const n = num(a, 'data-page-number');
+        if (n !== null && (total === null || n > total)) total = n;
+      }
+      if (total !== null && current !== null && current > total) total = current;
     }
-    return bar.querySelector(arguments[2]) ? 0 : 1;
+    return {current: current, total: total};
     """
+
+    def _page_state(self) -> tuple[int | None, int | None]:
+        """(current page, total pages) as the pagination bar reports them.
+
+        Either can be None — a single page of results renders no bar at all, and
+        a bar that changes shape must degrade to "unknown" rather than to a
+        confident wrong number.
+        """
+        try:
+            state = self.driver.execute_script(
+                self._JS_PAGE_STATE,
+                selectors.PAGINATION_CONTAINER,
+                selectors.PAGINATION_CURRENT,
+                selectors.PAGINATION_LAST,
+                selectors.PAGINATION_NUMBERED,
+            )
+        except Exception:  # noqa: BLE001 — an unreadable bar is "unknown", not a fault
+            return None, None
+        if not isinstance(state, dict):
+            return None, None
+        return _as_int(state.get("current")), _as_int(state.get("total"))
 
     def _ensure_first_result_page(self) -> bool:
         """Put the results back on page 1 before they are harvested.
@@ -815,16 +1067,13 @@ class BidnetScraper(BaseScraper):
         return False
 
     def _read_current_page(self) -> int | None:
-        try:
-            value = self.driver.execute_script(
-                self._JS_CURRENT_PAGE,
-                selectors.PAGINATION_CONTAINER,
-                selectors.PAGINATION_CURRENT,
-                selectors.PAGINATION_BACK,
-            )
-        except WebDriverException:
-            return None
-        return int(value) if isinstance(value, (int, float)) else None
+        """Which results page is on screen, or None if the bar does not say.
+
+        A result set with a single page renders no pagination at all, which is
+        None here and is page 1 to every caller — hence the `in (None, 1)`
+        checks around it rather than an equality test.
+        """
+        return self._page_state()[0]
 
     def _await_ajax_idle(self, timeout: int = AJAX_IDLE_TIMEOUT) -> bool:
         """Block until the page has no jQuery request in flight.
@@ -868,11 +1117,49 @@ class BidnetScraper(BaseScraper):
             return None
         return int(value) if isinstance(value, (int, float)) else None
 
+    def _member_agency_tab(self):
+        """The "Member Agency Bids" result-group tab, or None if it is not there.
+
+        By id first, then by the tab's own visible text — a group id is a number
+        the portal owns and can renumber, and a run that silently scraped
+        whichever group was selected instead would report a plausible, wrong
+        set of bids.
+        """
+        try:
+            found = self.driver.find_elements(
+                By.CSS_SELECTOR, f"div[search-content-group-id='{MEMBER_AGENCY_GROUP_ID}']"
+            )
+            if found:
+                return found[0]
+        except WebDriverException:
+            pass
+
+        try:
+            groups = self.driver.find_elements(By.CSS_SELECTOR, selectors.RESULT_GROUP)
+        except WebDriverException:
+            return None
+        for group in groups:
+            try:
+                if MEMBER_AGENCY_GROUP_LABEL.lower() in (group.text or "").lower():
+                    logger.warning(
+                        "[run %s] the Member Agency group is no longer at id %s — found "
+                        "it by its label instead. selectors/MEMBER_AGENCY_GROUP_ID "
+                        "needs updating.", self.run_id, MEMBER_AGENCY_GROUP_ID,
+                    )
+                    return group
+            except WebDriverException:
+                continue
+        return None
+
     def filter_member_agency(self) -> None:
         self.set_step("filtering_member_agency")
-        self.driver.find_element(
-            By.CSS_SELECTOR, f"div[search-content-group-id='{MEMBER_AGENCY_GROUP_ID}']"
-        ).click()
+        tab = self._member_agency_tab()
+        if tab is None:
+            raise WebDriverException(
+                f"the {MEMBER_AGENCY_GROUP_LABEL!r} result group is not on the page — "
+                "neither by its group id nor by its label"
+            )
+        tab.click()
         self._await_ajax_idle()
         # Conditional, not a blind wait: the caller only gets here when the group
         # reported a non-zero count, so rows are expected — but if they somehow
@@ -926,6 +1213,12 @@ class BidnetScraper(BaseScraper):
                 self.run_id, exc.__class__.__name__,
             )
             return
+
+        # Before anything is clicked. The banner renders over the sidebar's
+        # Apply buttons, the result-group tabs and the pagination bar alike, so
+        # dismissing it once here is cheaper than discovering it three times as
+        # an intercepted click.
+        self._dismiss_cookie_banner()
 
         try:
             report = self.apply_sidebar_filters()
@@ -1159,6 +1452,25 @@ class BidnetScraper(BaseScraper):
     def collect_links(self) -> LinkHarvest:
         """Walk every results page, collecting solicitation detail links.
 
+        The walk is driven by the pagination bar's **own page numbers**, not by
+        guessing when the list ended. It reads "page 3 of 19" off the bar, and
+        keeps going until the page it is on is the last one — so a click that
+        did not take is a retry, and a page that renders slowly is a wait,
+        where both used to end the walk and report a short harvest as a
+        complete one. That is what turned 1,850 member agency bids into 574.
+
+        Three things make it survive a grid that re-renders under it:
+
+        * **Nothing is held across a page change.** The next-page control is
+          re-found every iteration, so a stale handle is impossible by
+          construction rather than by catching StaleElementReferenceException.
+        * **Advancing is confirmed by number.** After clicking, it waits for the
+          bar to *say* it is on the expected page — a far tighter signal than
+          "the first row's href is different", which passes on a half-rendered
+          page and fails on a page whose first row legitimately repeats.
+        * **A page that will not advance is retried, then reported.** Stopping
+          is still possible; stopping *silently* is not.
+
         Returns a `LinkHarvest` rather than a bare list so the caller can report
         the whole funnel — rows the portal rendered, rows a link was read from,
         rows dropped — instead of only the number that survived. A keyword that
@@ -1166,61 +1478,133 @@ class BidnetScraper(BaseScraper):
         indistinguishable from a keyword that genuinely matched nothing.
         """
         harvest = LinkHarvest()
-        page_num = 1
+        page_num, total = self._page_state()
+        page_num = page_num or 1
+        if total and total > 1:
+            logger.info(
+                "[run %s] [PAGINATION]: %s page(s) to walk at %s rows a page",
+                self.run_id, total, _shown(self._current_page_size()),
+            )
+
         while True:
+            self.raise_if_stopped()
             self._harvest_page(harvest, page_num)
             logger.info(
-                "[run %s] page %s: %s row(s) detected, %s parsed, %s dropped "
+                "[run %s] page %s%s: %s row(s) detected, %s parsed, %s dropped "
                 "(%s unique link(s) so far)",
-                self.run_id, page_num, harvest.rows_detected, harvest.rows_parsed,
+                self.run_id, page_num, f" of {total}" if total else "",
+                harvest.rows_detected, harvest.rows_parsed,
                 harvest.rows_dropped, len(harvest.links),
             )
             run_manager.update_run(self.run_id, bids_found=len(harvest.links))
 
-            if page_num >= MAX_PAGES:
-                break
-
-            # Routed through the same fallback selectors the harvest uses: when
-            # the title-cell markup changes, a sentinel pinned to the old class
-            # reads None on every page, `_first_link_changed` never fires, and
-            # the walk stops at page 1 — losing pages on top of losing rows.
-            first_before = self._first_row_link()
-
-            next_button = self._find_next_button()
-            if next_button is None:
-                logger.info("[run %s] no further pages", self.run_id)
-                break
-            try:
-                next_button.click()
-            except WebDriverException as exc:
-                logger.info("[run %s] could not click next page: %s", self.run_id, exc.__class__.__name__)
-                break
-
-            # Wait for the first row to actually become a different
-            # solicitation, rather than sleeping and hoping. The old rows stay in
-            # the DOM until the new page swaps them in, so a presence wait
-            # returns immediately on the previous page — and comparing the first
-            # href straight after that reads "unchanged" on a page that was
-            # merely slow, stopping the walk with pages still unread.
-            def _first_link_changed(_driver) -> bool:
-                current = self._first_row_link()
-                return current is not None and current != first_before
-
-            try:
-                self.wait(PAGINATION_TIMEOUT).until(_first_link_changed)
-            except TimeoutException:
-                # Genuinely the last page (or one that would not advance):
-                # confirmed by waiting the full timeout, not by a single read.
+            # The bar says this is the last page. The most reliable stop there
+            # is, and the only one that cannot be confused with a page that
+            # merely failed to load.
+            if total is not None and page_num >= total:
                 logger.info(
-                    "[run %s] page %s did not advance within %ss; treating it as the last",
-                    self.run_id, page_num, PAGINATION_TIMEOUT,
+                    "[run %s] reached the last page (%s of %s)",
+                    self.run_id, page_num, total,
                 )
                 break
-            self._await_ajax_idle()
+
+            if page_num >= MAX_PAGES:
+                message = (
+                    f"stopped paginating at the {MAX_PAGES}-page safety limit"
+                    + (f" with {total - page_num} page(s) still unread" if total else "")
+                    + ". Narrow the sidebar filters to bring the list within it."
+                )
+                logger.error("[run %s] %s", self.run_id, message)
+                run_manager.add_error(self.run_id, message)
+                break
+
+            if not self._advance_page(page_num, total):
+                break
             page_num += 1
+            # Re-read rather than trusting the increment: the bar is the
+            # authority on where the walk actually is, and a portal that skipped
+            # or repeated a page must not be papered over by our own counter.
+            seen, total = self._page_state()
+            if seen is not None:
+                page_num = seen
+
+        # Every page the bar promised, against every page actually harvested.
+        # The whole point of reading the total: a walk that ends early now says
+        # so with both numbers, instead of returning a plausible short list.
+        if total is not None and page_num < total:
+            message = (
+                f"pagination stopped on page {page_num} of {total} — "
+                f"{total - page_num} page(s) of results were NOT collected."
+            )
+            logger.error("[run %s] %s", self.run_id, message)
+            run_manager.add_error(self.run_id, message)
 
         return harvest
 
+    def _advance_page(self, page_num: int, total: int | None) -> bool:
+        """Move to the page after `page_num`. False when it could not be done.
+
+        Retried rather than abandoned on the first miss: a next-page click that
+        does not land is usually the grid still settling, and one transient miss
+        used to cost every remaining page.
+        """
+        for attempt in range(1, PAGE_ADVANCE_ATTEMPTS + 1):
+            # Re-found every attempt. A handle taken before the last click is
+            # detached the moment the grid re-renders, and reusing it is the
+            # StaleElementReferenceException this loop exists to never see.
+            next_button = self._find_next_button()
+            if next_button is None:
+                if total is not None and page_num < total:
+                    # The bar promised more pages and then withheld the control
+                    # to reach them — a re-render caught mid-flight. Settle and
+                    # look again rather than calling it the end of the list.
+                    if attempt < PAGE_ADVANCE_ATTEMPTS:
+                        logger.info(
+                            "[run %s] page %s of %s: no next-page control yet — "
+                            "waiting for the grid to finish rendering (attempt %s)",
+                            self.run_id, page_num, total, attempt,
+                        )
+                        self._await_ajax_idle(timeout=PAGINATION_TIMEOUT)
+                        continue
+                    return False
+                logger.info("[run %s] no further pages", self.run_id)
+                return False
+
+            if not self._click_next(next_button, page_num):
+                return False
+            if self._await_page(page_num + 1):
+                return True
+
+            logger.info(
+                "[run %s] page %s did not advance on attempt %s — retrying",
+                self.run_id, page_num, attempt,
+            )
+
+        message = (
+            f"pagination stalled on page {page_num}: the grid would not advance "
+            f"after {PAGE_ADVANCE_ATTEMPTS} attempts."
+        )
+        logger.error("[run %s] %s", self.run_id, message)
+        run_manager.add_error(self.run_id, message)
+        return False
+
+    def _await_page(self, wanted: int) -> bool:
+        """Wait until the pagination bar says it is on page `wanted`.
+
+        The sentinel the walk turns on. Waiting on the bar's own number is what
+        makes "the page changed" a fact rather than an inference: a half-rendered
+        page has not updated it, and a page whose first row happens to repeat the
+        last one's has.
+        """
+        def _arrived(_driver) -> bool:
+            return self._page_state()[0] == wanted
+
+        try:
+            self.wait(PAGINATION_TIMEOUT).until(_arrived)
+        except TimeoutException:
+            return False
+        self._await_ajax_idle()
+        return True
     def _harvest_page(self, harvest: LinkHarvest, page_num: int) -> None:
         """Read one results page into `harvest`, row by row.
 
@@ -1328,11 +1712,14 @@ class BidnetScraper(BaseScraper):
 
     def _first_row_link(self) -> str | None:
         """The first results row's href, read the same way the harvest reads
-        every row — one JS pass, same fallback order. Used as the pagination
-        sentinel, so it must not disagree with the harvest about what a row's
-        link is: a sentinel pinned to a selector the harvest no longer uses reads
-        None on every page, `_first_link_changed` never fires, and the walk stops
-        at page 1 with pages still unread."""
+        every row — one JS pass, same fallback order.
+
+        No longer the pagination sentinel: the walk turns on the pagination
+        bar's own page number now (`_await_page`), which a half-rendered page
+        cannot satisfy and a page whose first row legitimately repeats cannot
+        break. Kept as the cheapest way to ask "what is the grid showing right
+        now", and used by the tests that pin the row-link fallback order.
+        """
         rows = self._read_rows(page_num=0)
         if not rows:
             return None
@@ -1346,6 +1733,43 @@ class BidnetScraper(BaseScraper):
             return len(self.driver.find_elements(By.CSS_SELECTOR, ROW_SELECTOR))
         except WebDriverException:
             return None
+
+    def _click_next(self, next_button, page_num: int) -> bool:
+        """Advance to the next results page. False if it could not be clicked.
+
+        Native click first, then the cookie banner dismissed, then a scripted
+        click. The banner is the reason this is three steps rather than one: it
+        renders over the pagination bar on a fresh session, so Selenium's native
+        click lands on the banner and raises ElementClickInterceptedException —
+        which used to end the walk at page 1 and report it as the last page.
+
+        On a keyword search that is usually invisible (most keywords return a
+        single page). On a member-agency sweep it is the difference between 25
+        bids and 1,850, which is what it cost before this existed.
+        """
+        try:
+            next_button.click()
+            return True
+        except WebDriverException as exc:
+            logger.info(
+                "[run %s] page %s: the native next-page click did not land (%s) — "
+                "clearing anything over it and clicking through the DOM",
+                self.run_id, page_num, exc.__class__.__name__,
+            )
+
+        self._dismiss_cookie_banner()
+        try:
+            self.driver.execute_script("arguments[0].click();", next_button)
+            return True
+        except WebDriverException as exc:
+            message = (
+                f"pagination stopped at page {page_num}: the next-page control could "
+                f"not be clicked ({exc.__class__.__name__}). Later pages were NOT "
+                f"collected."
+            )
+            logger.error("[run %s] %s", self.run_id, message)
+            run_manager.add_error(self.run_id, message)
+            return False
 
     def _find_next_button(self):
         for sel in (
@@ -1362,15 +1786,14 @@ class BidnetScraper(BaseScraper):
                     continue
         return None
 
-    def process_bid(self, link: str, dest_folder: Path) -> dict[str, Any] | None:
-        """Open one solicitation, scrape its fields, and download its documents
-        into a per-bid subfolder of `dest_folder`.
+    def process_bid(self, link: str) -> dict[str, Any] | None:
+        """Open one solicitation and scrape its fields. **One page load, no
+        downloads** — see DOWNLOAD_DOCUMENTS.
 
         Returns None when the solicitation is skipped by the close-date filter
-        (closing sooner than MIN_DAYS_UNTIL_CLOSE) — checked before any document
-        is fetched. Called once per distinct solicitation: the search phase has
-        already deduplicated by link, so a bid found by several of the niche's
-        keywords is never opened twice."""
+        (closing sooner than MIN_DAYS_UNTIL_CLOSE). Called once per distinct
+        solicitation: the search phase has already deduplicated by link, so a bid
+        found by several of the niche's keywords is never opened twice."""
         self.set_step("opening_bid")
         record = self._scrape_detail(link)
 
@@ -1412,15 +1835,11 @@ class BidnetScraper(BaseScraper):
             run_manager.add_error(self.run_id, message)
             record["error"] = message
 
-        reference_number = record.get("reference_number") or ""
-        title = record.get("title") or ""
-
         # Keep only solicitations still at least MIN_DAYS_UNTIL_CLOSE days from
-        # their Closing Date, checked here — before the costly document download —
-        # so a too-soon bid is skipped without fetching anything. An unreadable
-        # closing date is kept and tallied. Returning None tells the caller to
-        # drop this solicitation (and it is deliberately left out of the reuse
-        # cache, so it never short-circuits the filter for a later keyword group).
+        # their Closing Date. An unreadable closing date is kept and tallied.
+        # Returning None tells the caller to drop this solicitation (and it is
+        # deliberately left out of the reuse cache, so it never short-circuits
+        # the filter for a later keyword group).
         #
         # Off for the testing phase (APPLY_CLOSE_DATE_FILTER): every solicitation
         # the portal returned is kept, so the run's count is comparable with a
@@ -1433,18 +1852,53 @@ class BidnetScraper(BaseScraper):
                 self._skipped_closing_soon += 1
                 return None
 
-        # Detection is never gated on the tab's count badge: an unreadable badge
-        # used to be recorded as "0 documents" and the bid's attachments were
-        # then never looked for at all. We always open the documents tab and
-        # wait for the attachment anchors themselves; the badge is only a
-        # cross-check to log against.
-        outcome = self._collect_documents(reference_number, title, dest_folder, link)
-        record["documents_count"] = str(outcome.distinct)
-        record["documents"] = outcome.saved
-        record["documents_downloaded"] = outcome.downloaded
-        if outcome.failed:
-            record["documents_failed"] = outcome.failed
+        # This is where the documents tab used to be opened and every
+        # attachment fetched into `<reference> - <title>/`. Retired — the record
+        # is complete as it stands, and the run moves straight to the next bid.
         return record
+
+    # Every labelled field on the page in one pass, matched against the labels
+    # above in order. One round trip and no per-miss logging, because the
+    # member-agency sweep calls this once per bid across thousands of bids —
+    # `_extract_field` would be five XPath lookups and up to five "field not on
+    # the page" lines each, which is a log nobody can read and a portal round
+    # trip nobody needs.
+    #   arguments[0]: the .mets-field selector, arguments[1]: ordered labels
+    _JS_READ_AGENCY = """
+    const fields = document.querySelectorAll(arguments[0]);
+    const labels = arguments[1];
+    for (const label of labels) {
+      const wanted = label.toLowerCase();
+      for (const field of fields) {
+        const head = (field.querySelector('.mets-field-label') || field);
+        if (!(head.innerText || '').toLowerCase().includes(wanted)) continue;
+        const body = field.querySelector('.mets-field-body p, .mets-field-body');
+        const value = ((body ? body.innerText : '') || '').trim();
+        if (value) return value;
+      }
+    }
+    return '';
+    """
+
+    def _extract_agency(self, link: str = "") -> str:
+        """The issuing agency from the detail page, or "" if none is labelled.
+
+        Best-effort by design: it feeds the export's `Niche` column for the
+        member-agency sweep, whose rows belong to no niche, and a bid whose
+        agency cannot be read is still a bid worth exporting under
+        `member_agencies.UNKNOWN_AGENCY`.
+        """
+        try:
+            value = self.driver.execute_script(
+                self._JS_READ_AGENCY, selectors.DETAIL_FIELD, list(AGENCY_FIELD_LABELS)
+            )
+        except WebDriverException as exc:
+            logger.info(
+                "[run %s] could not read the agency (%s)%s",
+                self.run_id, exc.__class__.__name__, f" for {link}" if link else "",
+            )
+            return ""
+        return (value or "").strip() if isinstance(value, str) else ""
 
     def _scrape_detail(self, link: str) -> dict[str, Any]:
         """Load a solicitation's detail page and read its fields.
@@ -1489,10 +1943,6 @@ class BidnetScraper(BaseScraper):
         record["status"] = STATUS_ACK_REQUIRED
         record["error"] = message
         record["acknowledgement"] = {k: v for k, v in gate.items() if v}
-        # Documents sit behind the same wall — nothing to count or fetch.
-        record["documents_count"] = "0"
-        record["documents"] = []
-        record["documents_downloaded"] = 0
         return record
 
     def _page_heading(self) -> str:
@@ -1538,9 +1988,15 @@ class BidnetScraper(BaseScraper):
     def _dismiss_cookie_banner(self) -> None:
         """Close the cookie banner if it is up.
 
-        It renders over the acknowledgement dialog's button bar on a fresh
-        session, so the Accept click lands on the banner instead and the
-        acknowledgement is silently never submitted.
+        It renders over the acknowledgement dialog's button bar, the sidebar's
+        Apply buttons and the pagination bar alike, so a click meant for any of
+        them lands on the banner instead — silently, as an intercepted click.
+
+        Best-effort in the strongest sense: this is tidying, and nothing it can
+        run into is worth failing a run over, so **every** exception is
+        swallowed rather than only WebDriverException. It is called from the
+        middle of `open_filtered_session`, where anything raised would abort the
+        whole filtered session over a banner that may not even be there.
         """
         try:
             for button in self.driver.find_elements(By.CSS_SELECTOR, COOKIE_ACCEPT_BUTTON):
@@ -1548,8 +2004,8 @@ class BidnetScraper(BaseScraper):
                     self.driver.execute_script("arguments[0].click();", button)
                     logger.info("[run %s] dismissed the cookie banner", self.run_id)
                     return
-        except WebDriverException:
-            pass
+        except Exception:  # noqa: BLE001 — tidying must never fail a run
+            logger.debug("[run %s] cookie banner check failed", self.run_id, exc_info=True)
 
     def _accept_acknowledgement(self) -> bool:
         """Click Accept on the acknowledgement page.
@@ -1660,95 +2116,6 @@ class BidnetScraper(BaseScraper):
         if not all(record.get(field) for field in REQUIRED_FIELDS):
             return STATUS_PARTIAL
         return STATUS_OK
-
-    def _collect_documents(
-        self, reference_number: str, title: str, dest_folder: Path, detail_url: str
-    ) -> documents.DownloadOutcome:
-        """Detect and download every attachment for the solicitation on screen.
-
-        Detection opens the lazily-rendered documents tab and waits for the
-        attachment anchors; downloading then fetches those hrefs directly over
-        HTTP, in parallel and streamed to disk, rather than clicking each link
-        and waiting on Chrome's download directory one file at a time.
-        """
-        label = reference_number or detail_url
-        links, badge = documents.extract_document_links(
-            self.driver, self.run_id, label, detail_url
-        )
-
-        expected = int(badge) if badge is not None and badge.isdigit() else None
-
-        if not links:
-            if expected:
-                # Detected-but-unreachable is the case that must never pass
-                # silently: the badge says there are files and we could not
-                # reach a single one.
-                message = (
-                    f"documents tab reports {expected} file(s) for {label} but no "
-                    f"download links could be found"
-                )
-                logger.error("[run %s] %s", self.run_id, message)
-                run_manager.add_error(self.run_id, message)
-                self.screenshot(f"no_docs_{sanitize_filename(label)[:40]}")
-            logger.info("[run %s] Found 0 documents for %s", self.run_id, label)
-            return documents.DownloadOutcome(detected=0, badge=badge)
-
-        bid_folder = dest_folder / f"{reference_number} - {_safe_title(title)}"
-        outcome = documents.download_documents(
-            self._http_session(),
-            links,
-            bid_folder,
-            self.run_id,
-            label,
-            referer=detail_url,
-            should_stop=self.raise_if_stopped,
-        )
-        outcome.badge = badge
-        self._documents_detected += outcome.distinct
-        self._documents_downloaded += outcome.downloaded
-        self._documents_duplicates += outcome.duplicates
-
-        # Reconcile against the badge only now — after the duplicates the portal
-        # lists twice have been collapsed. Comparing the raw link count would
-        # flag a bid whose documents are all present as a mismatch.
-        if expected is not None and expected != outcome.distinct:
-            self._doc_count_mismatches += 1
-            logger.warning(
-                "[run %s] %s: documents tab reports %d file(s) but %d distinct "
-                "document(s) were found",
-                self.run_id, label, expected, outcome.distinct,
-            )
-
-        if outcome.failed:
-            self._documents_failed += len(outcome.failed)
-            run_manager.add_error(
-                self.run_id,
-                f"{len(outcome.failed)} of {outcome.detected} document(s) failed to "
-                f"download for {label}",
-            )
-        return outcome
-
-    def _http_session(self) -> requests.Session:
-        """The run's shared HTTP session, cookies refreshed from the browser.
-
-        One session for the whole run keeps connections pooled; the cookies are
-        re-copied per bid because BidNet rotates the session cookie and a stale
-        one turns every download into a login-page redirect.
-        """
-        self._session = documents.build_session(self.driver, self._session)
-        return self._session
-
-    @staticmethod
-    def _unique_path(path: Path) -> Path:
-        if not path.exists():
-            return path
-        stem, suffix = path.stem, path.suffix
-        counter = 2
-        while True:
-            candidate = path.with_name(f"{stem} ({counter}){suffix}")
-            if not candidate.exists():
-                return candidate
-            counter += 1
 
     # -- orchestration ------------------------------------------------------
 
@@ -1876,9 +2243,17 @@ class BidnetScraper(BaseScraper):
                         continue
 
                     self.filter_member_agency()
+                    # Before a row is read: ask the grid for as many rows a page
+                    # as it offers. Re-checked per keyword rather than once per
+                    # run because each search re-renders the grid, and a grid
+                    # that came back at 25 would quietly quadruple the page
+                    # transitions this exists to avoid.
+                    self.set_page_size()
                     # Read-only in the ordinary case: the session's filters are
                     # confirmed still in force for this search, and only
-                    # re-applied if they are not.
+                    # re-applied if they are not. Deliberately *after* the page
+                    # size, so the last thing to re-run the search is also the
+                    # last thing verified.
                     self.confirm_filters_active(keyword)
                     harvest = self.collect_links()
                 except StopRequested:
@@ -1904,8 +2279,7 @@ class BidnetScraper(BaseScraper):
                 # already queued is not queued again by a later NIGP code (or
                 # the other way round); it only gains that term in its
                 # `Matched Keyword` column. This is the round that matters for
-                # cost: a bid queued twice is a detail page opened twice and its
-                # documents downloaded twice.
+                # cost: a bid queued twice is a detail page opened twice.
                 new_links = 0
                 for link in harvest.links:
                     bid_id = self._bid_key(link)
@@ -1965,17 +2339,17 @@ class BidnetScraper(BaseScraper):
                         logger.error("[run %s] %s", self.run_id, message)
                         run_manager.add_error(self.run_id, message)
 
-            # PHASE 2 — open every distinct solicitation once and download its
-            # documents into this run's single folder.
+            # PHASE 2 — open every distinct solicitation once and read its
+            # fields. One page load each: nothing is downloaded.
             self.set_step("collecting_bids")
             all_records: list[dict] = []
             for index, (bid_id, entry) in enumerate(bids.items()):
                 link, matched = entry["link"], entry["terms"]
                 record: dict[str, Any] | None = {
-                    "reference_number": None, "title": None, "documents": [], "error": None,
+                    "reference_number": None, "title": None, "error": None,
                 }
                 try:
-                    record = self.process_bid(link, self.document_folder)
+                    record = self.process_bid(link)
                 except StopRequested:
                     raise
                 except (TimeoutException, WebDriverException) as exc:
@@ -1983,7 +2357,7 @@ class BidnetScraper(BaseScraper):
                     run_manager.add_error(self.run_id, f"bid failed: {exc.__class__.__name__}")
                     self.screenshot(f"bid_{index}")
                 if record is None:
-                    # Skipped by the close-date filter — no documents fetched.
+                    # Skipped by the close-date filter.
                     continue
                 record["matched_keyword"] = ", ".join(matched)
                 record["niche"] = self.niche_label
@@ -2167,30 +2541,6 @@ class BidnetScraper(BaseScraper):
                     f"{STATUS_ACK_REQUIRED} with their detail URLs",
                 )
 
-            # Documents, reconciled the same way the bids are: detected versus
-            # actually saved. Anything short here means a bid's folder is
-            # missing a file its spreadsheet row claims, which is worth an
-            # error rather than a line buried in the log.
-            logger.info(
-                "[DOCUMENTS] run %s | Detected: %d | Downloaded: %d | Failed: %d | "
-                "Duplicate copies removed: %d | Count mismatches: %d",
-                self.run_id, self._documents_detected, self._documents_downloaded,
-                self._documents_failed, self._documents_duplicates,
-                self._doc_count_mismatches,
-            )
-            run_manager.update_run(
-                self.run_id,
-                documents_detected=self._documents_detected,
-                documents_downloaded=self._documents_downloaded,
-                documents_failed=self._documents_failed,
-            )
-            if self._documents_failed:
-                run_manager.add_warning(
-                    self.run_id,
-                    f"{self._documents_failed} of {self._documents_detected} detected "
-                    f"document(s) could not be downloaded",
-                )
-
             # One master spreadsheet for the whole run, at the root of its folder.
             self._write_master_excel(all_records)
 
@@ -2264,9 +2614,8 @@ class BidnetScraper(BaseScraper):
 
             run_manager.update_run(self.run_id, excel_exported=True)
 
-            # Package the run into one archive ZIP — the cumulative run-level
-            # Excel (from the DB) at the root plus every niche+tier group folder
-            # with its own Excel and documents — then delete the workspace.
+            # Package the run: the day's session root — one folder per niche
+            # run today, each holding that niche's spreadsheet — into one ZIP.
             self.set_step("packaging_results")
             archive_run(self.run_id)
 
@@ -2287,9 +2636,6 @@ class BidnetScraper(BaseScraper):
             run_manager.add_error(self.run_id, str(exc)[:500])
             run_manager.update_run(self.run_id, status="failed", step="failed")
         finally:
-            if self._session is not None:
-                self._session.close()
-                self._session = None
             self.cleanup()
             run_manager.update_run(self.run_id, finished_at=datetime.now().isoformat())
             self._save_run_row()

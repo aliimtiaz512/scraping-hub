@@ -8,8 +8,10 @@ Two rules this file exists to enforce:
 
 * **No `g_NNN` ids.** The portal regenerates them on every render (`g_427`,
   `g_428`, `g_435`…), so anything built on them breaks at the next postback. The
-  stable handles are semantic ids, `name` attributes, `data-filter-item-value`,
-  and href *paths*.
+  stable handles are semantic ids, `name` attributes, `data-*` attributes, and
+  href *paths*. The results-per-page `<select>` is the clearest case: its only
+  id is `mets-results-per-page-select_g_1887`, and its `data-page-size` is what
+  survives.
 * **One definition per element.** These used to be string literals scattered
   across `scraper.py`, `sidebar.py` and `documents.py`, so a portal change meant
   finding every copy.
@@ -79,35 +81,94 @@ ROW_LINK_SELECTORS = (
     "td a[href]",
 )
 
-# Probed: present as `a.next`. Kept as a chain because the disabled-state classes
-# vary between the first, middle and last page.
+# -- results per page --------------------------------------------------------
+#
+# Measured against the live footer of the results grid:
+#
+#   <div class="mets-results-per-page mets-field">
+#     <label for="mets-results-per-page-select_g_1887">Results per page:</label>
+#     <select id="mets-results-per-page-select_g_1887">
+#       <option data-page-url="/private/supplier/solicitations/search?pageNumber=1&pageSize=25…"
+#               data-page-size="25" data-page-number="1">25</option>
+#       <option … data-page-size="50" …>50</option>
+#       <option … data-page-size="100" …>100</option>
+#
+# The id is a `g_NNN` — regenerated on every render, so it is exactly the kind
+# of handle this file exists to refuse. The stable route is the wrapper's class
+# plus `data-page-size`, which is also the value the code actually cares about
+# (the option's *text* is "100" too, but the attribute is what the portal keys
+# its own paging on).
+#
+# Each option carries a `data-page-url`: a real GET that re-runs the current
+# search at that page size. It is the fallback when driving the select does not
+# take — see `BidnetScraper.set_page_size`.
+RESULTS_PER_PAGE = ".mets-results-per-page"
+RESULTS_PER_PAGE_SELECT = ".mets-results-per-page select"
+
+
+def results_per_page_option(size: int) -> str:
+    return f".mets-results-per-page select option[data-page-size='{size}']"
+
+
+# -- pagination --------------------------------------------------------------
+#
+# Measured against the live bar, which is `.mets-page-navigation` — **not**
+# `.mets-pagination`, and not anything matching `[class*='pagination']`. That
+# distinction is not pedantry: `[class*='pagination']` matches the individual
+# `mets-pagination-page-icon` elements, so `querySelector` on it returned the
+# first *icon* rather than the bar, every descendant lookup inside it missed,
+# and the current page silently read as 1 on every page of every run.
+#
+#   <div class="mets-page-navigation">
+#     <span class="mets-icon first disabled mets-pagination-page-icon"></span>
+#     <span class="mets-icon previous disabled mets-pagination-page-icon"></span>
+#     <span class="mets-page-navigation-number"><span class="selected">1</span></span>
+#     <span class="mets-page-navigation-number">
+#       <a data-page-number="2" data-page-size="100" href="…pageNumber=2&pageSize=100…">2</a>
+#     </span>
+#     … 3 … 9 …
+#     <a data-page-number="2" rel="next" data-page-size="100" href="…"
+#        class="next mets-pagination-page-icon">…</a>
+#     <a data-page-number="19" rel="nofollow" data-page-size="100" href="…"
+#        class="last mets-pagination-page-icon">…</a>
+#   </div>
+#
+# Two properties of that markup the walk depends on:
+#
+# * **A disabled control is a `<span>`, an enabled one is an `<a>`.** `first`
+#   and `previous` above are spans *and* carry `.disabled`; on the last page
+#   `next` becomes one too. So `a.next` is already "next, and usable" — the
+#   `:not(.disabled)` below is belt and braces, not the load-bearing part.
+# * **`a.last` carries `data-page-number`, which is the total page count.**
+#   That is what lets the walk know it has 19 pages to cover instead of
+#   inferring the end from a page that failed to advance.
+PAGINATION_CONTAINER = ".mets-page-navigation"
+PAGINATION_CURRENT = ".mets-page-navigation-number .selected"
+PAGINATION_NEXT = "a.next.mets-pagination-page-icon:not(.disabled)"
+PAGINATION_LAST = "a.last.mets-pagination-page-icon"
+# Every numbered page link in the bar, for reading the highest page offered
+# when `a.last` is absent (a result set small enough to list every page).
+PAGINATION_NUMBERED = ".mets-page-navigation a[data-page-number]"
+
+# Ordered candidates for the next-page control. The first is the measured one;
+# the rest are shape-compatible fallbacks kept because the disabled-state
+# classes are the part most likely to be restyled.
 NEXT_PAGE_SELECTORS = (
-    "a.next.mets-pagination-page-icon:not(.disabled)",
+    PAGINATION_NEXT,
     "a[rel='next']:not(.disabled)",
     "a.next:not(.disabled)",
 )
 
-# The way back. **Derived from `a.next`'s shape, not probed** — the pagination
-# widget renders its icons as a set, so `a.first`/`a.prev` are the expected
-# siblings of the `a.next` above, but that has not been confirmed against a live
-# page the way everything else in this file has.
-#
-# Nothing depends on them being right: they are used only by
-# `_ensure_first_result_page`, which reads the pagination *before* deciding
-# anything and falls back to reloading the search when it cannot get back to
-# page 1. A selector that matches nothing costs a reload, not a lost page.
+# The way back. Same rule as above — an enabled control is an `<a>`, a disabled
+# one is a `<span class="… disabled">`, so these match only when there is
+# genuinely somewhere to go back to. Note the class is `previous`, not `prev`.
 FIRST_PAGE_SELECTORS = (
     "a.first.mets-pagination-page-icon:not(.disabled)",
     "a[rel='first']:not(.disabled)",
     "a.first:not(.disabled)",
 )
-
-# The pagination bar itself, and the marks a widget uses for "the page you are
-# on". Same caveat as above: read defensively, never assumed.
-PAGINATION_CONTAINER = ".mets-pagination, [class*='pagination']"
-PAGINATION_CURRENT = ".current, .active, .selected, [aria-current]"
 PAGINATION_BACK = (
-    "a.first:not(.disabled), a.prev:not(.disabled), a[rel='prev']:not(.disabled)"
+    "a.first:not(.disabled), a.previous:not(.disabled), a[rel='prev']:not(.disabled)"
 )
 
 # -- detail page -------------------------------------------------------------

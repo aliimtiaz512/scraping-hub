@@ -240,7 +240,7 @@ def test_accepting_opens_the_bid_and_extracts_its_fields():
     _auto(True)
     driver = FakeDriver(walls=1)
     s = _scraper(driver)
-    record = s.process_bid(BID_URL, Path("/tmp"))
+    record = s.process_bid(BID_URL)
 
     assert driver.accepted == 1
     assert record["status"] == STATUS_OK, record
@@ -255,7 +255,7 @@ def test_stacked_acknowledgements_are_all_accepted():
     _auto(True)
     driver = FakeDriver(walls=3)
     s = _scraper(driver)
-    record = s.process_bid(BID_URL, Path("/tmp"))
+    record = s.process_bid(BID_URL)
 
     assert driver.accepted == 3, driver.accepted
     assert record["status"] == STATUS_OK, record
@@ -267,7 +267,7 @@ def test_the_bid_is_read_without_reloading_it():
     _auto(True)
     driver = FakeDriver(walls=1)
     s = _scraper(driver)
-    s.process_bid(BID_URL, Path("/tmp"))
+    s.process_bid(BID_URL)
     assert driver.loads == 1, f"reloaded the bid {driver.loads} times"
 
 
@@ -276,7 +276,7 @@ def test_the_cookie_banner_is_dismissed_before_accepting():
     _auto(True)
     driver = FakeDriver(walls=1, cookie_banner=True)
     s = _scraper(driver)
-    record = s.process_bid(BID_URL, Path("/tmp"))
+    record = s.process_bid(BID_URL)
     assert driver.cookie_dismissed == 1
     assert driver.accepted == 1
     assert record["status"] == STATUS_OK
@@ -286,7 +286,7 @@ def test_an_intercepted_native_click_falls_back_to_js():
     _auto(True)
     driver = FakeDriver(walls=1, block_native=True)
     s = _scraper(driver)
-    record = s.process_bid(BID_URL, Path("/tmp"))
+    record = s.process_bid(BID_URL)
     assert driver.js_clicks >= 1
     assert driver.accepted == 1
     assert record["status"] == STATUS_OK
@@ -297,7 +297,7 @@ def test_accepted_acknowledgements_are_recorded_for_the_run():
     _auto(True)
     driver = FakeDriver(walls=1)
     s = _scraper(driver)
-    s.process_bid(BID_URL, Path("/tmp"))
+    s.process_bid(BID_URL)
     assert s._accepted_acknowledgements == [{"url": BID_URL, "name": ACK_NAME}]
 
 
@@ -308,7 +308,7 @@ def test_a_swallowed_click_is_reported_not_assumed_to_have_worked():
     _auto(True)
     driver = FakeDriver(walls=1, accept_works=False)
     s = _scraper(driver)
-    record = s.process_bid(BID_URL, Path("/tmp"))
+    record = s.process_bid(BID_URL)
     assert record["status"] == STATUS_ACK_REQUIRED, record["status"]
     assert record["title"] == HEADING
     assert s._acknowledgement_required
@@ -321,7 +321,7 @@ def test_accepting_is_bounded():
     _auto(True)
     driver = FakeDriver(walls=99, accept_works=True)
     s = _scraper(driver)
-    record = s.process_bid(BID_URL, Path("/tmp"))
+    record = s.process_bid(BID_URL)
     assert driver.accepted == MAX_ACK_ACCEPTS, driver.accepted
     assert record["status"] == STATUS_ACK_REQUIRED
 
@@ -330,11 +330,11 @@ def test_turning_it_off_leaves_the_bid_untouched_and_flagged():
     _auto(False)
     driver = FakeDriver(walls=1)
     s = _scraper(driver)
-    record = s.process_bid(BID_URL, Path("/tmp"))
+    record = s.process_bid(BID_URL)
     assert driver.accepted == 0, "accepted despite the setting being off"
     assert record["status"] == STATUS_ACK_REQUIRED
     assert set(DETAIL_FIELDS) <= set(record)
-    assert record["documents"] == [] and record["documents_count"] == "0"
+    assert "documents" not in record and "documents_count" not in record
 
 
 if __name__ == "__main__":

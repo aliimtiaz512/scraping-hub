@@ -6,7 +6,7 @@ adapted to the hub: config comes from the hub `settings` (pydantic-settings)
 rather than os.getenv. The attachment is the run's archive ZIP (cumulative
 Excel + all bid documents, built by exports.archive_run) when it fits in an
 email, else just the cumulative Excel — with the download link in the body
-either way. Portals in exports.EXCEL_ONLY_PORTALS have no ZIP at all and
+either way. Runs that exports.is_excel_only() accepts have no ZIP at all and
 attach the sheet itself. Wired into every scraping portal's completion.
 
 Everything here is best-effort — a notification failure never affects a scrape.
@@ -119,10 +119,10 @@ def _attachment_for(run: dict) -> tuple[bytes, str, str] | None:
     """(bytes, filename, content_type) to attach: the full ZIP when it fits in
     an email, else just the cumulative Excel (the ZIP stays downloadable via
     the link). Falls back to a DB-regenerated Excel for runs with no archive."""
-    # Excel-only portals never attach a ZIP, even if an older run of theirs has
-    # one on disk from before the portal switched — same ordering as the
-    # download endpoint, so the mail and the button agree.
-    if run.get("scraper") in exports.EXCEL_ONLY_PORTALS:
+    # Excel-only runs never attach a ZIP, even if an older run has one on disk
+    # from before the portal switched — same ordering as the download endpoint,
+    # so the mail and the button agree.
+    if exports.is_excel_only(run):
         payload = exports.excel_bytes(run)
         if payload:
             return (*payload, _XLSX_MIME)
@@ -169,8 +169,8 @@ def _notify(run_id: str, scraper: str, record_count: int) -> None:
     s3_link = f' You can also <a href="{s3_url}">download it from S3</a>.' if s3_url else ""
 
     download_url = f"{settings.public_base_url.rstrip('/')}/runs/{run_id}/download"
-    # Portals with no documents ship the sheet alone — never promise a ZIP there.
-    excel_only = scraper in exports.EXCEL_ONLY_PORTALS
+    # Runs with no documents ship the sheet alone — never promise a ZIP there.
+    excel_only = exports.is_excel_only(run)
     if attached_zip:
         attach_note = "The complete ZIP (cumulative Excel report + all bid documents) is attached."
     elif excel_only:

@@ -8,16 +8,20 @@ exist; this module is the second.
 
     BidNet_Batch_2026-08-11_143002/     <- this execution's root, nobody else's
     ├── Graphic-Design/
-    │   ├── Graphic-Design_Bids.xlsx    <- built from THIS run's rows only
-    │   └── documents/…
+    │   └── Graphic-Design_Bids.xlsx    <- built from THIS run's rows only
     └── Commercial-Printing/
-        ├── Commercial-Printing_Bids.xlsx
-        └── documents/…
+        └── Commercial-Printing_Bids.xlsx
 
     archive_root/
     ├── BidNet_Batch_2026-08-11_143002_Graphic-Design.zip        <- per niche
     ├── BidNet_Batch_2026-08-11_143002_Commercial-Printing.zip
-    └── BidNet_Batch_2026-08-11_143002.zip                       <- the execution
+    └── BidNet_Niche_Bids_2026-08-11.zip                         <- the execution
+
+That last file is the deliverable of the **"Run all niches"** button: one ZIP,
+one spreadsheet per niche at its root, nothing nested. The per-niche ZIPs beside
+it are what the console's per-niche Download links serve as each niche lands,
+which is why they are still built — a niche that finished an hour ago should be
+downloadable without waiting for the sweep to end.
 
 Four pieces, in the order the loop uses them:
 
@@ -34,9 +38,9 @@ Three separate paths, all of which had to be closed — closing any two still
 leaks:
 
 1. **The workspace.** Niche folders are reused (`storage.niche_folder`), so an
-   earlier run's spreadsheet and documents were still sitting there when the
-   next one started, and got packaged as its output. A batch resets the folder
-   instead (`storage.reset_niche_folder`).
+   earlier run's spreadsheet was still sitting there when the next one started,
+   and got packaged as its output. A batch resets the folder instead
+   (`storage.reset_niche_folder`).
 2. **The spreadsheet.** `_refresh_niche_excel` regenerates a niche's sheet from
    *every run of that niche in the session*, so a re-run's sheet carried the
    earlier run's rows. A batch niche's sheet is regenerated from its own run id
@@ -400,6 +404,11 @@ def refresh_niche_excel(run_id: str, run: dict[str, Any]) -> None:
 def archive_niche(run_id: str, run: dict[str, Any]) -> str | None:
     """One niche folder into one ZIP. Nothing else is in it.
 
+    Since attachments are no longer downloaded that folder holds a single
+    spreadsheet, so this ZIP wraps one file. It stays a ZIP because it is what
+    the per-niche Download link serves mid-sweep, and because the execution's
+    own bundle is assembled from the same folders — one shape for both.
+
     Called from `exports.archive_run` for any BidNet run carrying a `batch_root`,
     which is what keeps the batch's packaging out of the day-session path
     without either of them growing a flag to test.
@@ -438,31 +447,59 @@ def archive_niche(run_id: str, run: dict[str, Any]) -> str | None:
 
 
 def archive_batch(batch_id: str, root: Path, keep_workspace: bool = False) -> str | None:
-    """Every niche folder of the execution into one parent ZIP, then clean up.
+    """The execution's niche spreadsheets into one flat ZIP, then clean up.
 
-    The per-niche ZIPs are the deliverable; this one exists for the case the
-    requirement names second — an execution downloaded whole, with the niches as
-    subfolders inside it. Both are built from the same tree, so they cannot
-    disagree about what a niche contains.
+    This is what "Run all niches" hands back: `BidNet_Niche_Bids_<date>.zip`,
+    holding `Graphic-Design_Bids.xlsx`, `Commercial-Printing_Bids.xlsx` and one
+    more per niche that ran — **at the root of the archive, not inside a folder
+    apiece**. Whoever opens it wants the sheets, and a folder per sheet is one
+    click each in the way of them.
+
+    Only spreadsheets go in. The niche folders hold nothing else now, and
+    saying so here rather than walking the tree means a stray file left in the
+    workspace (a screenshot, a `.tmp` a crashed rebuild abandoned) can never
+    reach the client's archive.
+
+    A niche that produced no sheet — one that failed before writing one — is
+    simply absent, and named in the log so the gap is not silent.
     """
     if not root.is_dir():
         logger.error("[batch %s] root %s is gone — nothing to package", batch_id, root)
         return None
+
     folders = storage.niche_dirs(root)
-    out = settings.archive_root / (sanitize_filename(root.name, max_length=150) + ".zip")
+    sheets: list[Path] = []
+    empty: list[str] = []
+    for folder in folders:
+        found = sorted(p for p in folder.glob("*.xlsx") if p.is_file())
+        if found:
+            sheets.extend(found)
+        else:
+            empty.append(folder.name)
+
+    out = settings.archive_root / storage.niche_bundle_name()
     tmp = out.with_name(out.name + f".{batch_id}.tmp")
     try:
         with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zf:
-            _add_tree(zf, root, arc_prefix=root.name)
+            for sheet in sheets:
+                # Flat: the sheet's own name, no folder prefix. Two niches
+                # cannot collide — the filename is built from the niche folder's
+                # name, which is unique within the execution's root.
+                zf.write(sheet, sheet.name)
         tmp.replace(out)
     except Exception:  # noqa: BLE001
         logger.exception("[batch %s] could not build the execution ZIP", batch_id)
         tmp.unlink(missing_ok=True)
         return None
     logger.info(
-        "[batch %s] [ZIP] execution bundle %s holds %d niche folder(s) (%s)",
-        batch_id, out.name, len(folders), _size(out),
+        "[batch %s] [ZIP] niche bundle %s holds %d spreadsheet(s) from %d niche(s) (%s)",
+        batch_id, out.name, len(sheets), len(folders), _size(out),
     )
+    if empty:
+        logger.warning(
+            "[batch %s] %d niche folder(s) had no spreadsheet to bundle: %s",
+            batch_id, len(empty), ", ".join(empty),
+        )
     if not keep_workspace:
         shutil.rmtree(root, ignore_errors=True)
         logger.info("[batch %s] [CLEANUP] workspace %s removed", batch_id, root.name)
