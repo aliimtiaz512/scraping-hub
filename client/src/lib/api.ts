@@ -199,6 +199,15 @@ export interface RunStatus {
   // (app/core/jobs.py); it has not started and no browser exists yet.
   status: "pending" | "queued" | "running" | "completed" | "failed" | "stopped";
   step: string;
+  /** MyFlorida (all three modes): the posting-date window the run was launched
+   *  with, and what became of it. `date_filter_applied` is false when a window
+   *  was requested but the portal has not been asked for it — the run then
+   *  covers every posting date and says so in its warnings. */
+  start_date?: string | null;
+  end_date?: string | null;
+  date_range_summary?: string;
+  date_filter_ready?: boolean;
+  date_filter_applied?: boolean;
   // MyFlorida-only
   category?: string;
   category_label?: string;
@@ -395,6 +404,15 @@ export function getMyFloridaAccounts(): Promise<{
   return request("/myflorida/accounts");
 }
 
+/** A posting-date window, as the console holds it: ISO `yyyy-mm-dd`, either end
+ *  optional. The server converts to the `mm/dd/yyyy` the portal's own fields
+ *  take — the ambiguous format stays inside the process that knows which portal
+ *  it is talking to. */
+export interface PostingDateRange {
+  startDate: string | null;
+  endDate: string | null;
+}
+
 export interface StartMyFloridaScrapeOptions {
   category: string;
   mode: SearchMode;
@@ -405,6 +423,11 @@ export interface StartMyFloridaScrapeOptions {
   adTypes?: AdType[];
   /** Which vendor login to run as. Blank keeps the server's default. */
   account?: string;
+  /** Posting-date window, ISO `yyyy-mm-dd`, either end optional. Applies to
+   *  both search modes — it belongs to the search form, not to what is typed
+   *  into it. */
+  startDate?: string | null;
+  endDate?: string | null;
   livePreview?: boolean;
 }
 
@@ -421,6 +444,8 @@ export function startMyFloridaScrape({
   adStatuses = [],
   adTypes = [],
   account,
+  startDate = null,
+  endDate = null,
   livePreview = false,
 }: StartMyFloridaScrapeOptions): Promise<{
   run_id: string;
@@ -429,6 +454,10 @@ export function startMyFloridaScrape({
   keywords: string[];
   folder: string;
   account: string;
+  start_date?: string | null;
+  end_date?: string | null;
+  date_range_summary?: string;
+  date_filter_ready?: boolean;
 }> {
   return request(`/myflorida/scrape${livePreviewQuery(livePreview)}`, {
     method: "POST",
@@ -440,6 +469,10 @@ export function startMyFloridaScrape({
       ad_statuses: adStatuses,
       ad_types: adTypes,
       ...(account ? { account } : {}),
+      // Omitted rather than sent as null when unset, so the payload of a run
+      // with no window is byte-for-byte what it was before this existed.
+      ...(startDate ? { start_date: startDate } : {}),
+      ...(endDate ? { end_date: endDate } : {}),
     }),
   });
 }
@@ -1031,20 +1064,37 @@ export function startMyFloridaSweep({
   adStatuses,
   maxBids = null,
   account,
+  startDate = null,
+  endDate = null,
   livePreview = false,
 }: {
   adStatuses: AdStatusOption[];
   maxBids?: number | null;
   /** Which vendor login to run as. Blank keeps the server's default. */
   account?: string;
+  /** The same posting-date window the niche flow takes, parsed by the same
+   *  server-side code — a sweep drives the same search form. */
+  startDate?: string | null;
+  endDate?: string | null;
   livePreview?: boolean;
-}): Promise<{ run_id: string; search: string; folder: string; account: string }> {
+}): Promise<{
+  run_id: string;
+  search: string;
+  folder: string;
+  account: string;
+  start_date?: string | null;
+  end_date?: string | null;
+  date_range_summary?: string;
+  date_filter_ready?: boolean;
+}> {
   return request(`/myflorida/sweep/scrape${livePreviewQuery(livePreview)}`, {
     method: "POST",
     body: JSON.stringify({
       ad_statuses: adStatuses,
       max_bids: maxBids,
       ...(account ? { account } : {}),
+      ...(startDate ? { start_date: startDate } : {}),
+      ...(endDate ? { end_date: endDate } : {}),
     }),
   });
 }

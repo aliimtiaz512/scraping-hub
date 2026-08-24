@@ -49,6 +49,13 @@ export default function MyFloridaPanel() {
   const [selectedKeywords, setSelectedKeywords] = useState<string[]>([]);
   const [adStatuses, setAdStatuses] = useState<AdStatus[]>([]);
   const [adTypes, setAdTypes] = useState<AdType[]>([]);
+  // The posting-date window. Deliberately **outside** the mode branch: it
+  // belongs to the search form rather than to what is typed into it, so it
+  // applies to keyword runs, commodity-code runs and sweeps alike — and it
+  // survives switching between the three, which is what someone comparing the
+  // same window across modes would expect.
+  const [startDate, setStartDate] = useState("");
+  const [endDate, setEndDate] = useState("");
   const [run, setRun] = useState<RunStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
@@ -111,6 +118,8 @@ export default function MyFloridaPanel() {
             adStatuses: sweepStatuses,
             maxBids: sweepMaxBids,
             account,
+            startDate: startDate || null,
+            endDate: endDate || null,
             livePreview,
           })
         : await startMyFloridaScrape({
@@ -121,6 +130,8 @@ export default function MyFloridaPanel() {
             adStatuses,
             adTypes,
             account,
+            startDate: startDate || null,
+            endDate: endDate || null,
             livePreview,
           });
       setRun(await poll(run_id));
@@ -186,6 +197,14 @@ export default function MyFloridaPanel() {
         )}
       </Card>
 
+      <PostingDateWindow
+        start={startDate}
+        end={endDate}
+        disabled={isRunning}
+        onStartChange={setStartDate}
+        onEndChange={setEndDate}
+      />
+
       {mode === "sweep" ? (
         <MyFloridaSweep
           adStatuses={sweepStatuses}
@@ -219,6 +238,7 @@ export default function MyFloridaPanel() {
         statuses: sweepStatuses.length,
         maxBids: sweepMaxBids,
         account: accountBlocked ? null : activeAccount?.label ?? null,
+        window: describeWindow(startDate, endDate),
       })}>
         <div className="flex items-center gap-2">
           <StopButton run={run} onError={setError} />
@@ -303,6 +323,7 @@ function launchSummary(
     statuses: number;
     maxBids: number | null;
     account: string | null;
+    window: string;
   },
 ): string {
   // Which account a run signs in as is not a detail — it is whose bids come
@@ -310,15 +331,110 @@ function launchSummary(
   // you have to scroll up to check.
   if (!counts.account) return "Choose a configured account to run.";
   const as = `Runs as ${counts.account}`;
+  // Appended to every mode's line rather than written into each: the window
+  // applies to all three, and a summary that mentioned it in some modes and not
+  // others would read as though it did not.
+  const when = counts.window ? ` · ${counts.window}` : "";
   if (mode === "sweep") {
     if (nothingSelected) return `${as} · pick at least one ad status to run a sweep.`;
     const cap = counts.maxBids ? ` · capped at ${counts.maxBids} ads` : "";
-    return `${as} · ${counts.statuses} ${counts.statuses === 1 ? "status" : "statuses"} · every ad classified into a niche${cap}`;
+    return `${as} · ${counts.statuses} ${counts.statuses === 1 ? "status" : "statuses"} · every ad classified into a niche${cap}${when}`;
   }
   if (nothingSelected) {
     return `${as} · select at least one ${mode === "keywords" ? "keyword" : "commodity code"} to run a search.`;
   }
   return mode === "keywords"
-    ? `${as} · ${counts.keywords} ${counts.keywords === 1 ? "search" : "searches"} · one per keyword`
-    : `${as} · ${counts.codes} ${counts.codes === 1 ? "code" : "codes"} in a single search`;
+    ? `${as} · ${counts.keywords} ${counts.keywords === 1 ? "search" : "searches"} · one per keyword${when}`
+    : `${as} · ${counts.codes} ${counts.codes === 1 ? "code" : "codes"} in a single search${when}`;
+}
+
+/** The window in words, for the launch line. Empty when nothing is set, so the
+ *  summary reads exactly as it did before this existed. */
+function describeWindow(start: string, end: string): string {
+  if (start && end) return `posted ${start} to ${end}`;
+  if (start) return `posted on or after ${start}`;
+  if (end) return `posted on or before ${end}`;
+  return "";
+}
+
+/** Start and end of the posting-date window, shared by all three modes.
+ *
+ *  Placed above the mode-specific panel rather than inside it, because it is
+ *  the one control here that means the same thing whichever mode is selected —
+ *  putting a copy in each would invite them to drift apart. */
+function PostingDateWindow({
+  start,
+  end,
+  disabled,
+  onStartChange,
+  onEndChange,
+}: {
+  start: string;
+  end: string;
+  disabled?: boolean;
+  onStartChange: (value: string) => void;
+  onEndChange: (value: string) => void;
+}) {
+  // Either end may stand alone — "everything since the first of the month" is a
+  // normal thing to ask for, and demanding a closing date for it would only
+  // invite someone to type today's and get a window that stops being right
+  // tomorrow. An inverted range is the one combination the server rejects, so
+  // it is flagged here before the button is pressed.
+  const inverted = Boolean(start && end && end < start);
+
+  return (
+    <Card
+      title="Posting date"
+      description="Narrows every mode to advertisements posted inside this window. Leave both blank for every posting date; fill only one end for an open-ended window."
+    >
+      <div className="flex flex-wrap items-end gap-4">
+        <DateField label="Start date" value={start} disabled={disabled} onChange={onStartChange} />
+        <DateField label="End date" value={end} disabled={disabled} onChange={onEndChange} />
+        {(start || end) && !disabled && (
+          <button
+            type="button"
+            onClick={() => {
+              onStartChange("");
+              onEndChange("");
+            }}
+            className="pb-1.5 text-xs font-medium text-ink-500 underline-offset-2 hover:text-ink-800 hover:underline"
+          >
+            Clear
+          </button>
+        )}
+      </div>
+      {inverted && (
+        <p className="mt-3 text-xs leading-relaxed text-red-700">
+          The end date is before the start date — no advertisement can fall in that window.
+        </p>
+      )}
+    </Card>
+  );
+}
+
+/** A native date input. The console speaks ISO throughout; the server converts
+ *  to the mm/dd/yyyy the portal's own fields take. */
+function DateField({
+  label,
+  value,
+  disabled,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  disabled?: boolean;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <div>
+      <label className="mb-1.5 block text-xs font-semibold text-ink-700">{label}</label>
+      <input
+        type="date"
+        value={value}
+        disabled={disabled}
+        onChange={(event) => onChange(event.target.value)}
+        className="rounded-lg border border-ink-200 bg-white px-3 py-1.5 text-sm text-ink-900 shadow-sm focus:border-gold-400 focus:outline-none focus:ring-2 focus:ring-gold-400/25 disabled:cursor-not-allowed disabled:bg-ink-50"
+      />
+    </div>
+  );
 }

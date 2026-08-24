@@ -30,7 +30,7 @@ from app.config import settings
 from app.core import run_manager
 from app.core.base_scraper import BaseScraper, StopRequested
 from app.core.filenames import sanitize_filename
-from app.scrapers.myflorida import accounts, storage
+from app.scrapers.myflorida import accounts, dates, storage
 from app.scrapers.myflorida.ingest import ingest_excel
 from app.scrapers.myflorida.workbook import merge_exports
 from app.core.exports import archive_run
@@ -159,6 +159,7 @@ class MFMPScraper(BaseScraper):
         ad_statuses: list[str] | None = None,
         ad_types: list[str] | None = None,
         keywords: list[str] | None = None,
+        date_range: dates.PostingDateRange | None = None,
     ):
         super().__init__(run_id)
         self.codes = codes
@@ -167,6 +168,11 @@ class MFMPScraper(BaseScraper):
         self.ad_statuses = [s for s in (ad_statuses or []) if s in AD_STATUS_LABELS]
         # Likewise for Ad Type — empty means every type.
         self.ad_types = [t for t in (ad_types or []) if t in AD_TYPE_LABELS]
+        # The posting-date window this run was launched with. Belongs to the
+        # search form rather than to what is typed into it, which is why it is
+        # one value for the run and not one per keyword. An unset window means
+        # every posting date — what every run made before this existed got.
+        self.date_range = date_range or dates.PostingDateRange()
         self.excel_path: Path | None = None
         # Resolved at the top of run() rather than here: a constructor that can
         # raise on a missing credential turns a misconfigured account into an
@@ -177,6 +183,38 @@ class MFMPScraper(BaseScraper):
     @property
     def keyword_mode(self) -> bool:
         return bool(self.keywords)
+
+    def report_date_window(self) -> None:
+        """Say, once per run, what the posting-date window is actually doing.
+
+        There is one reason this is a method and not a log line: on MyFlorida a
+        filter that did not apply is **invisible**. The portal renders no "no
+        results" message and its results table exists before a search is even
+        submitted, so a search that was never narrowed looks exactly like one
+        that was. A user who set a window and got everything back would have no
+        way to tell, and the run record would quietly agree with them.
+
+        So while `dates.PORTAL_DATE_FILTER_READY` is False — the portal
+        injection is still outstanding — a run that was *given* a window states
+        plainly that it did not get one, on the run itself and not only in a
+        log. Once the injection lands and the flag flips, this becomes the
+        ordinary "here is what was applied" line and the warning stops.
+        """
+        if not self.date_range.is_set:
+            return
+        summary = self.date_range.describe()
+        if dates.PORTAL_DATE_FILTER_READY:
+            logger.info("[run %s] [DATE WINDOW]: %s", self.run_id, summary)
+            run_manager.update_run(self.run_id, date_filter_applied=True)
+            return
+        message = (
+            f"The posting-date window ({summary}) was NOT applied: typing it into "
+            f"MyFlorida's Posting Start/End Date fields is not implemented yet. "
+            f"These results cover every posting date, not the window requested."
+        )
+        logger.warning("[run %s] %s", self.run_id, message)
+        run_manager.add_warning(self.run_id, message)
+        run_manager.update_run(self.run_id, date_filter_applied=False)
 
     # -- flow steps ---------------------------------------------------------
 
@@ -856,6 +894,10 @@ class MFMPScraper(BaseScraper):
     def run(self) -> None:
         run_manager.update_run(self.run_id, status="running")
         try:
+            # Before the browser, so the console shows what the window is doing
+            # from the first poll rather than after a login that waits on a
+            # person to type a one-time password.
+            self.report_date_window()
             self._select_account()
             # Visible, always, while manual OTP is on: the run stops at the
             # one-time password and waits for a person to type it in, and there
@@ -906,5 +948,6 @@ def execute_run(
     ad_statuses: list[str] | None = None,
     ad_types: list[str] | None = None,
     keywords: list[str] | None = None,
+    date_range: dates.PostingDateRange | None = None,
 ) -> None:
-    MFMPScraper(run_id, codes, ad_statuses, ad_types, keywords).run()
+    MFMPScraper(run_id, codes, ad_statuses, ad_types, keywords, date_range).run()

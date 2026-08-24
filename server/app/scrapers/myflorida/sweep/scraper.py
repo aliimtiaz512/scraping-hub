@@ -46,7 +46,7 @@ from app.config import settings
 from app.core import run_manager
 from app.core.base_scraper import StopRequested
 from app.core.exports import archive_run
-from app.scrapers.myflorida import storage
+from app.scrapers.myflorida import dates, storage
 from app.scrapers.myflorida.ingest import map_row, parse_excel
 from app.scrapers.myflorida.scraper import MFMPScraper, describe_error
 from app.scrapers.myflorida.sweep import export
@@ -78,8 +78,17 @@ LINK_TIMEOUT = 8
 
 
 class SweepScraper(MFMPScraper):
-    def __init__(self, run_id: str, ad_statuses: list[str], max_bids: int | None = None):
-        super().__init__(run_id, codes=[], ad_statuses=ad_statuses, ad_types=[], keywords=[])
+    def __init__(
+        self,
+        run_id: str,
+        ad_statuses: list[str],
+        max_bids: int | None = None,
+        date_range: dates.PostingDateRange | None = None,
+    ):
+        super().__init__(
+            run_id, codes=[], ad_statuses=ad_statuses, ad_types=[], keywords=[],
+            date_range=date_range,
+        )
         self.max_bids = max_bids
         self.exports: list[Path] = []
         self.excel_path: Path | None = None
@@ -388,6 +397,7 @@ class SweepScraper(MFMPScraper):
         run_manager.update_run(self.run_id, status="running")
         records: list[dict[str, Any]] = []
         try:
+            self.report_date_window()
             # The account switch is inherited from MFMPScraper along with the
             # login it feeds — a sweep signs in through the same form.
             self._select_account()
@@ -538,5 +548,10 @@ class SweepScraper(MFMPScraper):
         archive_run(self.run_id)
 
 
-def execute_run(run_id: str, ad_statuses: list[str], max_bids: int | None = None) -> None:
-    SweepScraper(run_id, ad_statuses, max_bids).run()
+def execute_run(
+    run_id: str,
+    ad_statuses: list[str],
+    max_bids: int | None = None,
+    date_range: dates.PostingDateRange | None = None,
+) -> None:
+    SweepScraper(run_id, ad_statuses, max_bids, date_range).run()

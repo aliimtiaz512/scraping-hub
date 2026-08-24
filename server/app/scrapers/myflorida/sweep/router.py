@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 from app.core import jobs, run_manager
 from app.core.filenames import sanitize_filename
 from app.db import get_session
-from app.scrapers.myflorida import accounts
+from app.scrapers.myflorida import accounts, dates
 from app.scrapers.myflorida.scraper import AD_STATUS_LABELS
 from app.scrapers.myflorida.sweep.config import OTHER, get_config, reload_config
 from app.scrapers.myflorida.sweep.models import SweepBid
@@ -38,6 +38,11 @@ class SweepRequest(BaseModel):
     account: str = accounts.DEFAULT_ACCOUNT
     # Optional ceiling for trial runs. None = every advertisement found.
     max_bids: int | None = None
+    # The posting-date window, `yyyy-mm-dd` (`mm/dd/yyyy` is also accepted).
+    # The same field the niche flow takes, parsed by the same code — a sweep
+    # drives the same search form, so a window has to mean the same thing here.
+    start_date: str | None = None
+    end_date: str | None = None
 
 
 @router.get("/accounts")
@@ -94,6 +99,12 @@ def start_scrape(
         )
     if request.max_bids is not None and request.max_bids < 1:
         raise HTTPException(status_code=400, detail="max_bids must be at least 1")
+    # Same parser, same errors, same 400 as the niche flow — one window, three
+    # ways of launching it.
+    try:
+        window = dates.parse(request.start_date, request.end_date)
+    except dates.DateRangeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     # Checked before the run exists: a sweep is the most expensive run here, and
     # it opens a visible browser someone has to answer an OTP at.
     try:
@@ -120,12 +131,22 @@ def start_scrape(
             "live_preview": live_preview,
             "account": selected.key,
             "account_label": selected.label,
+            "start_date": window.isoformat()[0],
+            "end_date": window.isoformat()[1],
+            "date_range_summary": window.describe(),
+            "date_filter_ready": dates.PORTAL_DATE_FILTER_READY,
         },
     )
-    jobs.submit(run["run_id"], execute_run, run["run_id"], statuses, request.max_bids)
+    jobs.submit(
+        run["run_id"], execute_run, run["run_id"], statuses, request.max_bids, window
+    )
     return {
         "run_id": run["run_id"], "search": search, "folder": run["folder"],
         "account": selected.key,
+        "start_date": window.isoformat()[0],
+        "end_date": window.isoformat()[1],
+        "date_range_summary": window.describe(),
+        "date_filter_ready": dates.PORTAL_DATE_FILTER_READY,
     }
 
 

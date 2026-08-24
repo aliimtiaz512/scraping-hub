@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from app.core import jobs, run_manager
 from app.core.filenames import sanitize_filename
 from app.db import get_session
-from app.scrapers.myflorida import accounts
+from app.scrapers.myflorida import accounts, dates
 from app.scrapers.myflorida.commodity_codes import CATEGORIES, get_codes, get_keywords
 from app.scrapers.myflorida.models import Bid
 from app.scrapers.myflorida.scraper import AD_TYPE_LABELS, execute_run
@@ -38,6 +38,12 @@ class ScrapeRequest(BaseModel):
     # Which vendor login to run as. Blank keeps the account a run used before
     # there was a choice, so an existing caller is unaffected.
     account: str = accounts.DEFAULT_ACCOUNT
+    # The posting-date window, `yyyy-mm-dd` (`mm/dd/yyyy` is also accepted).
+    # Either end may stand alone; both omitted means every posting date, which
+    # is what every caller written before this field got. Applies to both search
+    # modes — it belongs to the search form, not to what is typed into it.
+    start_date: str | None = None
+    end_date: str | None = None
 
 
 @router.get("/accounts")
@@ -110,6 +116,13 @@ def start_scrape(request: ScrapeRequest, live_preview: bool = False) -> dict:
     unknown_types = [t for t in ad_types if t not in AD_TYPE_OPTIONS]
     if unknown_types:
         raise HTTPException(status_code=400, detail=f"Unknown ad type: {', '.join(unknown_types)}")
+    # Rejected here rather than at the form: an unreadable or inverted window is
+    # a 400 on the button, not a run that opens a browser, waits for someone to
+    # type a one-time password, and then searches the wrong thing.
+    try:
+        window = dates.parse(request.start_date, request.end_date)
+    except dates.DateRangeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     # Only the chosen mode's list is resolved; the other stays empty so the run
     # record shows exactly what was searched.
@@ -149,9 +162,18 @@ def start_scrape(request: ScrapeRequest, live_preview: bool = False) -> dict:
             # the login address has no business on a screen.
             "account": selected.key,
             "account_label": selected.label,
+            # The window this run was launched with, on the record whether or
+            # not the portal has been asked for it yet — a run's own account of
+            # what it searched has to survive the flag below being flipped.
+            "start_date": window.isoformat()[0],
+            "end_date": window.isoformat()[1],
+            "date_range_summary": window.describe(),
+            "date_filter_ready": dates.PORTAL_DATE_FILTER_READY,
         },
     )
-    jobs.submit(run["run_id"], execute_run, run["run_id"], codes, ad_statuses, ad_types, keywords)
+    jobs.submit(
+        run["run_id"], execute_run, run["run_id"], codes, ad_statuses, ad_types, keywords, window
+    )
     return {
         "run_id": run["run_id"],
         "mode": request.mode,
@@ -159,6 +181,12 @@ def start_scrape(request: ScrapeRequest, live_preview: bool = False) -> dict:
         "keywords": keywords,
         "folder": run["folder"],
         "account": selected.key,
+        "start_date": window.isoformat()[0],
+        "end_date": window.isoformat()[1],
+        "date_range_summary": window.describe(),
+        # False while the portal injection is still outstanding, so the console
+        # can say so rather than implying a window that is already in force.
+        "date_filter_ready": dates.PORTAL_DATE_FILTER_READY,
     }
 
 
