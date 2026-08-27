@@ -165,12 +165,21 @@ export interface Job {
   niche_label?: string;
   filter_label?: string;
   module?: string;
+  /** Set while a job is parked at a checkpoint, and when it was last released.
+   *  A paused job keeps its browser and its slot — what it gives back is the
+   *  network and the CPU. */
+  paused_at?: string | null;
+  resumed_at?: string | null;
 }
 
 /** How many runs are executing, waiting, and allowed at once. */
 export interface JobCapacity {
   running: number;
   queued: number;
+  /** Parked jobs. Counted apart from `running` because they still hold a slot —
+   *  a bar reading "1 running, cap 3" with two more parked would promise
+   *  capacity that does not exist. */
+  paused: number;
   capacity: number;
 }
 
@@ -197,12 +206,15 @@ export interface RunStatus {
   scraper?: Portal | typeof SWEEP_SCRAPER;
   // queued = accepted and waiting for a slot in the scrape pool
   // (app/core/jobs.py); it has not started and no browser exists yet.
-  status: "pending" | "queued" | "running" | "completed" | "failed" | "stopped";
+  /** `paused` is a *running* job parked at a checkpoint — it still holds its
+   *  browser and its slot, so it is active, not terminal. Only completed,
+   *  failed and stopped end a run. */
+  status: "pending" | "queued" | "running" | "paused" | "completed" | "failed" | "stopped";
   step: string;
   /** MyFlorida (all three modes): the posting-date window the run was launched
    *  with, and what became of it. `date_filter_applied` is false when a window
-   *  was requested but the portal has not been asked for it — the run then
-   *  covers every posting date and says so in its warnings. */
+   *  was requested but the portal's own Start/End Date fields would not take it
+   *  — the run then covers every posting date and says so in its warnings. */
   start_date?: string | null;
   end_date?: string | null;
   date_range_summary?: string;
@@ -1014,6 +1026,32 @@ export function stopScrape(runId: string): Promise<{ stopped: boolean; run_id: s
   return request(`/runs/${runId}/stop`, { method: "POST" });
 }
 
+/** How far a job had got when it parked. Never the identifier list — that is
+ *  the engine's business, not the console's. */
+export interface JobCheckpoint {
+  records_done: number;
+  records_total: number | null;
+  position: Record<string, unknown>;
+}
+
+/**
+ * Park a running job at its next checkpoint — between records, not mid-record,
+ * so nothing is half-written. It keeps its browser, so resuming continues at
+ * the next record with nothing replayed and nothing collected twice.
+ */
+export function pauseScrape(
+  runId: string,
+): Promise<{ paused: boolean; run_id: string; checkpoint: JobCheckpoint | null }> {
+  return request(`/runs/${runId}/pause`, { method: "POST" });
+}
+
+/** Release a parked job. It continues from the record after its last. */
+export function resumeScrape(
+  runId: string,
+): Promise<{ resumed: boolean; run_id: string; checkpoint: JobCheckpoint | null }> {
+  return request(`/runs/${runId}/resume`, { method: "POST" });
+}
+
 export function getRunStatus(portal: Portal, runId: string): Promise<RunStatus> {
   return request(`/${portal}/scrape/status/${runId}`);
 }
@@ -1123,6 +1161,21 @@ export function bidnetExportUrl(): string {
  */
 export function runDownloadUrl(runId: string): string {
   return `${API_URL}/runs/${runId}/download`;
+}
+
+/**
+ * The same run's bid attachments on their own, as one dated ZIP
+ * (`MyFlorida_Bids_Attachments_2026-08-27.zip`) — the archive above minus its
+ * summary sheet, cut on demand rather than stored a second time.
+ *
+ * A second view of one artifact, not a second artifact: what it contains is
+ * always what the full download contains. Offered only where a portal keeps a
+ * documents subtree — see `runAttachmentsDownloadable`, which is what decides
+ * whether the button is shown, since this endpoint 404s for a run that
+ * downloaded nothing.
+ */
+export function runAttachmentsDownloadUrl(runId: string): string {
+  return `${API_URL}/runs/${runId}/download/attachments`;
 }
 
 /** FastAPI's generated interactive reference, served by the backend at /docs. */

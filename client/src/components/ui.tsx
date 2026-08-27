@@ -2,6 +2,8 @@
 
 import type { AnchorHTMLAttributes, ButtonHTMLAttributes, ReactNode } from "react";
 
+import type { RunStatus } from "@/lib/api";
+
 /**
  * The button scale. `primary` (navy) is reserved for the one committing action
  * on a view; everything else is `secondary` or `ghost`, so a page never has two
@@ -379,12 +381,13 @@ export function DataTable({
   );
 }
 
-/** Run lifecycle badge — shared by the live monitor and the history table. */
-export function RunBadge({
-  status,
-}: {
-  status: "pending" | "queued" | "running" | "completed" | "failed" | "stopped";
-}) {
+/** Run lifecycle badge — shared by the live monitor and the history table.
+ *
+ *  The status type is taken from `RunStatus` rather than written out again: the
+ *  two copies had already drifted once (a new state was added to the API's union
+ *  and this one silently rejected it), and one of them being a duplicate is what
+ *  made that possible. */
+export function RunBadge({ status }: { status: RunStatus["status"] }) {
   const map = {
     // pending is the instant between the run being registered and the pool
     // accepting it; queued is waiting for a slot. Both read as "Queued" to a
@@ -395,6 +398,9 @@ export function RunBadge({
     completed: { cls: "border-emerald-200 bg-emerald-50 text-emerald-700", label: "Completed" },
     failed: { cls: "border-red-200 bg-red-50 text-red-700", label: "Failed" },
     stopped: { cls: "border-ink-300 bg-ink-100 text-ink-700", label: "Stopped" },
+    // Amber, and deliberately not pulsing: a parked run is holding, not
+    // working, and a badge that throbbed would say the opposite.
+    paused: { cls: "border-amber-300 bg-amber-50 text-amber-700", label: "Paused" },
   }[status];
   const live = status === "running" || status === "pending" || status === "queued";
   return (

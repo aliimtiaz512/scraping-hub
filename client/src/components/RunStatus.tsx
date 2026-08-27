@@ -1,8 +1,12 @@
 "use client";
 
-import { runDownloadUrl, type RunStatus as RunStatusData } from "@/lib/api";
+import {
+  runAttachmentsDownloadUrl,
+  runDownloadUrl,
+  type RunStatus as RunStatusData,
+} from "@/lib/api";
 import { LinkButton, RunBadge } from "@/components/ui";
-import { downloadKind, runDownloadable } from "@/lib/runs";
+import { downloadKind, runAttachmentsDownloadable, runDownloadable } from "@/lib/runs";
 
 const STEP_LABELS: Record<string, string> = {
   queued: "Queued",
@@ -13,6 +17,7 @@ const STEP_LABELS: Record<string, string> = {
   entering_commodity_codes: "Entering commodity codes",
   selecting_ad_status: "Selecting ad status",
   selecting_ad_type: "Selecting ad type",
+  applying_date_window: "Entering the posting-date window",
   searching: "Running search",
   collecting_bids: "Collecting bid list",
   exporting_excel: "Exporting Excel",
@@ -89,6 +94,7 @@ export default function RunStatus({ run }: { run: RunStatusData }) {
   const subtitle = runSubtitle(run);
   const download = runDownloadable(run);
   const excelOnly = downloadKind(run.scraper ?? "") === "excel";
+  const attachments = runAttachmentsDownloadable(run);
 
   return (
     <section className="overflow-hidden rounded-xl border border-ink-200 bg-white shadow-sm">
@@ -203,29 +209,52 @@ export default function RunStatus({ run }: { run: RunStatusData }) {
             <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-ink-200 bg-ink-50 px-3 py-2.5">
               <div className="min-w-0">
                 <p className="text-xs font-medium text-ink-600">Results ready</p>
-                <p className="truncate text-xs text-ink-500">
+                <p className="text-xs text-ink-500">
                   {excelOnly
                     ? "The cumulative Excel report — this run's complete output."
                     : "Cumulative Excel report plus every downloaded bid document, bundled as one ZIP."}
+                  {attachments && " The second button carries the bid documents on their own."}
                 </p>
               </div>
-              <LinkButton
-                href={runDownloadUrl(run.run_id)}
-                variant="primary"
-                size="sm"
-                icon={
-                  <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden>
-                    <path d="M8 2v8m0 0L5 7m3 3l3-3M2.5 12.5h11" strokeLinecap="round" strokeLinejoin="round" />
-                  </svg>
-                }
-              >
-                {excelOnly ? "Download Excel" : "Download ZIP"}
-              </LinkButton>
+              <div className="flex flex-wrap items-center gap-2">
+                <LinkButton
+                  href={runDownloadUrl(run.run_id)}
+                  variant="primary"
+                  size="sm"
+                  icon={<DownloadIcon />}
+                >
+                  {excelOnly ? "Download Excel" : "Download ZIP"}
+                </LinkButton>
+                {/* Secondary on purpose: the full archive is the deliverable —
+                    the sheet is what indexes the folders this one contains — so
+                    the narrower cut sits beside it rather than competing with
+                    it for the first click. */}
+                {attachments && (
+                  <LinkButton
+                    href={runAttachmentsDownloadUrl(run.run_id)}
+                    variant="secondary"
+                    size="sm"
+                    icon={<DownloadIcon />}
+                  >
+                    Download attachments ZIP
+                  </LinkButton>
+                )}
+              </div>
             </div>
           )}
         </div>
       )}
     </section>
+  );
+}
+
+/** The download arrow, shared by both result buttons so they read as two ways
+ *  of taking the same thing rather than two different actions. */
+function DownloadIcon() {
+  return (
+    <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden>
+      <path d="M8 2v8m0 0L5 7m3 3l3-3M2.5 12.5h11" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
   );
 }
 

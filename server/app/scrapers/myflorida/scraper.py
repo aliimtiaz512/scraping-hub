@@ -8,11 +8,16 @@ A run searches one of two ways, decided by execute_run's arguments:
   keywords        — one search per keyword, results merged and de-duplicated by
                     ad number so an ad several keywords match downloads once.
 
+Either way the search is narrowed to a posting-date window when the run asked
+for one — the same two fields, filled by the same code, for both modes and for
+the sweep that subclasses this. See `apply_date_range`.
+
 The portal is an Angular Material single-page app. Selectors below were verified
 against the live site; the fiddly parts are the commodity-code control (a
 ngx-mat-select-search multi-select whose options load asynchronously and which
-stays disabled until they do) and the CDK overlay backdrops that intercept
-clicks until they finish animating out.
+stays disabled until they do), the CDK overlay backdrops that intercept clicks
+until they finish animating out, and the datepicker inputs, which take a typed
+date only through real keystrokes and only commit it on blur.
 """
 
 import logging
@@ -86,6 +91,44 @@ SEL = {
     "ad_type_options": (By.XPATH, "//mat-selection-list[@aria-label='Ad Type']//mat-list-option"),
     # The only free-text field on Advanced Search; capped at 100 chars by the portal.
     "title_input": (By.CSS_SELECTOR, "input[formcontrolname='title']"),
+    # -- Posting Start/End Date -------------------------------------------
+    # Two locators per field, tried in this order by `_date_input`.
+    #
+    # The formcontrolname is the stable half of these fields' outer HTML: it is
+    # what the portal's own Angular code binds the datepicker to. Everything
+    # around it is generated per render — `id="mat-input-1"`, the `ng-tns-c57-6`
+    # style scope, `data-mat-calendar="mat-datepicker-0"` — and all of it
+    # renumbers the moment another form field is added above, so none of it is
+    # matched on. `.mat-datepicker-input` pins the match to the date control
+    # rather than to any other input the same name might one day be given.
+    #
+    # The label XPath is the fallback for a build that renames the control. The
+    # words "Start Date" and "End Date" are what a person reads off the form, so
+    # they are the thing most likely to survive a rewrite of what is under them.
+    # It is anchored on the `mat-form-field-flex` wrapper rather than on the
+    # `<mat-form-field>` outside it: the flex div is the outermost element the
+    # portal's markup for these fields was captured at, so it is the outermost
+    # one we know for certain is there.
+    "posting_start_date": (By.CSS_SELECTOR, "input[formcontrolname='openDate'].mat-datepicker-input"),
+    "posting_start_date_by_label": (
+        By.XPATH,
+        "//div[contains(@class,'mat-form-field-flex')][.//mat-label[contains(normalize-space(.),'Start Date')]]"
+        "//input[contains(@class,'mat-datepicker-input')]",
+    ),
+    "posting_end_date": (By.CSS_SELECTOR, "input[formcontrolname='endDate'].mat-datepicker-input"),
+    "posting_end_date_by_label": (
+        By.XPATH,
+        "//div[contains(@class,'mat-form-field-flex')][.//mat-label[contains(normalize-space(.),'End Date')]]"
+        "//input[contains(@class,'mat-datepicker-input')]",
+    ),
+    # Only used if neither locator above resolves: the date fields sit on the
+    # Advanced Search form directly today, but the portal collapses other
+    # criteria into expansion panels and would not warn us if it did the same
+    # to these.
+    "date_panel_header": (
+        By.XPATH,
+        "//mat-expansion-panel-header[.//mat-panel-title[contains(normalize-space(.),'Date')]]",
+    ),
     "reset_button": (By.XPATH, "//button[normalize-space(.)='Reset']"),
     "commodity_panel_header": (By.XPATH, "//mat-expansion-panel-header[.//*[contains(text(),'Commodity')]]"),
     "commodity_select": (By.ID, "mat-select-commodity-code"),
@@ -117,6 +160,39 @@ LOGIN_FORM_TIMEOUT = 60
 # prevents are a too-early click, not a too-short wait — hence a settle here
 # rather than a bigger WAIT_TIMEOUT.
 LANDING_SETTLE_SECONDS = 2
+
+# The per-bid detail round trip: click the Number link, wait for the /detail/
+# route, come back to the results grid.
+#
+# Above the default element wait because these are route changes on an Angular
+# SPA that re-queries on the way back, not element lookups on a page that is
+# already up — and the portal degrades under exactly the load a hundred-bid run
+# puts on it, so the tail of a long run is where a bid is slowest, not the head.
+# Not raised further than this, because the ceiling is paid twice: a bid that is
+# genuinely unreachable now waits it out on both attempts, so 90s here is 3
+# minutes of a run rather than the 1 minute it used to be. That is the right
+# trade at one or two failures in a run of a hundred and the wrong one if the
+# portal is down — which is what the attempt count in the error line is for.
+BID_PAGE_TIMEOUT = 90
+
+# How many times a bid's detail page is attempted before it is recorded as
+# failed. A timeout here is usually the grid or the route being slow for a
+# moment, not the bid being unreachable: the retry re-resolves the Number link
+# from a restored results page, which is the state the first attempt expected to
+# find and occasionally did not.
+BID_ATTEMPTS = 2
+
+# Breathing room after the detail route resolves, before its document list is
+# read. The route change is not the render — the attachments arrive after it,
+# and reading too early finds a bid with no documents rather than an error.
+DETAIL_RENDER_SECONDS = 3
+
+# How long to look for the Posting Start/End Date inputs. Short, unlike the
+# global element wait: these are two fields on a form that has already rendered
+# by the time we reach for them, so an absent one means the form changed shape,
+# not that it is still loading — and a keyword run would otherwise pay the full
+# wait twice per keyword to learn that.
+DATE_FIELD_TIMEOUT = 10
 
 # Politeness gap between keyword passes; the portal degrades under rapid repeated
 # navigation and a keyword run reloads the heavy landing page once per keyword.
@@ -173,6 +249,13 @@ class MFMPScraper(BaseScraper):
         # one value for the run and not one per keyword. An unset window means
         # every posting date — what every run made before this existed got.
         self.date_range = date_range or dates.PostingDateRange()
+        # Whether the "window did not go in" warning has already been recorded.
+        # A keyword run makes one pass per keyword and a form that has changed
+        # shape fails all of them; the run record wants that said once.
+        self._date_failure_reported = False
+        # And whether the portal's date inputs turned out not to be on the form
+        # at all, so later passes skip looking for them again.
+        self._date_fields_missing = False
         self.excel_path: Path | None = None
         # Resolved at the top of run() rather than here: a constructor that can
         # raise on a missing credential turns a misconfigured account into an
@@ -185,7 +268,7 @@ class MFMPScraper(BaseScraper):
         return bool(self.keywords)
 
     def report_date_window(self) -> None:
-        """Say, once per run, what the posting-date window is actually doing.
+        """Say, once per run, what the posting-date window is going to do.
 
         There is one reason this is a method and not a log line: on MyFlorida a
         filter that did not apply is **invisible**. The portal renders no "no
@@ -194,11 +277,12 @@ class MFMPScraper(BaseScraper):
         that was. A user who set a window and got everything back would have no
         way to tell, and the run record would quietly agree with them.
 
-        So while `dates.PORTAL_DATE_FILTER_READY` is False — the portal
-        injection is still outstanding — a run that was *given* a window states
-        plainly that it did not get one, on the run itself and not only in a
-        log. Once the injection lands and the flag flips, this becomes the
-        ordinary "here is what was applied" line and the warning stops.
+        So this runs before the browser does, and states the window on the run
+        record itself. It is the optimistic half of the account: the pessimistic
+        half is `apply_date_range`, which retracts it — warning and flipping
+        `date_filter_applied` back to False — if the portal's own date fields
+        turn out not to take the value. With `dates.PORTAL_DATE_FILTER_READY`
+        off, nothing is typed at all and the retraction is issued here instead.
         """
         if not self.date_range.is_set:
             return
@@ -208,13 +292,15 @@ class MFMPScraper(BaseScraper):
             run_manager.update_run(self.run_id, date_filter_applied=True)
             return
         message = (
-            f"The posting-date window ({summary}) was NOT applied: typing it into "
-            f"MyFlorida's Posting Start/End Date fields is not implemented yet. "
-            f"These results cover every posting date, not the window requested."
+            f"The posting-date window ({summary}) was NOT applied: entering it into "
+            f"MyFlorida's Posting Start/End Date fields is switched off for this "
+            f"deployment. These results cover every posting date, not the window "
+            f"requested."
         )
         logger.warning("[run %s] %s", self.run_id, message)
         run_manager.add_warning(self.run_id, message)
         run_manager.update_run(self.run_id, date_filter_applied=False)
+        self._date_failure_reported = True
 
     # -- flow steps ---------------------------------------------------------
 
@@ -451,6 +537,204 @@ class MFMPScraper(BaseScraper):
             [AD_TYPE_LABELS[t] for t in self.ad_types],
         )
 
+    # -- posting-date window ------------------------------------------------
+
+    def apply_date_range(self) -> None:
+        """Put this run's posting-date window into the portal's own date fields.
+
+        Called once per search pass, immediately before Search, by all three
+        modes — keyword, commodity code and the ad-status sweep. They are three
+        ways of driving the same form, so the window is applied in the one place
+        they share rather than three times over.
+
+        Both fields are written on every pass, including when the run asked for
+        no window: an empty value clears the field. That matters because the
+        form is reached fresh each pass and a date left behind — the portal's
+        own default, or the previous keyword's window on a form that did not
+        reset — would narrow a search nobody asked to narrow, and would do it
+        invisibly. "No window" has to mean an empty field, not an unread one.
+
+        A field that will not take the value is not allowed to pass quietly.
+        MyFlorida renders no "no results" message, so a search that was never
+        narrowed looks exactly like one that was; a run whose window did not go
+        in therefore says so on the run record and not only in a log, the same
+        way it does when the injection is switched off outright.
+        """
+        if not dates.PORTAL_DATE_FILTER_READY:
+            return
+        if self._date_fields_missing:
+            # Settled on an earlier pass. Re-proving it costs the element wait
+            # four times over, and a keyword run would pay that per keyword.
+            if self.date_range.is_set:
+                self._report_date_window_failure()
+            return
+        if self.date_range.is_set:
+            self.set_step("applying_date_window")
+        # The Ad Status / Ad Type panels were just clicked and their overlay may
+        # still be animating out over these inputs.
+        self._wait_no_backdrop()
+        # Both fields are written even when the first one fails, rather than
+        # short-circuiting: an End Date left holding last month is its own wrong
+        # search, and the log should name both fields that went wrong, not the
+        # first one that did.
+        start_ok = self._fill_date_field(
+            "Start Date", "posting_start_date", self.date_range.portal_start
+        )
+        end_ok = self._fill_date_field(
+            "End Date", "posting_end_date", self.date_range.portal_end
+        )
+        if start_ok and end_ok:
+            if self.date_range.is_set and not self._date_failure_reported:
+                logger.info(
+                    " ├── [DATE WINDOW APPLIED]: %s to %s",
+                    self.date_range.portal_start or "(any)",
+                    self.date_range.portal_end or "(any)",
+                )
+                # Confirmed here as well as announced in `report_date_window`,
+                # so the run record stands on what the fields actually took.
+                # Not raised back to True once a pass has failed: a keyword run
+                # whose window went in for eight keywords and not the ninth
+                # covered every posting date for the ninth, and the record has
+                # to keep saying so.
+                run_manager.update_run(self.run_id, date_filter_applied=True)
+            return
+        # Only a window that was asked for can fail to be applied; clearing a
+        # field the portal does not have is not a failure.
+        if self.date_range.is_set:
+            self._report_date_window_failure()
+
+    def _fill_date_field(self, name: str, key: str, value: str) -> bool:
+        """Clear one date input and type `value` into it; confirm it took.
+
+        Returns False only when the field was found and would not hold the
+        value. A field that is not on the form at all is reported through
+        `_date_input` and returns False there, so the caller sees one answer:
+        did the window go in.
+        """
+        element = self._date_input(name, key)
+        if element is None:
+            return False
+        for attempt in range(1, 3):
+            try:
+                self._type_date(element, value)
+                shown = element.get_attribute("value")
+            except (TimeoutException, WebDriverException) as exc:
+                logger.warning(
+                    "[run %s] %s field: %s on attempt %d",
+                    self.run_id, name, exc.__class__.__name__, attempt,
+                )
+                shown = None
+            if dates.same_portal_date(shown, value):
+                return True
+            # Re-resolve before retrying: a datepicker that rejected the text
+            # can re-render its input, leaving the handle we hold stale.
+            element = self._date_input(name, key) or element
+        logger.warning(
+            "[run %s] %s field would not hold %r (shows %r)",
+            self.run_id, name, value, shown,
+        )
+        return False
+
+    def _date_input(self, name: str, key: str):
+        """Resolve one of the two posting-date inputs, or None.
+
+        Tries the Angular form-control name first and the visible label second —
+        see the note above these selectors for why neither the element id nor
+        the `ng-tns-*` scope class is used. If both miss, an expansion panel is
+        opened on the chance the portal has moved the dates behind one, and the
+        pair is tried once more.
+        """
+        found = self._find_date_input(key)
+        if found is not None:
+            return found
+        if self._expand_date_panel():
+            found = self._find_date_input(key)
+            if found is not None:
+                return found
+        # Remembered for the rest of the run: a form missing these inputs on one
+        # pass is missing them on the next, and the lookups are not free.
+        self._date_fields_missing = True
+        if self.date_range.is_set:
+            logger.warning(
+                "[run %s] MyFlorida's %s field is not on the Advanced Search form — "
+                "the portal's search form has changed and this run's posting-date "
+                "window could not be entered.",
+                self.run_id, name,
+            )
+        return None
+
+    def _find_date_input(self, key: str):
+        for locator in (SEL[key], SEL[f"{key}_by_label"]):
+            try:
+                element = self.wait(DATE_FIELD_TIMEOUT).until(
+                    EC.presence_of_element_located(locator)
+                )
+            except (TimeoutException, WebDriverException):
+                continue
+            if element.is_enabled():
+                return element
+        return None
+
+    def _expand_date_panel(self) -> bool:
+        """Best-effort: open an expansion panel whose title mentions a date.
+        True only if one was there and closed, so the caller knows a retry is
+        worth making."""
+        try:
+            header = self.driver.find_element(*SEL["date_panel_header"])
+            if header.get_attribute("aria-expanded") == "true":
+                return False
+            self._robust_click(header)
+            return True
+        except (TimeoutException, WebDriverException):
+            return False
+
+    def _type_date(self, element, value: str) -> None:
+        """Empty the field, then type `value` as keystrokes.
+
+        Select-all-and-delete rather than `element.clear()`: Angular binds to the
+        input event, and `clear()` empties the DOM value without firing one — it
+        leaves the form control still holding the old date behind a field that
+        looks empty, which is the worst of both. Real keystrokes go through the
+        same path a person's do, so the datepicker parses them the same way.
+
+        The trailing Tab is what commits the parse. Without a blur the typed
+        text can still be sitting unparsed in the input when Search reads the
+        form, and the search runs on the previous value.
+        """
+        self.scroll_into_view(element)
+        self._wait_no_backdrop()
+        element.click()
+        element.send_keys(Keys.CONTROL, "a")
+        element.send_keys(Keys.DELETE)
+        if value:
+            element.send_keys(value)
+        element.send_keys(Keys.TAB)
+        # The datepicker writes its parsed value back on blur; give Angular's
+        # change detection the tick it needs before the value is read back.
+        time.sleep(0.5)
+        self._wait_no_backdrop()
+
+    def _report_date_window_failure(self) -> None:
+        """Say on the run itself that the window did not go in.
+
+        Once per run, not once per pass: a keyword run makes one pass per
+        keyword and a form that has changed shape will fail every one of them,
+        and forty copies of the same warning would bury the rest of the run's
+        record rather than emphasise this one.
+        """
+        if self._date_failure_reported:
+            return
+        self._date_failure_reported = True
+        message = (
+            f"The posting-date window ({self.date_range.describe()}) was NOT applied: "
+            f"MyFlorida's Posting Start/End Date fields would not take it. These "
+            f"results cover every posting date, not the window requested."
+        )
+        logger.warning("[run %s] %s", self.run_id, message)
+        run_manager.add_warning(self.run_id, message)
+        run_manager.update_run(self.run_id, date_filter_applied=False)
+        self.screenshot("date_window_not_applied")
+
     def enter_keyword(self, keyword: str) -> None:
         """Search on `keyword` via the Title field — one keyword per search.
 
@@ -641,11 +925,11 @@ class MFMPScraper(BaseScraper):
         self.set_step(f"downloading_documents:{number}")
         result = {"number": number, "title": title, "documents": [], "error": None}
 
-        link = self.wait().until(EC.element_to_be_clickable((By.LINK_TEXT, number)))
+        link = self.wait(BID_PAGE_TIMEOUT).until(EC.element_to_be_clickable((By.LINK_TEXT, number)))
         self.scroll_into_view(link)
         link.click()
-        self.wait().until(lambda d: "/detail/" in d.current_url)
-        time.sleep(2)  # let the detail page (incl. document list) render
+        self.wait(BID_PAGE_TIMEOUT).until(lambda d: "/detail/" in d.current_url)
+        time.sleep(DETAIL_RENDER_SECONDS)  # the route resolving is not the render
 
         bid_dir = storage.bid_folder(self.run_dir, number, title)
 
@@ -668,7 +952,7 @@ class MFMPScraper(BaseScraper):
                 result.setdefault("document_errors", []).append(f"doc {index}: {exc.__class__.__name__}")
 
         self.driver.back()
-        self.wait().until(EC.presence_of_element_located(SEL["results_rows"]))
+        self.wait(BID_PAGE_TIMEOUT).until(EC.presence_of_element_located(SEL["results_rows"]))
         time.sleep(1)
         return result
 
@@ -678,7 +962,9 @@ class MFMPScraper(BaseScraper):
         try:
             if "/detail/" in self.driver.current_url:
                 self.driver.back()
-                self.wait().until(EC.presence_of_element_located(SEL["results_rows"]))
+                self.wait(BID_PAGE_TIMEOUT).until(
+                    EC.presence_of_element_located(SEL["results_rows"])
+                )
                 time.sleep(1)
         except (TimeoutException, WebDriverException):
             pass
@@ -740,6 +1026,9 @@ class MFMPScraper(BaseScraper):
             self.enter_keyword(keyword)
         self.select_ad_status()
         self.select_ad_type()
+        # Last, so nothing that expands a panel or closes an overlay can land on
+        # top of the value between typing it and pressing Search.
+        self.apply_date_range()
         outcome = self.submit_search()
         bids = self.collect_bids() if outcome == self.RESULTS else []
         return outcome, bids
@@ -794,19 +1083,46 @@ class MFMPScraper(BaseScraper):
 
         `processed` carries across keyword passes: an ad that several keywords
         match is downloaded once, and the pass that first found it wins.
+
+        A bid that times out is attempted again rather than written off on the
+        first try. The usual cause is the results grid or the detail route being
+        slow for a moment — a longer wait does not help with that, because by
+        then the browser is on the wrong page and waiting on a link that is not
+        coming. Stepping back to the results list and asking again is what
+        actually recovers it, and a bid lost here is a bid whose attachments are
+        missing from the export with only a line in the error list to say so.
         """
         for bid in bids:
             if bid["number"] in processed:
                 continue
             processed.add(bid["number"])
+            run_manager.add_bid_result(self.run_id, self._process_one_bid(bid))
+
+    def _process_one_bid(self, bid: dict) -> dict:
+        """One bid, retried up to BID_ATTEMPTS times; never raises."""
+        number = bid["number"]
+        for attempt in range(1, BID_ATTEMPTS + 1):
             try:
-                result = self.process_bid(bid)
+                return self.process_bid(bid)
             except (TimeoutException, WebDriverException) as exc:
-                result = {**bid, "documents": [], "error": str(exc)[:300]}
-                run_manager.add_error(self.run_id, f"bid {bid['number']}: {exc.__class__.__name__}")
-                self.screenshot(f"bid_{bid['number']}")
+                last = exc
+                # Only the attempt that gives up is worth a picture; one per try
+                # would fill the run folder with the same screen twice.
+                if attempt == BID_ATTEMPTS:
+                    self.screenshot(f"bid_{number}")
+                else:
+                    logger.warning(
+                        "[run %s] bid %s: %s on attempt %d — retrying",
+                        self.run_id, number, exc.__class__.__name__, attempt,
+                    )
+                # Back to the results list either way: the next attempt and the
+                # next bid both need the Number links reachable again.
                 self._recover_to_results()
-            run_manager.add_bid_result(self.run_id, result)
+        run_manager.add_error(
+            self.run_id,
+            f"bid {number}: {last.__class__.__name__} after {BID_ATTEMPTS} attempts",
+        )
+        return {**bid, "documents": [], "error": str(last)[:300]}
 
     def _run_codes(self) -> None:
         """One search across every selected commodity code."""

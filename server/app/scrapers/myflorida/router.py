@@ -163,8 +163,8 @@ def start_scrape(request: ScrapeRequest, live_preview: bool = False) -> dict:
             "account": selected.key,
             "account_label": selected.label,
             # The window this run was launched with, on the record whether or
-            # not the portal has been asked for it yet — a run's own account of
-            # what it searched has to survive the flag below being flipped.
+            # not the portal took it — a run's own account of what it searched
+            # has to survive the flag below being turned off.
             "start_date": window.isoformat()[0],
             "end_date": window.isoformat()[1],
             "date_range_summary": window.describe(),
@@ -184,8 +184,9 @@ def start_scrape(request: ScrapeRequest, live_preview: bool = False) -> dict:
         "start_date": window.isoformat()[0],
         "end_date": window.isoformat()[1],
         "date_range_summary": window.describe(),
-        # False while the portal injection is still outstanding, so the console
-        # can say so rather than implying a window that is already in force.
+        # False only if entering the window into the portal's own date fields
+        # has been switched off, so the console can say so rather than implying
+        # a window that is not in force.
         "date_filter_ready": dates.PORTAL_DATE_FILTER_READY,
     }
 

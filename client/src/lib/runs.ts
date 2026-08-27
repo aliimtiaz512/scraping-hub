@@ -159,7 +159,17 @@ const NO_DOWNLOAD = new Set(["naics", "caleprocure", "evalconfig"]);
  * button label, so when it drifts the endpoint quietly serves a .xlsx while the
  * whole UI still says ZIP.
  */
-const EXCEL_ONLY = new Set(["sam", "septa", "ridemetro", "unison"]);
+const EXCEL_ONLY = new Set(["sam", "septa", "ridemetro", "unison", "emma"]);
+
+/**
+ * Portals whose archive keeps its bid documents in their own subtree, so those
+ * documents can be served as a ZIP of their own alongside the full download.
+ * Mirrors `_ATTACHMENT_SUBTREES` in app/core/exports.py.
+ *
+ * Everywhere else the attachments are the whole archive bar a spreadsheet,
+ * which is not a distinction worth a second button.
+ */
+const ATTACHMENTS_ZIP = new Set(["myflorida", "myflorida_sweep"]);
 
 /** True when this portal's runs produce something to download. */
 export function portalDownloadable(portal: string): boolean {
@@ -179,4 +189,21 @@ export function downloadKind(portal: string): "zip" | "excel" {
  */
 export function runDownloadable(run: RunStatus): boolean {
   return run.status === "completed" && portalDownloadable(run.scraper ?? "");
+}
+
+/**
+ * True when this run can hand back its bid attachments as a ZIP of their own.
+ *
+ * The document count is part of the question, not just the portal: the endpoint
+ * 404s for a run that downloaded nothing rather than serving an empty archive,
+ * so a button shown for one would be a button that fails when pressed. A run
+ * that found bids but no attachments is a normal outcome on MFMP — plenty of
+ * advertisements carry their whole notice in the listing.
+ */
+export function runAttachmentsDownloadable(run: RunStatus): boolean {
+  return (
+    run.status === "completed" &&
+    ATTACHMENTS_ZIP.has(run.scraper ?? "") &&
+    (run.documents_downloaded ?? 0) > 0
+  );
 }

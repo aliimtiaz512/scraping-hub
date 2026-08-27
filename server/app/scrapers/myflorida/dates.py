@@ -15,8 +15,8 @@ Two formats meet here and the boundary between them is the point of this module:
 Converting at the edge rather than in the browser keeps the ambiguous format
 inside the one process that knows which portal it is talking to. A caller may
 send either (a `curl` user reaching for the portal's format should not be
-tripped up), but what leaves for the portal is always `portal_start` /
-`portal_end`.
+tripped up), but what is typed into MyFlorida's Posting Start Date / End Date
+fields is always `portal_start` / `portal_end`.
 """
 
 from __future__ import annotations
@@ -31,24 +31,23 @@ _ACCEPTED = ("%Y-%m-%d", "%m/%d/%Y")
 PORTAL_FORMAT = "%m/%d/%Y"
 
 # ---------------------------------------------------------------------------
-# Whether the window actually reaches the portal yet.
+# Whether the window is typed into the portal's own date fields.
 # ---------------------------------------------------------------------------
 #
-# **False until the portal injection lands** (the step that types these dates
-# into MyFlorida's Posting Start/End Date fields, which is blocked on the outer
-# HTML for those inputs). Everything else is built and working: the console
-# collects the window, the API validates it, and the run record carries it.
+# True: every mode fills MyFlorida's Posting Start Date / End Date inputs before
+# submitting the search (see `MFMPScraper.apply_date_range`).
 #
-# It is a flag rather than an absence because of how this particular failure
-# would look. MyFlorida renders no "no results" message, so a search that was
-# never narrowed is DOM-identical to one that was — a user who set a window and
-# got back everything would have no way to tell, and the run record would agree
-# with them. So while this is False, every run that requests a window says
-# loudly that it did not get one (see `MFMPScraper.report_date_window`).
-#
-# Flipping this to True is the last line of the portal-injection work; nothing
-# else needs to change with it.
-PORTAL_DATE_FILTER_READY = False
+# It survives as a switch rather than being deleted because of how this
+# particular failure would look if the injection ever had to be turned off.
+# MyFlorida renders no "no results" message, so a search that was never narrowed
+# is DOM-identical to one that was — a user who set a window and got back
+# everything would have no way to tell, and the run record would agree with
+# them. So with this False, nothing is typed and every run that requests a
+# window says loudly that it did not get one (see
+# `MFMPScraper.report_date_window`). That is also the state a run lands in when
+# the fields are on the page but will not take the value, which is the case this
+# was really written for.
+PORTAL_DATE_FILTER_READY = True
 
 
 class DateRangeError(ValueError):
@@ -97,6 +96,25 @@ class PostingDateRange:
         if self.end:
             return f"posted on or before {self.end.isoformat()}"
         return "any posting date"
+
+
+def same_portal_date(shown: str | None, expected: str | None) -> bool:
+    """Whether a date field's on-screen value is the date we typed into it.
+
+    Read back rather than trusted, because a filter that did not take is
+    invisible on this portal. Compared as dates and not as strings: Angular
+    Material re-renders what it parsed, so a field typed `08/01/2026` can come
+    back `8/1/2026` — the same day, and not a mismatch worth failing a run over.
+    Two empty values match, which is how a field we meant to clear is confirmed
+    clear.
+    """
+    left, right = (shown or "").strip(), (expected or "").strip()
+    if not left or not right:
+        return not left and not right
+    try:
+        return datetime.strptime(left, PORTAL_FORMAT) == datetime.strptime(right, PORTAL_FORMAT)
+    except ValueError:
+        return left == right
 
 
 def _one(value: str | None, field: str) -> date | None:

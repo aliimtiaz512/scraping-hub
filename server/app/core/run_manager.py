@@ -30,11 +30,27 @@ _runs: dict[str, dict[str, Any]] = {}
 # user-stopped run reads as a clean "Stopped" instead of a scary "Failed".
 _stopped: set[str] = set()
 
+# run_ids the user asked to pause. A worker parks at its next checkpoint while
+# its id is in here and carries on the moment it leaves — see
+# BaseScraper.raise_if_stopped, which is the one place that waits.
+#
+# A set rather than a status field because pause has to be answerable from a
+# scraper thread thousands of times a run, without a dictionary lookup racing a
+# status write from the API thread.
+_paused: set[str] = set()
+# Signalled whenever `_paused` shrinks, so a parked worker wakes at once on
+# Resume rather than at the end of a poll interval.
+_resumed = threading.Condition(_lock)
+
 # Terminal statuses — a run in any of these is finished and no longer active.
 TERMINAL_STATUSES = ("completed", "failed", "stopped")
 # Statuses a run can be stopped from: queued (waiting for a slot — see
 # app/core/jobs) and everything up to and including execution.
-STOPPABLE_STATUSES = ("pending", "queued", "running")
+STOPPABLE_STATUSES = ("pending", "queued", "running", "paused")
+# Statuses a run can be paused from. Only a run that is actually executing:
+# pausing a queued run would mean holding a slot open for work that has not
+# started, when simply leaving it queued already achieves that.
+PAUSABLE_STATUSES = ("running",)
 
 
 def _persist(run: dict[str, Any]) -> None:
@@ -181,6 +197,11 @@ def request_stop(run_id: str) -> bool:
         if not run or run.get("status") not in STOPPABLE_STATUSES:
             return False
         _stopped.add(run_id)
+        # A parked worker is asleep in `await_resume`; releasing it here is what
+        # lets a paused run be stopped outright instead of having to be resumed
+        # first only to be stopped a moment later.
+        _paused.discard(run_id)
+        _resumed.notify_all()
         run["status"] = "stopped"
         run["step"] = "stopped"
         run["finished_at"] = run.get("finished_at") or datetime.now().isoformat()
@@ -192,6 +213,75 @@ def request_stop(run_id: str) -> bool:
 def is_stop_requested(run_id: str) -> bool:
     with _lock:
         return run_id in _stopped
+
+
+def request_pause(run_id: str) -> bool:
+    """Ask an executing run to park at its next checkpoint. False if it can't.
+
+    The run keeps its slot and its browser — this is a hold, not a teardown, and
+    that is what makes resuming exact: the worker is still standing where it
+    stopped, so it carries on at the next record rather than replaying anything.
+    What it gives up is the network and the CPU, which is what someone pausing a
+    long SAM run to get a SEPTA delivery out actually wants back.
+    """
+    with _lock:
+        run = _runs.get(run_id)
+        if not run or run.get("status") not in PAUSABLE_STATUSES:
+            return False
+        _paused.add(run_id)
+        run["status"] = "paused"
+        run["paused_at"] = datetime.now().isoformat()
+        snapshot = dict(run)
+    _persist(snapshot)
+    logger.info("[run %s] pause requested", run_id)
+    return True
+
+
+def request_resume(run_id: str) -> bool:
+    """Release a parked run. False if it was not paused.
+
+    Wakes the worker immediately rather than letting it find out on its next
+    poll: a resume that takes effect in a second reads as a control, and one
+    that takes effect in thirty reads as a bug.
+    """
+    with _lock:
+        run = _runs.get(run_id)
+        if not run or run_id not in _paused:
+            return False
+        _paused.discard(run_id)
+        if run.get("status") == "paused":
+            run["status"] = "running"
+        run["resumed_at"] = datetime.now().isoformat()
+        snapshot = dict(run)
+        _resumed.notify_all()
+    _persist(snapshot)
+    logger.info("[run %s] resumed", run_id)
+    return True
+
+
+def is_paused(run_id: str) -> bool:
+    with _lock:
+        return run_id in _paused
+
+
+def await_resume(run_id: str, timeout: float = 1.0) -> bool:
+    """Block while this run is paused. True if it is still paused on return.
+
+    Bounded rather than indefinite so a parked worker stays responsive to a
+    *stop* — pausing and then deciding to abandon the run is an ordinary thing
+    to do, and a worker asleep on a condition with no timeout would not notice
+    until someone resumed it first.
+    """
+    with _lock:
+        if run_id not in _paused:
+            return False
+        _resumed.wait(timeout)
+        return run_id in _paused
+
+
+def paused_runs() -> set[str]:
+    with _lock:
+        return set(_paused)
 
 
 def update_run(run_id: str, **fields: Any) -> None:

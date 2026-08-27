@@ -24,7 +24,7 @@ from urllib3.exceptions import HTTPError as _Urllib3HTTPError
 from webdriver_manager.chrome import ChromeDriverManager
 
 from app.config import settings
-from app.core import live, run_manager
+from app.core import checkpoints, live, run_manager
 from app.core.filenames import sanitize_filename
 
 logger = logging.getLogger(__name__)
@@ -377,11 +377,65 @@ class BaseScraper:
                 pass
 
     def raise_if_stopped(self) -> None:
-        """Checkpoint: raise StopRequested if a stop was asked for. Called at
-        safe points (each step, each navigate attempt, the download wait) so a
-        stop takes effect promptly even between Selenium calls."""
+        """Checkpoint: park while paused, and raise StopRequested on a stop.
+
+        Every scraper already calls this at its safe points — each step, each
+        navigate attempt, each record — which is exactly the set of places it is
+        safe to *hold* as well as to abandon. So pause needs no new call sites in
+        any of the eight portals: the seam that was cut for stopping is the seam
+        pausing wants, and a run pauses between records rather than in the middle
+        of one because that is where these calls already sit.
+
+        A pause holds the thread and the browser. That is deliberate: it is what
+        makes resuming exact — the worker is still standing where it stopped, so
+        it continues at the next record with nothing replayed and nothing
+        collected twice. The cost is that a paused run keeps its concurrency slot
+        (`jobs.stats` reports paused runs separately so the console can say so);
+        what it gives back is the network and the CPU, which is the thing someone
+        pausing a long run to get an urgent one out is actually short of.
+
+        Stop is checked *first and again after*: a run that is paused and then
+        stopped must not have to be resumed before it can be abandoned.
+        """
         if self._stop_requested or run_manager.is_stop_requested(self.run_id):
             raise StopRequested("run stopped by user")
+
+        if run_manager.is_paused(self.run_id):
+            checkpoints.save(self.run_id)
+            logger.info("[run %s] paused — holding at %s", self.run_id, self.step or "checkpoint")
+            while run_manager.await_resume(self.run_id):
+                # Bounded waits, so a stop lands on a parked worker promptly
+                # rather than waiting for a resume that may never come.
+                if self._stop_requested or run_manager.is_stop_requested(self.run_id):
+                    raise StopRequested("run stopped by user")
+            logger.info("[run %s] resumed", self.run_id)
+
+        if self._stop_requested or run_manager.is_stop_requested(self.run_id):
+            raise StopRequested("run stopped by user")
+
+    # -- checkpointing ------------------------------------------------------
+
+    def begin_checkpoint(self, scraper: str = "") -> None:
+        """Open this run's checkpoint, adopting a resumed one if there is one."""
+        checkpoints.start(self.run_id, scraper or self.__class__.__name__)
+
+    def note_record(self, identifier: str, *, flush: bool = False, **position: object) -> None:
+        """Mark one record extracted, so a resume never collects it twice.
+
+        `identifier` is whatever that portal identifies a record by — a
+        solicitation id, an ad number, a detail URL. Membership, not a count: a
+        count is only enough if the portal returns the same rows in the same
+        order on the way back in, and none of these portals promise that.
+        """
+        checkpoints.record(
+            self.run_id, identifier=identifier, flush=flush,
+            position=position or None,
+        )
+
+    def already_done(self, identifier: str) -> bool:
+        """True when a resumed run has already extracted this record."""
+        checkpoint = checkpoints.get(self.run_id)
+        return bool(checkpoint and identifier in checkpoint.processed)
 
     def scroll_into_view(self, element) -> None:
         self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", element)

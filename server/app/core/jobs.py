@@ -116,6 +116,24 @@ def depth() -> int:
         return sum(1 for f in _futures.values() if not f.running() and not f.done())
 
 
+def paused() -> int:
+    """Runs holding a slot but doing nothing — parked at a checkpoint.
+
+    Counted apart from `active()` because the two mean different things to
+    someone deciding whether to start another run. A paused run has given back
+    the network and the CPU, which is what pausing is for, but it is still
+    standing on a thread with a browser open: the slot is not free, and a
+    console that showed "1 running, cap 3" while two more were parked would be
+    promising capacity that does not exist.
+    """
+    parked = run_manager.paused_runs()
+    with _lock:
+        return sum(1 for run_id in _futures if run_id in parked)
+
+
 def stats() -> dict[str, int]:
     """What the console shows above the job list."""
-    return {"running": active(), "queued": depth(), "capacity": CONCURRENCY}
+    return {
+        "running": active(), "queued": depth(),
+        "paused": paused(), "capacity": CONCURRENCY,
+    }

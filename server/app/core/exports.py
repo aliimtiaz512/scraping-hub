@@ -20,6 +20,7 @@ import logging
 import shutil
 import tempfile
 import zipfile
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -151,6 +152,117 @@ def excel_bytes(run: dict[str, Any]) -> tuple[bytes, str] | None:
         except OSError:
             logger.exception("[run %s] could not read excel at %s", run.get("run_id"), path)
     return None
+
+
+# ---------------------------------------------------------------------------
+# Attachments on their own.
+# ---------------------------------------------------------------------------
+#
+# The run archive is the deliverable and its layout is fixed — one summary sheet
+# beside the document folders it indexes. This is a second, narrower view of the
+# same archive for the reviewer who wants only the files: the bid folders, the
+# sheet left behind.
+#
+# It is built on demand rather than written at completion, and that is the whole
+# design. A cached copy would double the disk every run holds forever to save a
+# few seconds once, on a download most runs never get — and the archive it is
+# cut from is already on disk, so there is nothing to recompute.
+#
+# Only portals with a documents subtree can offer it. Everywhere else the
+# attachments *are* the archive minus a spreadsheet, which is not a distinction
+# worth a second button, or there are no attachments at all.
+_ATTACHMENT_SUBTREES = {"myflorida", "myflorida_sweep"}
+
+
+def _attachment_subtree(run: dict[str, Any]) -> tuple[str, str] | None:
+    """(path prefix inside the archive, ZIP name stem), or None for a portal
+    that has no attachments-only view.
+
+    The prefix comes from the portal's own storage module rather than being
+    spelled again here: the layout has one owner, and a copy of it in core would
+    keep serving an empty ZIP the day that owner renamed a folder.
+    """
+    if run.get("scraper") not in _ATTACHMENT_SUBTREES:
+        return None
+    from app.scrapers.myflorida import storage
+
+    return (
+        f"{storage.EXPORT_DIRNAME}/{storage.BIDS_DIRNAME}",
+        "MyFlorida_Bids_Attachments",
+    )
+
+
+def attachments_supported(run: dict[str, Any]) -> bool:
+    """Whether this run can serve its attachments on their own. The UI asks so
+    it can show the second button only where it leads somewhere."""
+    return _attachment_subtree(run) is not None
+
+
+def attachments_zip_name(run: dict[str, Any]) -> str:
+    """`MyFlorida_Bids_Attachments_2026-08-27.zip`.
+
+    Dated by when the run *started*, not by when the button was pressed: two
+    downloads of one run have to arrive under one name, and a reviewer sorting a
+    downloads folder is looking for the day the bids were collected.
+    """
+    subtree = _attachment_subtree(run)
+    stem = subtree[1] if subtree else f"{run.get('scraper') or 'results'}_attachments"
+    started = str(run.get("started_at") or "")[:10]
+    day = started if len(started) == 10 and started[4] == started[7] == "-" else date.today().isoformat()
+    return f"{stem}_{day}.zip"
+
+
+def build_attachments_zip(run: dict[str, Any], out_path: Path) -> int:
+    """Write just this run's bid documents to `out_path`; return the file count.
+
+    Zero means the run downloaded nothing, and the caller should say so rather
+    than hand back an empty ZIP — an archive that opens onto nothing reads as a
+    broken download, not as a run that found no attachments.
+
+    Cut from the finished archive when there is one, because by then the
+    workspace has been deleted; the workspace is the fallback for a run whose
+    packaging failed and whose files are therefore still on disk.
+
+    Entries keep their per-bid folders under a single root named for the ZIP, so
+    it unpacks into one directory instead of scattering forty bid folders into
+    whatever the reader opened it in.
+    """
+    subtree = _attachment_subtree(run)
+    if subtree is None:
+        return 0
+    prefix = subtree[0]
+    root = Path(attachments_zip_name(run)).stem
+
+    archive = Path(run.get("zip_path") or "")
+    if archive.is_file():
+        return _copy_subtree(archive, prefix, out_path, root)
+
+    folder = Path(run.get("folder") or "") / prefix
+    if not folder.is_dir():
+        return 0
+    with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        _add_tree(zf, folder, arc_prefix=root)
+    return len(zipfile.ZipFile(out_path).namelist())
+
+
+def _copy_subtree(archive: Path, prefix: str, out_path: Path, root: str) -> int:
+    """Copy every file under `prefix` from one ZIP into a new one.
+
+    Streamed entry by entry rather than read whole: a run's attachments are
+    hundreds of megabytes of PDF often enough that holding one in memory to
+    write it straight back out is a real cost for no gain.
+    """
+    written = 0
+    marker = prefix.rstrip("/") + "/"
+    with zipfile.ZipFile(archive) as src, zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as dst:
+        for info in src.infolist():
+            if info.is_dir() or not info.filename.startswith(marker):
+                continue
+            arcname = f"{root}/{info.filename[len(marker):]}"
+            with src.open(info) as reader, dst.open(arcname, "w") as writer:
+                shutil.copyfileobj(reader, writer)
+            written += 1
+    return written
 
 
 def _add_tree(zf: zipfile.ZipFile, root: Path, arc_prefix: str = "") -> None:

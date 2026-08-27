@@ -5,7 +5,9 @@ editing the parent is deliberate — the niche flow's code path stays what it wa
 and portal fixes to login/search land in both flows:
 
   open_advanced_search  the sweep sets no commodity codes, so the parent's
-                        accordion expansion is skipped.
+                        accordion expansion is skipped. The posting-date window
+                        is *not* overridden: `run` calls the parent's
+                        `apply_date_range` against the same two fields.
   _capture_bid          reads `#mainSection` and keeps every attachment in the
                         bid's own folder.
   run                   pagination, capture, and the packaged delivery.
@@ -48,7 +50,13 @@ from app.core.base_scraper import StopRequested
 from app.core.exports import archive_run
 from app.scrapers.myflorida import dates, storage
 from app.scrapers.myflorida.ingest import map_row, parse_excel
-from app.scrapers.myflorida.scraper import MFMPScraper, describe_error
+from app.scrapers.myflorida.scraper import (
+    BID_ATTEMPTS,
+    BID_PAGE_TIMEOUT,
+    DETAIL_RENDER_SECONDS,
+    MFMPScraper,
+    describe_error,
+)
 from app.scrapers.myflorida.sweep import export
 from app.scrapers.myflorida.workbook import build_from_records, merge_exports
 from app.services.notifier import notify_scrape_completion
@@ -71,10 +79,17 @@ MAX_PAGES = 200
 PAGE_SETTLE_SECONDS = 1.5
 
 # The grid renders a whole page of rows at once, so a bid's link is either in
-# the DOM as soon as the page settles or not on this page at all. Waiting the
-# default 30s for it only multiplies the cost of a paginator that has drifted —
-# a hundred absent links is fifty minutes at that timeout, eight at this one.
-LINK_TIMEOUT = 8
+# the DOM once the page has settled or not on this page at all. Waiting the full
+# element wait for it only multiplies the cost of a paginator that has drifted —
+# a hundred absent links is over an hour at that timeout and half an hour at
+# this one.
+#
+# Raised from 8s because "settled" is doing more work in that sentence than it
+# looks: a grid still re-rendering after a page restore has no links for a beat,
+# and a bid skipped there is one whose attachments are missing from the export.
+# The paginator cost is bounded anyway — `_restore_page` runs before each bid,
+# so a drifted grid is corrected rather than absorbed one absent link at a time.
+LINK_TIMEOUT = 25
 
 
 class SweepScraper(MFMPScraper):
@@ -257,8 +272,8 @@ class SweepScraper(MFMPScraper):
         link = self.wait(LINK_TIMEOUT).until(EC.element_to_be_clickable((By.LINK_TEXT, number)))
         self.scroll_into_view(link)
         link.click()
-        self.wait().until(lambda d: "/detail/" in d.current_url)
-        time.sleep(2)  # let the detail page (incl. the document list) render
+        self.wait(BID_PAGE_TIMEOUT).until(lambda d: "/detail/" in d.current_url)
+        time.sleep(DETAIL_RENDER_SECONDS)  # the route resolving is not the render
 
         detail_url = self.driver.current_url
         description = self._read_description()
@@ -283,7 +298,9 @@ class SweepScraper(MFMPScraper):
                 errors.append(f"doc {index}: {exc.__class__.__name__}")
 
         self.driver.back()
-        self.wait().until(EC.presence_of_element_located(self._sel("results_rows")))
+        self.wait(BID_PAGE_TIMEOUT).until(
+            EC.presence_of_element_located(self._sel("results_rows"))
+        )
         time.sleep(1)
 
         return {
@@ -295,6 +312,50 @@ class SweepScraper(MFMPScraper):
             "folder": storage.folder_reference(number, title),
             "document_errors": errors,
         }
+
+    def _capture_bid_with_retry(
+        self, bid: dict, page_index: int, expected_first: str
+    ) -> dict[str, Any] | None:
+        """One bid, attempted up to BID_ATTEMPTS times; None once it has failed.
+
+        A timeout here is usually the grid or the detail route being slow for a
+        moment, and by then the browser is on the wrong page — waiting longer
+        only waits on a link that is not coming. Asking again from a restored
+        grid is what recovers it, and on a sweep a bid lost this way is a whole
+        advertisement missing from the export.
+
+        The page is restored between attempts, not just stepped back to: Material
+        keeps its page index in component memory, so a detail page abandoned
+        mid-load can drop the grid to page 1 — where a retry would hunt for a
+        link that is three pages away and time out again, for a different reason
+        than the first time.
+        """
+        number = bid["number"]
+        for attempt in range(1, BID_ATTEMPTS + 1):
+            try:
+                return self._capture_bid(bid)
+            except StopRequested:
+                raise
+            except (TimeoutException, WebDriverException) as exc:
+                last = exc
+                if attempt == BID_ATTEMPTS:
+                    self.screenshot(f"bid_{number}")
+                    break
+                logger.warning(
+                    "[run %s] bid %s: %s on attempt %d — retrying",
+                    self.run_id, number, exc.__class__.__name__, attempt,
+                )
+                self._recover_to_results()
+                if not self._restore_page(page_index, expected_first):
+                    # The grid cannot be put back, so a retry would search a
+                    # page this bid was never on. The caller's own restore check
+                    # picks the failure up for the bids after this one.
+                    break
+        run_manager.add_error(
+            self.run_id,
+            f"bid {number}: {last.__class__.__name__} after {attempt} attempt(s)",
+        )
+        return None
 
     # -- orchestration ------------------------------------------------------
 
@@ -411,6 +472,11 @@ class SweepScraper(MFMPScraper):
             self.open_advertisements()
             self.open_advanced_search()
             self.select_ad_status()
+            # Inherited from MFMPScraper, and called here for the same reason
+            # the niche flow calls it last: the sweep drives the same Advanced
+            # Search form, so its window has to be typed into the same two
+            # fields, right before Search.
+            self.apply_date_range()
             outcome = self.submit_search()
 
             if outcome != self.RESULTS:
@@ -466,15 +532,8 @@ class SweepScraper(MFMPScraper):
                         f"{len(page_bids) - offset} advertisement(s) not captured",
                     )
                     break
-                try:
-                    captured = self._capture_bid(bid)
-                except StopRequested:
-                    raise
-                except (TimeoutException, WebDriverException) as exc:
-                    run_manager.add_error(
-                        self.run_id, f"bid {bid['number']}: {exc.__class__.__name__}")
-                    self.screenshot(f"bid_{bid['number']}")
-                    self._recover_to_results()
+                captured = self._capture_bid_with_retry(bid, page_index, expected_first)
+                if captured is None:
                     continue
 
                 record = self._record(captured, metadata.get(bid["number"], {}))
