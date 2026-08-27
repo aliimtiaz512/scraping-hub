@@ -402,7 +402,7 @@ class BaseScraper:
 
         if run_manager.is_paused(self.run_id):
             checkpoints.save(self.run_id)
-            logger.info("[run %s] paused — holding at %s", self.run_id, self.step or "checkpoint")
+            logger.info("[run %s] paused — holding at %s", self.run_id, self.current_step or "checkpoint")
             while run_manager.await_resume(self.run_id):
                 # Bounded waits, so a stop lands on a parked worker promptly
                 # rather than waiting for a resume that may never come.

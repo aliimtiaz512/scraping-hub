@@ -63,6 +63,7 @@ from app.scrapers.bidnet.scraper import (
     STATUS_OK,
     STATUS_PARTIAL,
     BidnetScraper,
+    SessionRecoveryExhausted,
     _shown,
 )
 from app.services.notifier import notify_scrape_completion
@@ -121,6 +122,21 @@ HARVEST_SLACK_RATIO = 0.02
 # cheaper half of the pair: it keeps the session alive so that recovery rarely
 # has to fire, at one DOM lookup per hundred bids.
 SESSION_CHECK_EVERY = 100
+
+# How many solicitations in a row may yield nothing at all before the walk gives
+# up on the rest.
+#
+# The other way a sweep fails wholesale, and the one a sign-in counter cannot
+# see: the portal signs us back in happily and still serves pages with no
+# solicitation on them. `ensure_logged_in` then finds a healthy session, returns
+# without a login, and every bid quietly files as EXTRACTION_FAILED — one real
+# run read 1,321 correctly and then failed 538 in a row exactly like that.
+#
+# High enough that it cannot be tripped by real data: a gated bid is
+# ACKNOWLEDGEMENT_REQUIRED and a thin one is PARTIAL_DATA, so neither counts
+# here. Twenty-five consecutive pages with not one readable field is the portal,
+# not the solicitations.
+MAX_CONSECUTIVE_UNREADABLE = 25
 
 # How many agencies to name in the run's `[AGENCIES]` summary line. The full
 # tally still reaches the run record (and the spreadsheet has every row); this
@@ -366,6 +382,9 @@ class MemberAgencySweepScraper(BidnetScraper):
             # each: attachments are not downloaded in either mode.
             self.set_step("collecting_bids")
             all_records: list[dict] = []
+            # Solicitations since the last readable one. See
+            # MAX_CONSECUTIVE_UNREADABLE.
+            unreadable = 0
             for index, link in enumerate(links, start=1):
                 record: dict[str, Any] | None = {
                     "reference_number": None, "title": None, "error": None,
@@ -377,6 +396,10 @@ class MemberAgencySweepScraper(BidnetScraper):
                 if index % SESSION_CHECK_EVERY == 0:
                     try:
                         self.ensure_logged_in()
+                    except SessionRecoveryExhausted as exc:
+                        # This bid was never opened, so index - 1 are done.
+                        self._abandon_walk(exc, index - 1, len(links))
+                        break
                     except (TimeoutException, WebDriverException) as exc:
                         logger.warning(
                             "[run %s] session check failed (%s) — carrying on; the "
@@ -398,6 +421,12 @@ class MemberAgencySweepScraper(BidnetScraper):
                         record["niche"] = _agency_name(agency)
                 except StopRequested:
                     raise
+                except SessionRecoveryExhausted as exc:
+                    # Caught before the generic handler below, which would file
+                    # this as one more failed bid and walk into the same wall
+                    # another thousand times.
+                    self._abandon_walk(exc, index - 1, len(links))
+                    break
                 except (TimeoutException, WebDriverException) as exc:
                     record["error"] = str(exc)[:300]
                     record["niche"] = UNKNOWN_AGENCY
@@ -405,8 +434,33 @@ class MemberAgencySweepScraper(BidnetScraper):
                     self.screenshot(f"bid_{index}")
                 if record is None:
                     continue
-                # No keyword found this bid — the sweep searched none.
-                record["matched_keyword"] = ""
+                if record.get("status") == STATUS_FAILED:
+                    unreadable += 1
+                    if unreadable >= MAX_CONSECUTIVE_UNREADABLE:
+                        self._abandon_walk(
+                            RuntimeError(
+                                f"{unreadable} solicitations in a row yielded no "
+                                f"readable fields — BidNet is serving pages this "
+                                f"run cannot read, and opening more would only "
+                                f"add rows with nothing in them."
+                            ),
+                            # This bid was recorded before the streak was
+                            # counted, so it is one of the finished ones.
+                            index, len(links),
+                        )
+                        break
+                else:
+                    # A readable bid ends the streak. Counted as consecutive and
+                    # not as a total because a sweep of two thousand naturally
+                    # collects a scattering of genuinely broken pages, and a
+                    # total would eventually trip on those alone.
+                    unreadable = 0
+                # No `matched_keyword` is set at all: the sweep searches no
+                # keywords, so there is nothing the field could hold, and its
+                # sheet (MEMBER_AGENCY_EXCEL_COLUMNS) has no column for it. It
+                # used to be set to "" to fill a column the sweep no longer
+                # carries — which only wrote an empty string into every one of
+                # a few thousand database rows.
                 if not self._claim_bid(self._bid_key(link), record, []):
                     continue
                 run_manager.add_bid_result(self.run_id, record)
@@ -453,6 +507,34 @@ class MemberAgencySweepScraper(BidnetScraper):
             self.cleanup()
             run_manager.update_run(self.run_id, finished_at=datetime.now().isoformat())
             self._save_run_row()
+
+    def _abandon_walk(self, exc: Exception, done: int, total: int) -> None:
+        """Stop opening solicitations, and say plainly why.
+
+        Breaking out of the loop rather than raising is the whole point. Every
+        step after it — the funnel report, the spreadsheet, the DB save, the
+        archive — is what turns the solicitations already read into something a
+        reviewer can use, and raising from here skips all of it. That is not
+        hypothetical: the sweep this was written for had read nine hundred bids
+        when it died on the way out, and not one of them reached a file.
+
+        The run still completes rather than failing, because it did produce a
+        real partial result. What it must not do is let that pass unremarked, so
+        the shortfall is counted in the error the reviewer sees.
+
+        `done` is how many solicitations were actually finished — which is not
+        the loop index in both callers, since one of them fails *on* the current
+        bid and the other fails *after* recording it.
+        """
+        message = (
+            f"Stopped after {done} of {total} solicitations: {exc} "
+            f"The {done} read so far are in this run's spreadsheet; the "
+            f"remaining {total - done} were not opened."
+        )
+        logger.error("[run %s] %s", self.run_id, message)
+        run_manager.add_error(self.run_id, message)
+        run_manager.update_run(self.run_id, sweep_incomplete=True)
+        self.screenshot("session_recovery_exhausted")
 
     def _report(self, count: int | None, links: list[str], records: list[dict]) -> None:
         """The sweep as one funnel, and what each agency contributed.

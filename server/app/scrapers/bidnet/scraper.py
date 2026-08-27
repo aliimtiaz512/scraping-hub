@@ -360,6 +360,27 @@ DETAIL_FIELDS: dict[str, str] = {
 }
 
 
+# How many consecutive failed sign-ins end the run's attempts to recover.
+#
+# Low on purpose. Each attempt is a full login round trip (~60s on a throttled
+# portal) and every one of them is another automated sign-in against the
+# protection that is refusing them — the cost of guessing too high is measured
+# in hours of guaranteed failure and a deeper block, the cost of guessing too
+# low is one run that stops early and says why.
+MAX_SESSION_RECOVERIES = 3
+
+
+class SessionRecoveryExhausted(WebDriverException):
+    """BidNet will not sign this run back in, and asking again is making it worse.
+
+    A `WebDriverException` subclass so the existing `except WebDriverException`
+    handlers around every bid still treat it as a failed page — a caller that
+    has not been taught about it degrades to the old behaviour instead of
+    crashing. Callers that *should* stop the whole walk catch it first; see the
+    member agency sweep's bid loop.
+    """
+
+
 class BidnetScraper(BaseScraper):
     def __init__(
         self,
@@ -396,6 +417,12 @@ class BidnetScraper(BaseScraper):
         # the session is not holding them and the per-keyword re-apply is what is
         # actually filtering the run.
         self._filters_reapplied_for: list[str] = []
+        # Consecutive failed sign-ins. Reset by any successful one, and by
+        # finding the session already healthy — this counts a *streak*, not a
+        # run total, because a session that expired twice in six hours is a long
+        # run behaving normally and a session that will not come back three
+        # times running is a portal refusing us. See `ensure_logged_in`.
+        self._session_recoveries = 0
         # The date bypass warning is reported once per run, and the request is
         # now built per keyword rather than once — so the reporting cannot hang
         # off "is this the first sidebar report?" any more.
@@ -615,12 +642,18 @@ class BidnetScraper(BaseScraper):
         for term in matched:
             if term not in merged:
                 merged.append(term)
-        kept["matched_keyword"] = ", ".join(merged)
+        # Only written when there is a term to credit. The member agency sweep
+        # searches no keywords and passes `matched` empty, and a bid it happens
+        # to see twice should not come away carrying an empty string in a field
+        # its sheet does not have a column for.
+        if merged:
+            kept["matched_keyword"] = ", ".join(merged)
         logger.info(
             "[run %s] [DUPLICATE SKIPPED]: Bid '%s' already extracted (%s) — this "
-            "sighting came from %s; %r kept as one row, now credited to %s",
-            self.run_id, key, kept.get("detail_url") or "", ", ".join(matched),
-            kept.get("title") or key, kept["matched_keyword"],
+            "sighting came from %s; %r kept as one row%s",
+            self.run_id, key, kept.get("detail_url") or "", ", ".join(matched) or "the sweep",
+            kept.get("title") or key,
+            f", now credited to {kept['matched_keyword']}" if merged else "",
         )
         return False
 
@@ -701,16 +734,51 @@ class BidnetScraper(BaseScraper):
         page simply becomes the login screen, and every subsequent search fails
         for a reason no timeout increase fixes. Cheap to check (one DOM lookup
         for the post-login menu), so it runs before every keyword.
+
+        **Recovery gives up after `MAX_SESSION_RECOVERIES` failures in a row**,
+        and that limit is the point of this method rather than an afterthought.
+        The sign-in that recovers an expired session and the sign-in that BidNet
+        is refusing look identical from here — both start with a page that has
+        no signed-in marker on it. Retrying is right for the first and actively
+        harmful for the second: repeated automated logins are what BidNet's
+        anti-bot protection throttles on, so a caller that keeps asking is
+        deepening the block it is trying to recover from. One sweep spent an
+        hour re-signing-in once per solicitation, ~60s each, every attempt
+        failing, and would have spent sixteen more had nobody stopped it.
+
+        So: consecutive failures are counted, a success resets the count, and
+        the run is told to stop trying rather than being left to discover the
+        same wall a thousand more times.
         """
         try:
             if self.driver.find_elements(By.ID, selectors.SIGNED_IN_MARKER):
-                return  # still signed in
+                self._session_recoveries = 0  # signed in — the streak is over
+                return
         except WebDriverException:
             pass  # fall through and try to recover
 
+        if self._session_recoveries >= MAX_SESSION_RECOVERIES:
+            raise SessionRecoveryExhausted(
+                f"BidNet would not sign this run back in after "
+                f"{MAX_SESSION_RECOVERIES} attempts. Its anti-bot protection "
+                f"throttles repeated automated logins, so further attempts would "
+                f"make the block worse rather than recover from it. Try again "
+                f"later, from a different network, and confirm the account still "
+                f"signs in through a normal browser."
+            )
+
         logger.info("[run %s] session lost — signing in again", self.run_id)
         run_manager.add_error(self.run_id, "BidNet session expired mid-run; signed in again")
-        self.login()
+        try:
+            self.login()
+        except (TimeoutException, WebDriverException):
+            self._session_recoveries += 1
+            logger.warning(
+                "[run %s] sign-in failed (%d/%d consecutive)",
+                self.run_id, self._session_recoveries, MAX_SESSION_RECOVERIES,
+            )
+            raise
+        self._session_recoveries = 0
 
     def reset_search_state(self) -> None:
         """Reload the search page to get back to a known-clean slate.
