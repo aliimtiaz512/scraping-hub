@@ -381,7 +381,9 @@ class MemberAgencySweepScraper(BidnetScraper):
             # PHASE 2 — open each solicitation once and read it. One page load
             # each: attachments are not downloaded in either mode.
             self.set_step("collecting_bids")
-            all_records: list[dict] = []
+            # On the instance so a Stop partway through the walk can still
+            # deliver the solicitations already read. See `flush_partial`.
+            all_records = self._all_records
             # Solicitations since the last readable one. See
             # MAX_CONSECUTIVE_UNREADABLE.
             unreadable = 0
@@ -497,7 +499,10 @@ class MemberAgencySweepScraper(BidnetScraper):
             run_manager.update_run(self.run_id, status="completed", step="done")
             notify_scrape_completion(self.run_id, "bidnet", len(all_records))
         except StopRequested:
-            logger.info("[run %s] stopped by user", self.run_id)
+            # The solicitations read so far are written and packaged here: the
+            # sheet, the DB save and the archive all sit after the walk this
+            # stop just unwound out of. See BaseScraper.deliver_partial.
+            self.deliver_partial()
         except Exception as exc:  # noqa: BLE001 — a failed run is reported, not raised
             logger.exception("[run %s] member agency sweep failed", self.run_id)
             self.screenshot("fatal")
@@ -507,6 +512,32 @@ class MemberAgencySweepScraper(BidnetScraper):
             self.cleanup()
             run_manager.update_run(self.run_id, finished_at=datetime.now().isoformat())
             self._save_run_row()
+
+    def flush_partial(self) -> int:
+        """Write the sweep's spreadsheet from the solicitations read so far.
+
+        The same three steps the completed path runs — funnel report, sheet,
+        database — minus the archive, which `deliver_partial` does once for
+        every portal. A sweep stopped at 900 of 1853 delivers 900 rows.
+        """
+        if not self._all_records:
+            return 0
+        records = self._all_records
+        try:
+            self._report(None, [], records)
+            self._report_documents(records)
+            self.write_excel(records)
+        except Exception:  # noqa: BLE001 — the sheet matters more than the report
+            logger.exception("[run %s] partial sweep sheet failed", self.run_id)
+
+        run = run_manager.get_run(self.run_id) or {"run_id": self.run_id}
+        try:
+            stored = export.save_bids(run, records)
+            run_manager.update_run(self.run_id, bids_stored_in_db=stored)
+        except Exception:  # noqa: BLE001 — the sheet on disk is then the record
+            logger.exception("[run %s] partial DB save failed", self.run_id)
+            run_manager.update_run(self.run_id, db_save_failed=True)
+        return len(records)
 
     def _abandon_walk(self, exc: Exception, done: int, total: int) -> None:
         """Stop opening solicitations, and say plainly why.

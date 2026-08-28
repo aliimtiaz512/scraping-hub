@@ -353,6 +353,27 @@ def archive_run(run_id: str) -> str | None:
     run = run_manager.get_run(run_id)
     if not run:
         return None
+
+    # Already packaged, and its workspace already deleted. A second call would
+    # rebuild the archive from a folder that is gone — `build_zip` finds nothing
+    # to walk and writes an almost-empty ZIP over a good one, and the bare-sheet
+    # path is no better off. Two callers now reach here for one run: a portal
+    # whose own `_finalize` archives, and the stop path that archives on the way
+    # out (`BaseScraper.deliver_partial`), which must be safe to call either way.
+    #
+    # Keyed on the workspace being gone, not on the artifact existing: BidNet
+    # deliberately re-archives a session root that is still on disk, and every
+    # re-run of a live workspace should still repackage.
+    workspace = Path(run.get("folder") or "")
+    if not workspace.is_dir():
+        for existing in (run.get("zip_path"), run.get("excel_path")):
+            if existing and Path(existing).is_file():
+                logger.info(
+                    "[run %s] already packaged as %s — not rebuilding it",
+                    run_id, Path(existing).name,
+                )
+                return str(existing)
+
     if run.get("scraper") == "bidnet" and run.get("batch_root"):
         from app.scrapers.bidnet import batch as bidnet_batch
 

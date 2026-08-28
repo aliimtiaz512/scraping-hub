@@ -244,12 +244,16 @@ def execute_run(
         run_manager.update_run(run_id, step="saving_excel")
         archive_run(run_id)
 
-        stopped = stop_event.is_set()
-        run_manager.update_run(
-            run_id, status="completed", step="stopped" if stopped else "done"
-        )
-        # Email/S3 notification on a successful (non-stopped) completion.
-        if not stopped:
+        # A stopped run keeps the status the user's Stop gave it. This used to
+        # write "completed" with step="stopped", because the download endpoint
+        # would serve nothing else — it now serves a stopped run that carries
+        # results, so the run no longer has to claim it finished to be
+        # downloadable. `mark_partial` is what the console keys the button off.
+        if stop_event.is_set():
+            run_manager.mark_partial(run_id, len(records))
+        else:
+            run_manager.update_run(run_id, status="completed", step="done")
+            # Email/S3 notification on a successful (non-stopped) completion.
             notify_scrape_completion(run_id, "sam", len(records))
     except Exception as exc:  # noqa: BLE001 — a failed run must be reported, not crash the worker
         logger.exception("[run %s] SAM run failed", run_id)

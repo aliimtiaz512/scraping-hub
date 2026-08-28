@@ -188,7 +188,21 @@ export function downloadKind(portal: string): "zip" | "excel" {
  * portals with no results.
  */
 export function runDownloadable(run: RunStatus): boolean {
-  return run.status === "completed" && portalDownloadable(run.scraper ?? "");
+  if (!portalDownloadable(run.scraper ?? "")) return false;
+  if (run.status === "completed") return true;
+  // A stopped run that kept its rows. Gated on the flag rather than on the
+  // status alone, because a run stopped before it had gathered anything still
+  // has nothing to serve, and the endpoint 409s for it — a button shown there
+  // would be a button that fails when pressed.
+  return run.status === "stopped" && Boolean(run.partial_results);
+}
+
+/** True when what the Download button serves is a partial result — a run the
+ *  user stopped, not one that finished. The wording has to differ: a reviewer
+ *  opening a spreadsheet needs to know rows are missing, and a download that
+ *  looks identical to a completed run's is how that gets forgotten. */
+export function runPartial(run: RunStatus): boolean {
+  return run.status === "stopped" && Boolean(run.partial_results);
 }
 
 /**

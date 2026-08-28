@@ -140,7 +140,7 @@ function LiveMonitorModal({
             <span className="truncate text-sm text-ink-500">{stepLabel(run.step)}</span>
           </div>
           <div className="flex items-center gap-2.5">
-            <RunBadge status={run.status} />
+            <RunBadge status={run.status} partial={run.partial_results} />
             <button
               type="button"
               onClick={onClose}

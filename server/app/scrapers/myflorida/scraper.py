@@ -256,6 +256,11 @@ class MFMPScraper(BaseScraper):
         # And whether the portal's date inputs turned out not to be on the form
         # at all, so later passes skip looking for them again.
         self._date_fields_missing = False
+        # What the run has found so far, kept on the instance so Stop can
+        # deliver it: ad number -> the accumulated bid dict, and the per-search
+        # workbook exports waiting to be merged. Both modes fill these.
+        self._found: dict[str, dict] = {}
+        self._exports: list[Path] = []
         self.excel_path: Path | None = None
         # Resolved at the top of run() rather than here: a constructor that can
         # raise on a missing credential turns a misconfigured account into an
@@ -1133,11 +1138,15 @@ class MFMPScraper(BaseScraper):
             run_manager.update_run(self.run_id, no_results=True)
             return
         run_manager.update_run(self.run_id, bids_found=len(bids))
+        # Recorded before the per-bid document crawl, which is the long part and
+        # the part a Stop lands in: the search itself is one page, so by here the
+        # run already knows every ad it is going to report.
+        self._found.update({b["number"]: {**b, "matched_keywords": []} for b in bids})
         export = self._export()
+        if export:
+            self._exports.append(export)
         self._process_bids(bids, set())
-        # No keyword in code mode — folder column still wants the ad->bid mapping.
-        found = {b["number"]: {**b, "matched_keywords": []} for b in bids}
-        self._finalize([export] if export else [], found)
+        self._finalize(self._exports, self._found)
 
     def _run_keywords(self) -> None:
         """One search per keyword, exports merged into one workbook by ad number.
@@ -1148,8 +1157,11 @@ class MFMPScraper(BaseScraper):
         keyword comes back empty the run is flagged no_results.
         """
         processed: set[str] = set()
-        found: dict[str, dict] = {}
-        exports: list[Path] = []
+        # On the instance, not local, so a Stop partway through the keyword loop
+        # can still merge and deliver what the earlier keywords found. See
+        # `flush_partial`.
+        found = self._found
+        exports = self._exports
         any_results = False
         for index, keyword in enumerate(self.keywords, start=1):
             run_manager.update_run(self.run_id, keyword=keyword, keyword_progress=f"{index}/{len(self.keywords)}")
@@ -1181,6 +1193,23 @@ class MFMPScraper(BaseScraper):
         if not any_results:
             run_manager.update_run(self.run_id, no_results=True)
         self._finalize(exports, found)
+
+    def flush_partial(self) -> int:
+        """Merge and store whatever the run found before Stop.
+
+        `_finalize` is the completed path's own last step — the per-search
+        workbooks merged into one summary sheet, then ingested — so a stopped
+        run gets the same workbook rather than a second format. It is safe to
+        call here: it no-ops on an empty export list, and both the merge and the
+        ingest are already best-effort because neither may fail a run.
+
+        A keyword run stopped at keyword nine of twenty delivers the eight that
+        finished plus whatever the ninth had exported before the stop landed.
+        """
+        if not self._exports and not self._found:
+            return 0
+        self._finalize(self._exports, self._found)
+        return len(self._found)
 
     def _select_account(self) -> None:
         """Resolve this run's login and confirm it can actually be used.
@@ -1246,7 +1275,11 @@ class MFMPScraper(BaseScraper):
             # handler below, which would log a traceback under "failed" and try
             # to screenshot a browser that stopping has already closed. A run
             # the user ended is not a run that broke.
-            logger.info("[run %s] stopped by user", self.run_id)
+            #
+            # The bids found so far are merged and packaged here, because
+            # everything that would have done it sits after the keyword loop
+            # this stop just unwound out of. See BaseScraper.deliver_partial.
+            self.deliver_partial()
         except Exception as exc:  # noqa: BLE001 — a failed run must be reported, not crash the worker
             logger.exception("[run %s] failed", self.run_id)
             self.screenshot("fatal")

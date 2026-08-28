@@ -6,7 +6,7 @@ import {
   type RunStatus as RunStatusData,
 } from "@/lib/api";
 import { LinkButton, RunBadge } from "@/components/ui";
-import { downloadKind, runAttachmentsDownloadable, runDownloadable } from "@/lib/runs";
+import { downloadKind, runAttachmentsDownloadable, runDownloadable, runPartial } from "@/lib/runs";
 
 const STEP_LABELS: Record<string, string> = {
   queued: "Queued",
@@ -95,6 +95,10 @@ export default function RunStatus({ run }: { run: RunStatusData }) {
   const download = runDownloadable(run);
   const excelOnly = downloadKind(run.scraper ?? "") === "excel";
   const attachments = runAttachmentsDownloadable(run);
+  // A stopped run that kept its rows. The panel says so rather than dressing it
+  // up as a finished one: the reviewer is about to open a spreadsheet that is
+  // missing everything after the point they pressed Stop.
+  const partial = runPartial(run);
 
   return (
     <section className="overflow-hidden rounded-xl border border-ink-200 bg-white shadow-sm">
@@ -105,7 +109,7 @@ export default function RunStatus({ run }: { run: RunStatusData }) {
         </div>
         <div className="flex items-center gap-2.5">
           <span className="font-mono text-xs text-ink-400">{run.run_id}</span>
-          <RunBadge status={run.status} />
+          <RunBadge status={run.status} partial={run.partial_results} />
         </div>
       </header>
 
@@ -205,15 +209,38 @@ export default function RunStatus({ run }: { run: RunStatusData }) {
             </Notice>
           )}
 
-          {run.status === "completed" && download && (
-            <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-ink-200 bg-ink-50 px-3 py-2.5">
+          {download && (
+            <div
+              className={`flex flex-wrap items-center justify-between gap-3 rounded-lg border px-3 py-2.5 ${
+                partial ? "border-amber-300 bg-amber-50" : "border-ink-200 bg-ink-50"
+              }`}
+            >
               <div className="min-w-0">
-                <p className="text-xs font-medium text-ink-600">Results ready</p>
-                <p className="text-xs text-ink-500">
-                  {excelOnly
-                    ? "The cumulative Excel report — this run's complete output."
-                    : "Cumulative Excel report plus every downloaded bid document, bundled as one ZIP."}
-                  {attachments && " The second button carries the bid documents on their own."}
+                <p className={`text-xs font-medium ${partial ? "text-amber-900" : "text-ink-600"}`}>
+                  {partial ? "Partial results ready" : "Results ready"}
+                </p>
+                <p className={`text-xs ${partial ? "text-amber-800" : "text-ink-500"}`}>
+                  {partial ? (
+                    <>
+                      You stopped this run, so it covers only what it had found by
+                      then
+                      {typeof run.partial_record_count === "number"
+                        ? ` — ${run.partial_record_count.toLocaleString()} record${
+                            run.partial_record_count === 1 ? "" : "s"
+                          }`
+                        : ""}
+                      . {excelOnly
+                        ? "The Excel report holds them."
+                        : "The ZIP holds them, with any documents downloaded before the stop."}
+                    </>
+                  ) : (
+                    <>
+                      {excelOnly
+                        ? "The cumulative Excel report — this run's complete output."
+                        : "Cumulative Excel report plus every downloaded bid document, bundled as one ZIP."}
+                      {attachments && " The second button carries the bid documents on their own."}
+                    </>
+                  )}
                 </p>
               </div>
               <div className="flex flex-wrap items-center gap-2">

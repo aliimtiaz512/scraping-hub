@@ -454,6 +454,19 @@ class SweepScraper(MFMPScraper):
             "raw_data": meta.get("raw_data"),
         }
 
+    def flush_partial(self) -> int:
+        """Package the advertisements captured before Stop.
+
+        `_finalize` is the completed path's own last step — summary sheet,
+        database, archive — so a stopped sweep delivers the same workbook, one
+        section shorter, rather than a second format.
+        """
+        records = getattr(self, "_partial_records", None) or []
+        if not records:
+            return 0
+        self._finalize(records)
+        return len(records)
+
     def run(self) -> None:
         run_manager.update_run(self.run_id, status="running")
         records: list[dict[str, Any]] = []
@@ -493,9 +506,15 @@ class SweepScraper(MFMPScraper):
         except StopRequested:
             # Everything captured so far is still packaged: the attachments are
             # already on disk and the reviewer should get what the run got.
-            logger.info("[run %s] stopped by user", self.run_id)
-            self._finalize(records)
-            run_manager.update_run(self.run_id, status="completed", step="stopped")
+            #
+            # This used to finish by writing status="completed", because that
+            # was the only status the download endpoint would serve. It no
+            # longer is, and the run keeps the honest one: a sweep the user cut
+            # short did not complete, and a console that said it did hid the
+            # fact that advertisements were missing. `_partial_records` is what
+            # `flush_partial` packages.
+            self._partial_records = records
+            self.deliver_partial()
         except Exception as exc:  # noqa: BLE001 — a failed run must be reported, not crash the worker
             logger.exception("[run %s] sweep failed", self.run_id)
             self.screenshot("fatal")

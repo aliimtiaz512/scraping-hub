@@ -417,6 +417,9 @@ class BidnetScraper(BaseScraper):
         # the session is not holding them and the per-keyword re-apply is what is
         # actually filtering the run.
         self._filters_reapplied_for: list[str] = []
+        # Every solicitation this run has scraped so far. Kept on the instance
+        # rather than local to `run()` so a stopped run still has them.
+        self._all_records: list[dict] = []
         # Consecutive failed sign-ins. Reset by any successful one, and by
         # finding the session already healthy — this counts a *streak*, not a
         # run total, because a session that expired twice in six hours is a long
@@ -2389,6 +2392,33 @@ class BidnetScraper(BaseScraper):
 
     # -- orchestration ------------------------------------------------------
 
+    def flush_partial(self) -> int:
+        """Save the solicitations scraped before Stop.
+
+        BidNet's archive is the day's shared session root — one folder per niche
+        run today — so the rows go to the database, which is what the packaging
+        step regenerates this niche's sheet from. A niche stopped at keyword
+        nine of twenty delivers the eight that finished plus whatever the ninth
+        had scraped.
+        """
+        if not self._all_records:
+            return 0
+        run = run_manager.get_run(self.run_id) or {"run_id": self.run_id}
+        try:
+            stored = export.save_bids(run, self._all_records)
+            run_manager.update_run(
+                self.run_id, bids_stored_in_db=stored, excel_exported=True
+            )
+            logger.info(
+                "[run %s] flushed %d partial record(s) to the database",
+                self.run_id, stored,
+            )
+        except Exception:  # noqa: BLE001 — a stopped run must still deliver its rows
+            logger.exception("[run %s] partial DB save failed", self.run_id)
+            run_manager.update_run(self.run_id, db_save_failed=True)
+            return 0
+        return len(self._all_records)
+
     def run(self) -> None:
         run_manager.update_run(self.run_id, status="running")
         self._save_run_row()
@@ -2612,7 +2642,9 @@ class BidnetScraper(BaseScraper):
             # PHASE 2 — open every distinct solicitation once and read its
             # fields. One page load each: nothing is downloaded.
             self.set_step("collecting_bids")
-            all_records: list[dict] = []
+            # On the instance so a Stop partway through the keyword loop can
+            # still save what the earlier keywords found. See `flush_partial`.
+            all_records = self._all_records
             for index, (bid_id, entry) in enumerate(bids.items()):
                 link, matched = entry["link"], entry["terms"]
                 record: dict[str, Any] | None = {
@@ -2899,7 +2931,11 @@ class BidnetScraper(BaseScraper):
             # handler below, which would log a traceback under "failed" and try
             # to screenshot a browser that stopping has already closed. A run
             # the user ended is not a run that broke.
-            logger.info("[run %s] stopped by user", self.run_id)
+            #
+            # The solicitations scraped so far are saved and packaged here,
+            # because everything that would have done it sits after the keyword
+            # loop this stop just unwound out of. See deliver_partial.
+            self.deliver_partial()
         except Exception as exc:  # noqa: BLE001 — a failed run must be reported, not crash the worker
             logger.exception("[run %s] failed", self.run_id)
             self.screenshot("fatal")

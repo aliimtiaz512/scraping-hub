@@ -170,6 +170,11 @@ export interface Job {
    *  network and the CPU. */
   paused_at?: string | null;
   resumed_at?: string | null;
+  /** Set on a stopped run that kept the rows it had gathered — see the same
+   *  fields on RunStatus. The jobs bar holds a just-stopped job for a moment so
+   *  its download is one click away rather than a trip to the history tab. */
+  partial_results?: boolean;
+  partial_record_count?: number;
 }
 
 /** How many runs are executing, waiting, and allowed at once. */
@@ -211,6 +216,17 @@ export interface RunStatus {
    *  failed and stopped end a run. */
   status: "pending" | "queued" | "running" | "paused" | "completed" | "failed" | "stopped";
   step: string;
+  /** A run the user stopped that nevertheless kept what it had gathered.
+   *
+   *  Stopping used to discard everything — the export, the DB save and the
+   *  archive all ran after the loop a stop unwound out of — so `stopped` and
+   *  "nothing to download" meant the same thing. They no longer do, and this is
+   *  the flag that separates them: a stopped run with `partial_results` has a
+   *  spreadsheet (and, on portals that download documents, the documents it
+   *  managed to fetch) waiting behind the same Download button a completed run
+   *  uses. `partial_record_count` is how many rows made it. */
+  partial_results?: boolean;
+  partial_record_count?: number;
   /** MyFlorida (all three modes): the posting-date window the run was launched
    *  with, and what became of it. `date_filter_applied` is false when a window
    *  was requested but the portal's own Start/End Date fields would not take it

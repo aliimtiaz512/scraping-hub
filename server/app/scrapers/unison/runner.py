@@ -290,6 +290,16 @@ def execute_run(run_id: str) -> None:
                 record["line_item_count"] = 0
                 run_manager.update_run(run_id, bids_processed=index)
                 continue
+            # Checked per buy rather than only at the end: stopping kills the
+            # browser, so without this every remaining buy would raise and be
+            # filed as its own failure, burying the run's real errors under a
+            # few hundred that only say "the user pressed Stop".
+            if run_manager.is_stop_requested(run_id):
+                logger.info(
+                    "[run %s] stopped by user at buy %d of %d — keeping what was scraped",
+                    run_id, index, len(records),
+                )
+                break
             try:
                 _scrape_detail(scraper, session, record, docs_root)
             except Exception as exc:  # noqa: BLE001 — one buy must not sink the run
@@ -428,9 +438,14 @@ def execute_run(run_id: str) -> None:
         run_manager.update_run(run_id, step="packaging_results")
         archive_run(run_id)
 
-        run_manager.update_run(run_id, status="completed", step="done")
-        # Email/S3 notification on successful completion.
-        notify_scrape_completion(run_id, "unison", len(records))
+        # A run the user stopped keeps the status Stop gave it, and records that
+        # it nevertheless has rows to download. See run_manager.mark_partial.
+        if run_manager.is_stop_requested(run_id):
+            run_manager.mark_partial(run_id, len(records))
+        else:
+            run_manager.update_run(run_id, status="completed", step="done")
+            # Email/S3 notification on successful completion.
+            notify_scrape_completion(run_id, "unison", len(records))
     except Exception as exc:  # noqa: BLE001 — a failed run must be reported, not crash the worker
         logger.exception("[run %s] Unison run failed", run_id)
         run_manager.add_error(run_id, str(exc)[:500])

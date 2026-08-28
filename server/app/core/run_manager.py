@@ -298,6 +298,27 @@ def update_run(run_id: str, **fields: Any) -> None:
     _persist(snapshot)
 
 
+def mark_partial(run_id: str, kept: int) -> None:
+    """Record that a stopped run kept the rows it had gathered.
+
+    `partial_results` is what the console keys its Download button off, and it
+    is deliberately a separate field from the status rather than a third
+    terminal status. The run **is** stopped — the user ended it and rows are
+    missing — and saying anything else on the badge would hide the one fact a
+    reviewer needs. What the flag adds is that there is nevertheless something
+    to download, which "stopped" alone has never distinguished.
+
+    Written through `update_run`, so the stopped-run guard there keeps the
+    status and step exactly where `request_stop` put them.
+    """
+    update_run(
+        run_id,
+        partial_results=True,
+        partial_record_count=kept,
+        stopped_at=datetime.now().isoformat(),
+    )
+
+
 def add_error(run_id: str, message: str) -> None:
     with _lock:
         run = _runs.get(run_id)

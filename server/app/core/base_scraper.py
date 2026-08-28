@@ -449,6 +449,70 @@ class BaseScraper:
             except Exception:  # noqa: BLE001 — never let a failure screenshot (esp. on a dead session) mask the real error
                 pass
 
+    # -- stopping with the work kept -----------------------------------------
+
+    def flush_partial(self) -> int:
+        """Write whatever this run gathered before Stop; return the row count.
+
+        Overridden by each portal, because only the portal knows where its rows
+        are and which export writes them. The default keeps nothing, which is
+        the honest answer for a scraper that has not been taught this yet — the
+        run is still packaged, so anything already on disk (downloaded bid
+        documents, a sheet written mid-run) is still delivered.
+
+        Implementations must be safe to call on a half-finished run: the browser
+        is being torn down around them, the last page may be half-parsed, and
+        the records list may be empty. Write what is complete and no more — a
+        partial sheet with a corrupt final row is worse than one row shorter.
+        """
+        return 0
+
+    def deliver_partial(self) -> None:
+        """Package a stopped run so the Stop button does not throw the work away.
+
+        Called from every scraper's `except StopRequested` handler, and the whole
+        of what that handler now does beyond logging. Stopping a run at 75 of 300
+        bids used to discard all 75: the export, the database save and the
+        archive all sat after the loop the stop unwound out of, so a user who
+        stopped a long run to get an urgent one out paid for it with everything
+        the run had already found.
+
+        Three steps, each independently best-effort, because a stopped run is
+        already unwinding through a browser being torn down and none of these
+        may take the run's own data down with them:
+
+        1. `flush_partial` writes the rows to the portal's own export.
+        2. `archive_run` packages the run exactly as a completed one — the ZIP
+           for a portal that downloads documents, a bare sheet for one that does
+           not — so a stopped run's download is the same shape as any other's.
+        3. The run is marked as carrying partial results, which is what the
+           console keys its Download button off.
+
+        The status stays "stopped". It would be easy to write "completed" here —
+        two scrapers used to, precisely because the download endpoint would not
+        serve anything else — but a run the user cut short did not complete, and
+        a console that says it did is lying about the one thing the reviewer
+        needs to know: that rows are missing.
+        """
+        kept = 0
+        try:
+            kept = self.flush_partial()
+        except Exception:  # noqa: BLE001 — never let the flush lose what is on disk
+            logger.exception("[run %s] could not flush partial results", self.run_id)
+
+        try:
+            from app.core.exports import archive_run
+
+            archive_run(self.run_id)
+        except Exception:  # noqa: BLE001 — the workspace survives; the download can package it
+            logger.exception("[run %s] could not package partial results", self.run_id)
+
+        run_manager.mark_partial(self.run_id, kept)
+        logger.info(
+            "[run %s] stopped by user — kept %d record(s) gathered so far",
+            self.run_id, kept,
+        )
+
     def set_step(self, step: str) -> None:
         # Every step boundary is a natural stop checkpoint — and it covers the
         # window before the browser is even up, when stop() can't interrupt.

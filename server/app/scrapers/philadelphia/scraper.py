@@ -1699,6 +1699,47 @@ class PhiladelphiaScraper(BaseScraper):
 
     # -- orchestration --------------------------------------------------------
 
+    def flush_partial(self) -> int:
+        """Philadelphia's rows, written where its archive expects to find them.
+
+        Not `partials.flush_records`: this portal's deliverable is an archive
+        whose root holds the summary sheet beside the document folders it
+        indexes, so the sheet goes to `storage.summary_path` and goes there
+        whatever the database is doing. A stopped run has usually downloaded
+        attachments already, and a sheet written anywhere else would leave the
+        archive holding documents nothing indexes.
+        """
+        if not self._records:
+            return 0
+
+        summary = storage.summary_path(self.run_dir)
+        try:
+            written = export.generate_excel_from_records(self._records, summary)
+            run_manager.update_run(
+                self.run_id, excel_path=str(summary), excel_exported=True
+            )
+            logger.info(
+                "[run %s] partial summary sheet holds %d row(s)", self.run_id, written
+            )
+        except Exception:  # noqa: BLE001 — the documents on disk are still worth packaging
+            logger.exception("[run %s] partial summary sheet failed", self.run_id)
+            run_manager.add_error(
+                self.run_id, "the stopped run's summary sheet could not be written"
+            )
+            return 0
+
+        try:
+            run = run_manager.get_run(self.run_id) or {"run_id": self.run_id}
+            stored = export.save_bids(run, self._records)
+            run_manager.update_run(self.run_id, bids_stored_in_db=stored)
+        except Exception:  # noqa: BLE001 — the sheet on disk is the record
+            logger.exception("[run %s] partial DB save failed", self.run_id)
+            # Tells the packaging step to ship the sheet just written rather
+            # than regenerate an empty one from a DB that never got the rows.
+            run_manager.update_run(self.run_id, db_save_failed=True)
+
+        return len(self._records)
+
     def run(self) -> None:
         run_manager.update_run(self.run_id, status="running")
         self._save_run_row()
@@ -1799,7 +1840,11 @@ class PhiladelphiaScraper(BaseScraper):
             # "stopped" and suppresses later writes, so there is nothing to
             # record — and this must not fall through to the handler below,
             # which would log a traceback and screenshot a closed browser.
-            logger.info("[run %s] stopped by user", self.run_id)
+            #
+            # The rows gathered so far are saved and packaged here, because
+            # everything that would have done it sits after the loop this stop
+            # just unwound out of. See BaseScraper.deliver_partial.
+            self.deliver_partial()
         except Exception as exc:  # noqa: BLE001 — a failed run is reported, not crashed
             logger.exception("[run %s] failed", self.run_id)
             self.screenshot("fatal")

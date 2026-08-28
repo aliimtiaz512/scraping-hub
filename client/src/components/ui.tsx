@@ -387,7 +387,16 @@ export function DataTable({
  *  two copies had already drifted once (a new state was added to the API's union
  *  and this one silently rejected it), and one of them being a duplicate is what
  *  made that possible. */
-export function RunBadge({ status }: { status: RunStatus["status"] }) {
+export function RunBadge({
+  status,
+  partial,
+}: {
+  status: RunStatus["status"];
+  /** A stopped run that kept what it had gathered. Shown on the badge because
+   *  "Stopped" alone used to mean "and nothing came of it", and a reviewer who
+   *  reads it that way never looks for the download that is now sitting there. */
+  partial?: boolean;
+}) {
   const map = {
     // pending is the instant between the run being registered and the pool
     // accepting it; queued is waiting for a slot. Both read as "Queued" to a
@@ -403,10 +412,16 @@ export function RunBadge({ status }: { status: RunStatus["status"] }) {
     paused: { cls: "border-amber-300 bg-amber-50 text-amber-700", label: "Paused" },
   }[status];
   const live = status === "running" || status === "pending" || status === "queued";
+  // Amber rather than the neutral stopped grey: there is something to collect,
+  // and grey is the colour this console uses for "nothing happened here".
+  const showPartial = partial && status === "stopped";
+  const cls = showPartial
+    ? "border-amber-300 bg-amber-50 text-amber-800"
+    : map.cls;
   return (
-    <span className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded-full border px-2.5 py-0.5 text-xs font-medium ${map.cls}`}>
+    <span className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded-full border px-2.5 py-0.5 text-xs font-medium ${cls}`}>
       {live && <span className="status-pulse h-1.5 w-1.5 rounded-full bg-current" />}
-      {map.label}
+      {showPartial ? "Stopped — partial results" : map.label}
     </span>
   );
 }

@@ -77,7 +77,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 
 from app.config import settings
-from app.core import run_manager
+from app.core import partials, run_manager
 from app.core.exports import archive_run
 from app.services.notifier import notify_scrape_completion
 from app.core.base_scraper import BaseScraper, StopRequested
@@ -1230,6 +1230,23 @@ class SeptaScraper(BaseScraper):
 
     # -- orchestration ------------------------------------------------------
 
+    def flush_partial(self) -> int:
+        """SEPTA's rows, saved the way a completed run saves them.
+
+        `self._open_bids` rides along because the sheet's Open Bids tab is built
+        from it — a partial workbook missing that tab would not be the same
+        workbook one page shorter, which is the whole promise here.
+        """
+        return partials.flush_records(
+            self,
+            self._records,
+            save_bids=export.save_bids,
+            write_sheet=lambda records, path: export.generate_excel_from_records(
+                records, path, self._open_bids
+            ),
+            sheet_name=f"Septa_({self.dates.summary(self.module)})",
+        )
+
     def run(self) -> None:
         run_manager.update_run(self.run_id, status="running")
         self._save_run_row()
@@ -1341,7 +1358,11 @@ class SeptaScraper(BaseScraper):
             # handler below, which would log a traceback under "failed" and try
             # to screenshot a browser that stopping has already closed. A run
             # the user ended is not a run that broke.
-            logger.info("[run %s] stopped by user", self.run_id)
+            #
+            # The rows gathered so far are saved and packaged here, because
+            # everything that would have done it sits after the loop this stop
+            # just unwound out of. See BaseScraper.deliver_partial.
+            self.deliver_partial()
         except Exception as exc:  # noqa: BLE001 — a failed run must be reported, not crash the worker
             logger.exception("[run %s] failed", self.run_id)
             self.screenshot("fatal")

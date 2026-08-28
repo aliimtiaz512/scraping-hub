@@ -28,6 +28,10 @@ _JOB_FIELDS = (
     # Where a paused run is holding, so the console can show it without a
     # second request per job.
     "paused_at", "resumed_at",
+    # Whether a stopped run kept what it had gathered. The console holds a
+    # just-stopped job in the jobs bar so its download is one click away, and
+    # this is what tells it there is one — without a second request per job.
+    "partial_results", "partial_record_count",
     # How each portal names the thing it is working on, for the job's subtitle.
     "label", "search", "account_label", "niche_label", "filter_label", "module",
 )
@@ -172,7 +176,19 @@ def download_run(run_id: str):
     run = run_manager.get_run(run_id)
     if not run:
         raise HTTPException(status_code=404, detail=f"Unknown run: {run_id}")
-    if run.get("status") != "completed":
+    # A stopped run is downloadable too, provided it kept something. Stopping a
+    # long run at 75 of 300 bids used to discard all 75 — those rows are now
+    # flushed and packaged on the way out (BaseScraper.deliver_partial), and
+    # this is the gate that lets the console offer them. A stopped run with no
+    # `partial_results` is one that was ended before it had gathered anything,
+    # or one whose portal predates the flush, and still has nothing to serve.
+    if run.get("status") == "stopped":
+        if not run.get("partial_results"):
+            raise HTTPException(
+                status_code=409,
+                detail="This run was stopped before it gathered any results.",
+            )
+    elif run.get("status") != "completed":
         raise HTTPException(status_code=409, detail="Run has not completed — nothing to download yet.")
 
     # Runs whose only output is the spreadsheet serve it unwrapped — there is
@@ -231,7 +247,15 @@ def download_run_attachments(run_id: str):
     run = run_manager.get_run(run_id)
     if not run:
         raise HTTPException(status_code=404, detail=f"Unknown run: {run_id}")
-    if run.get("status") != "completed":
+    # Same rule as the full download: a stopped run that kept something serves
+    # the attachments it managed to fetch before it was stopped.
+    if run.get("status") == "stopped":
+        if not run.get("partial_results"):
+            raise HTTPException(
+                status_code=409,
+                detail="This run was stopped before it gathered any results.",
+            )
+    elif run.get("status") != "completed":
         raise HTTPException(
             status_code=409, detail="Run has not completed — nothing to download yet."
         )

@@ -117,7 +117,7 @@ export default function RunHistory({ meta }: { meta: PortalMeta }) {
               className="cursor-pointer transition hover:bg-ink-50"
             >
               <td className="px-4 py-3">
-                <RunBadge status={run.status} />
+                <RunBadge status={run.status} partial={run.partial_results} />
               </td>
               <td className="tabular whitespace-nowrap px-4 py-3 text-xs text-ink-600">
                 {formatTimestamp(run.started_at)}

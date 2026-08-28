@@ -39,7 +39,7 @@ from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support import expected_conditions as EC
 
 from app.config import settings
-from app.core import run_manager
+from app.core import partials, run_manager
 from app.core.base_scraper import BaseScraper, StopRequested
 from app.core.closing_filter import MIN_DAYS_UNTIL_CLOSE, days_until_close
 from app.core.exports import archive_run
@@ -474,6 +474,19 @@ class RideMetroScraper(BaseScraper):
             self.run_id, self.account.label, accounts.mask(self.account.username),
         )
 
+    def flush_partial(self) -> int:
+        """RideMetro's rows. The sheet is named for the account the run used, as
+        the completed path names it — two accounts sweeping the same day would
+        otherwise land on one filename."""
+        label = self.account.label if getattr(self, "account", None) else self.run_id
+        return partials.flush_records(
+            self,
+            self._records,
+            save_bids=export.save_bids,
+            write_sheet=export.generate_excel_from_records,
+            sheet_name=f"RideMetro_Bids ({label}) [{self.run_id}]",
+        )
+
     def run(self) -> None:
         run_manager.update_run(self.run_id, status="running")
         self._save_run_row()  # initial run row (best-effort)
@@ -555,7 +568,11 @@ class RideMetroScraper(BaseScraper):
             # handler below, which would log a traceback under "failed" and try
             # to screenshot a browser that stopping has already closed. A run
             # the user ended is not a run that broke.
-            logger.info("[run %s] stopped by user", self.run_id)
+            #
+            # The rows gathered so far are saved and packaged here, because
+            # everything that would have done it sits after the loop this stop
+            # just unwound out of. See BaseScraper.deliver_partial.
+            self.deliver_partial()
         except Exception as exc:  # noqa: BLE001 — a failed run must be reported, not crash the worker
             logger.exception("[run %s] failed", self.run_id)
             self.screenshot("fatal")
