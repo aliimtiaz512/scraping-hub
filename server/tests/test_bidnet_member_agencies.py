@@ -201,9 +201,15 @@ def test_the_niche_column_can_hold_a_real_agency_name():
 
 
 def test_no_keyword_is_credited_with_finding_the_bids(swept):
+    """The sweep searches no keywords, so no row claims one.
+
+    Expressed as the field being *absent* rather than empty. It used to be set
+    to "" to fill a Matched Keyword column, but the sweep's sheet
+    (MEMBER_AGENCY_EXCEL_COLUMNS) has no such column — so all that setting did
+    was write a blank into every one of a few thousand database rows."""
     instance, _, saved = swept
     instance.run()
-    assert all(r["matched_keyword"] == "" for r in saved[0])
+    assert all(not r.get("matched_keyword") for r in saved[0])
 
 
 def test_the_run_reports_its_agency_breakdown(swept):

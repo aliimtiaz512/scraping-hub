@@ -175,9 +175,13 @@ def test_the_sweep_sheet_drops_matched_keyword():
     assert "matched_keyword" in [attr for attr, _ in EXCEL_COLUMNS]
 
 
-def test_the_sweep_sheet_ends_documents_niche_status():
+def test_the_sweep_sheet_ends_documents_status():
+    """No niche column and no agency column: the sweep searches nothing, so the
+    "which of our searches surfaced this" slot has no answer worth a column, and
+    the sheet is a flat list of solicitations."""
     headers = [header for _, header in MEMBER_AGENCY_EXCEL_COLUMNS]
-    assert headers[-3:] == ["Documents", "Niche", "Status"]
+    assert headers[-2:] == ["Documents", "Status"]
+    assert "niche" not in [attr for attr, _ in MEMBER_AGENCY_EXCEL_COLUMNS]
 
 
 def test_both_layouts_lead_with_the_bids_own_identity():
@@ -212,8 +216,8 @@ def test_the_written_sheet_matches_the_layout(tmp_path):
 
     sheet = load_workbook(out).active
     headers = [c.value for c in sheet[1]]
-    assert headers[-3:] == ["Documents", "Niche", "Status"]
-    assert "Matched Keyword" not in headers
+    assert headers[-2:] == ["Documents", "Status"]
+    for absent in ("Matched Keyword", "Niche", "Agency"):
+        assert absent not in headers, absent
     row = {h: c.value for h, c in zip(headers, sheet[2])}
     assert row["Documents"] == "4"
-    assert row["Niche"] == "County of X"

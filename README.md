@@ -314,7 +314,7 @@ python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 cp .env.example .env   # fill in creds, DATABASE_URL, and (optionally) notifications
 .venv/bin/python create_tables.py
-.venv/bin/uvicorn main:app --reload --port 8000
+.venv/bin/uvicorn main:app --reload --port 9000
 ```
 
 Credentials in `server/.env`:
@@ -400,11 +400,11 @@ existing table is applied from there.
 ```bash
 cd client
 npm install
-# .env should contain: NEXT_PUBLIC_API_URL=http://localhost:8000
+# .env should contain: NEXT_PUBLIC_API_URL=http://localhost:9000
 npm run dev
 ```
 
-Open http://localhost:3000 and pick a portal from the console.
+Open http://localhost:4000 and pick a portal from the console.
 
 ### Tests
 
@@ -426,7 +426,9 @@ cd server
 - Results live only as archives under `ARCHIVE_DIR` — nothing is written to
   `data/documents` for new runs. Runs made before this change are still
   downloadable from their old location.
-- CORS allows any `localhost` / `127.0.0.1` port so Next's dev server can
-  auto-increment past `3000`.
+- The API listens on `9000` and the console on `4000` (`npm run dev` passes
+  `-p 4000`; the API port is the `--port` flag above). CORS allows any
+  `localhost` / `127.0.0.1` port, so Next auto-incrementing past `4000` when it
+  is taken still reaches the API.
 - Logins are assumed to be plain email/password. The exception is North Dakota,
   whose B2C sign-in carries a reCAPTCHA handled by manual-login mode.

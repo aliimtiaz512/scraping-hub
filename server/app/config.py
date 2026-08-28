@@ -204,7 +204,7 @@ class Settings(BaseSettings):
 
     # Base URL the notification email uses for the run's download link. Set to
     # the address recipients can actually reach (e.g. a tunnel or LAN address).
-    public_base_url: str = "http://localhost:8000"
+    public_base_url: str = "http://localhost:9000"
 
     # Browser visibility is decided per-run, not globally: every run is headless
     # unless it was started from the "Live preview" button (which sets the run's

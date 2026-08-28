@@ -134,30 +134,31 @@ EXCEL_COLUMNS: list[tuple[str, str]] = [
     ("status", "Status"),
 ]
 
-# The member agency sweep's own layout. Two of its columns differ from the niche
-# layout above, and both differences follow from the mode searching **no
-# keywords**:
+# The member agency sweep's own layout. Three columns differ from the niche
+# layout above:
 #
 # * **`Matched Keyword` is gone.** A niche run searches twenty-odd terms one at a
 #   time and that column says which of them surfaced the bid — the single most
 #   useful thing to know about a row there. A sweep types nothing into the box
 #   at all, so the column could only ever be blank, and a column that is blank
 #   in every row of every sheet is noise the reader has to learn to skip.
-# * **`Documents` is present**, immediately before `Agency`. It is the triage
+# * **`Documents` is present**, at the end before `Status`. It is the triage
 #   signal a keyword-less sweep is short of: a bid carrying fourteen attachments
 #   is a different proposition from one carrying none, and with nothing else
 #   narrowing the list it is often the fastest way to sort it.
+# * **`Niche` is gone.** The niche layout uses that column for "which of our
+#   searches surfaced this bid"; a sweep searches nothing, so what went there
+#   was the issuing member agency, briefly under an `Agency` header. Removed at
+#   the reviewer's request — the sheet is a flat list of solicitations.
 #
-# The third difference is a header, not a column. Both layouts read the `niche`
-# field in the same position — "which of our searches surfaced this bid" — but
-# in a sweep the answer is never a niche: it is the member agency that issued
-# the solicitation, written there by `_extract_agency`. Labelling that "Niche"
-# asked every reader of the sheet to know that, so the sweep calls the column
-# **`Agency`**. The key is unchanged, so nothing downstream moves.
+#   The `niche` **field** is unaffected: `_extract_agency` still reads the
+#   agency, it is still stored on the bid row, and the run log's per-agency
+#   funnel breakdown still reports it. Only the spreadsheet column is gone, so
+#   an agency asked for later needs no re-scrape.
 #
-# The tail is otherwise the same shape as the niche layout — the bid's own
-# fields, then how it reached us, then how completely we read it — so the two
-# sheets can still be read side by side.
+# What remains is the bid's own fields, then how completely we read it — the
+# same shape as the niche layout's tail, so the two sheets still read side by
+# side on the columns they share.
 MEMBER_AGENCY_EXCEL_COLUMNS: list[tuple[str, str]] = [
     ("reference_number", "Reference Number"),
     ("solicitation_number", "Solicitation Number"),
@@ -168,7 +169,5 @@ MEMBER_AGENCY_EXCEL_COLUMNS: list[tuple[str, str]] = [
     ("closing_date", "Closing Date"),
     ("detail_url", "Detail URL"),
     ("documents_count", "Documents"),
-    # The issuing member agency, not a niche — see the note above.
-    ("niche", "Agency"),
     ("status", "Status"),
 ]

@@ -64,7 +64,8 @@ def test_runs_past_the_cap_wait_instead_of_starting(gate):
     time.sleep(0.3)                       # give a queued one a chance to misbehave
     assert len(started) == jobs.CONCURRENCY
     assert jobs.stats() == {
-        "running": jobs.CONCURRENCY, "queued": 2, "capacity": jobs.CONCURRENCY,
+        "running": jobs.CONCURRENCY, "queued": 2, "paused": 0,
+        "capacity": jobs.CONCURRENCY,
     }
 
     gate.set()
