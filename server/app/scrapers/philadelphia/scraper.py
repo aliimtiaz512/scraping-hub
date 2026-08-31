@@ -23,28 +23,34 @@ Flow, per run:
     for each bid row:   -> summary fields + the detail link
         open the detail page
         read every Header Information label/value pair
-        read the line items, and write them as bid_items_details.txt
-        download every File Attachment into the bid's own folder
-    summary sheet -> database (upsert by bid number) -> one ZIP
+        read the line items
+        count the File Attachments the page lists
+    summary sheet -> database (upsert by bid number) -> one .xlsx
 
-**Nothing leaves here that a client cannot open.** The header table used to
-travel beside each bid as JSON; it now reaches the reader as spreadsheet columns
-(fiscal year, procurement type, pre-bid conference, and one cell holding every
-other published label), and the line items go into the bid's folder as plain
-text. The attachments are untouched — whole files, as the city published them.
+**The deliverable is one spreadsheet.** This portal used to ship a ZIP: a
+summary sheet at the root, and under it one folder per bid holding that bid's
+attachments and a `bid_items_details.txt`. Nothing is downloaded now — the
+client asked for the bids, not their paperwork — so the run produces a bare
+`.xlsx` (`philadelphia` is in `exports.EXCEL_ONLY_PORTALS`) and a ZIP around a
+single file would be a folder to unpack for nothing.
 
-**The attachments are the fiddly part.** Their anchors have no href to fetch:
-`javascript:editFile('391619')` calls into the page, which streams the file
-through the servlet. There is no URL to construct that is not a guess, so each
-anchor is clicked and the browser's download is waited for — the same approach
-the MyFlorida flow uses on the same kind of link. A file that never lands is
-recorded against the bid by name rather than silently missing.
+Everything the archive used to carry is therefore in the sheet or it is gone,
+and only one thing was at risk: the line items, which lived solely in that text
+file. They are now a column of their own (`details.render_items_cell`). The
+header table already became columns in an earlier change, so it needed nothing.
+
+**The attachments are still counted, never fetched.** Their anchors carry
+`javascript:editFile('391619')` and no URL — the file streams through the
+servlet when the anchor is clicked — so downloading one means clicking it and
+waiting, per file, per bid. Reading how many there are costs nothing by
+comparison: the list is already on the page the run is standing on. The count
+goes in the sheet next to the Detail URL, which is where a reader goes when they
+do want a document.
 """
 
 from __future__ import annotations
 
 import logging
-import shutil
 import time
 from datetime import datetime
 from pathlib import Path
@@ -107,11 +113,10 @@ RESULTS_TABLE_ID = "resultsTable"
 
 # -- the detail page ----------------------------------------------------------
 HEADER_LABEL_CSS = "td.t-head-01"
-#: An attachment anchor, and — with the file id filled in — one specific
-#: attachment. The id inside `editFile('391619')` is the anchor's identity,
-#: which is how a file is found again after a download redraws the page.
+#: An attachment anchor. Used to wait for the File Attachments row to render
+#: before the anchors are counted — nothing is clicked, so there is no longer a
+#: by-file-id form for re-finding one anchor after a download redrew the page.
 ATTACHMENT_LINK_XPATH = "//a[contains(@href, 'editFile')]"
-ATTACHMENT_BY_ID_XPATH = "//a[contains(@href, \"editFile('{file_id}')\")]"
 
 SETTLE_SECONDS = 1.5
 #: How long to wait for the File Attachments row to appear on a detail page, and
@@ -142,8 +147,9 @@ class PhiladelphiaScraper(BaseScraper):
     def __init__(self, run_id: str):
         super().__init__(run_id)
         self._records: list[dict[str, Any]] = []
+        # How many documents the portal published across the run. Counted,
+        # never fetched — see the module docstring.
         self._documents_downloaded = 0
-        self._documents_failed = 0
         # Set by the dashboard's Advanced Search panel and carried on the run,
         # the same way `live_preview` is. Empty means the whole Open Bids list,
         # which is what a run did before this existed and still does by default.
@@ -1424,24 +1430,8 @@ class PhiladelphiaScraper(BaseScraper):
             logger.info(" ├── Line Items: the page carries no item table")
         return items
 
-    def _write_items_file(self, record: dict[str, Any]) -> None:
-        """Write `bid_items_details.txt` into the bid's folder.
-
-        Written for every bid, including one with no items: a folder of PDFs and
-        nothing naming the bid they belong to is what this file exists to fix.
-        """
-        path = storage.items_path(self.run_dir, record["bid_number"])
-        try:
-            path.write_text(details.render_items_text(record), encoding="utf-8")
-        except OSError as exc:
-            # Not fatal — the documents and the spreadsheet are the deliverable
-            # and both survive this — but never silent.
-            logger.warning("[run %s] %s: could not write %s (%s)",
-                           self.run_id, record["bid_number"],
-                           storage.ITEMS_FILENAME, exc.__class__.__name__)
-
     def scrape_detail(self, record: dict[str, Any]) -> None:
-        """Open one bid, read its header and items, and save its attachments.
+        """Open one bid and read its header, its line items and its file list.
 
         Everything is written onto `record` in place. A bid whose detail page
         cannot be read keeps its listing fields and carries the error — it stays
@@ -1476,42 +1466,27 @@ class PhiladelphiaScraper(BaseScraper):
         # is what proves a Philadelphia bid is a supply: a one-line description
         # cannot, and without that evidence the funnel sends most bids to
         # MANUAL_REVIEW. The verdict is a column, never a filter — every bid
-        # stays in the report, keeps its folder and keeps its documents.
+        # stays in the report whatever the matrix made of it.
         verdict = evaluation.evaluate(record)
         record.update(verdict)
         evaluation.log_verdict(record, verdict)
 
-        folder = storage.bid_folder(self.run_dir, bid_number)
-        self._write_items_file(record)
+        # The line items reach the reader as a column rather than as a text file
+        # in the bid's folder. There is no folder any more — see the module
+        # docstring — and the item breakdown is the one thing that used to live
+        # only in the archive, so it moves into the sheet instead of being lost.
+        record["item_details"] = details.render_items_cell(record)
 
-        saved, errors = self.download_attachments(
-            bid_number, folder, record["detail_url"]
-        )
-
-        # The count that reaches the spreadsheet is the count of files actually
-        # in the bid's folder — not how many links the page offered, and not how
-        # many clicks were made. A number taken from anywhere but the disk can
-        # say five while the client opens the folder and finds three.
-        on_disk = storage.saved_documents(self.run_dir, bid_number)
-        expected = len(saved) + len(errors)
-        logger.info(" └── [VERIFIED]: %d/%d file(s) saved to folder %s/",
-                    len(on_disk), expected, storage.folder_reference(bid_number))
-        if len(on_disk) != len(saved):
-            # The two disagreeing means a file moved out from under the run, or
-            # one landed that was never counted. Either way the disk wins.
-            logger.warning(
-                "[run %s] %s: %d file(s) were saved but %d are in the folder — "
-                "the folder is what the sheet will report",
-                self.run_id, bid_number, len(saved), len(on_disk),
-            )
-
-        record["file_paths"] = [
-            f"{storage.folder_reference(bid_number)}/{name}" for name in on_disk
-        ]
-        record["documents_downloaded"] = len(on_disk)
-        record["document_errors"] = errors
-        self._documents_downloaded += len(on_disk)
-        self._documents_failed += len(errors)
+        # The attachment list is read but nothing is downloaded. Counting them
+        # is free — the list is already on the page this method is standing on —
+        # and it is the useful half of what the download gave: a reader can see
+        # a bid has four documents and go to the Detail URL for them.
+        attachments = self._await_attachments()
+        record["documents_downloaded"] = len(attachments)
+        self._documents_downloaded += len(attachments)
+        logger.info(" └── [FILES]: %d document%s published on the portal "
+                    "(not downloaded — see the Detail URL)",
+                    len(attachments), "" if len(attachments) == 1 else "s")
 
     # Every File Attachment on the detail page, as name and file id. The id is
     # the one in `javascript:editFile('391619')` — the anchor's identity, and
@@ -1533,60 +1508,6 @@ class PhiladelphiaScraper(BaseScraper):
     }
     return out;
     """
-
-    def download_attachments(
-        self, bid_number: str, folder: Path, detail_url: str | None = None
-    ) -> tuple[list[str], list[str]]:
-        """Save every File Attachment for this bid. Returns (saved, errors).
-
-        The anchors carry `javascript:editFile('391619')` and no URL, so each is
-        clicked and the browser's download waited for. The click is done through
-        JS: these pages are wide tables and a native click can land on a cell
-        that has scrolled over the link.
-
-        Each attachment is found again by its file id rather than by its place
-        in the list. Clicking one of these links can leave the detail page or
-        redraw it, and a positional lookup reads whatever anchor now sits at that
-        index — or, once the list is shorter than the index, reports a file that
-        is still on the page as missing. That is what "the link was no longer on
-        the page" meant: not a vanished attachment, but a list that had moved
-        underneath the loop.
-
-        A file that does not arrive is named in the errors rather than skipped
-        quietly — an attachment list that is silently one short is worse than one
-        that says which is missing.
-        """
-        attachments = self._await_attachments()
-        if not attachments:
-            return [], []
-        logger.info(" ├── Detected Attachments: %d file%s found on page.",
-                    len(attachments), "" if len(attachments) == 1 else "s")
-
-        saved: list[str] = []
-        errors: list[str] = []
-        for index, item in enumerate(attachments, start=1):
-            name = item.get("name") or f"attachment_{index}"
-            position = f"({index}/{len(attachments)})"
-            try:
-                target = self._download_one(item["file_id"], folder, index, detail_url)
-                saved.append(target)
-                logger.info(" ├── Downloading: %s %s -> Success", name, position)
-            except (TimeoutException, WebDriverException, OSError) as exc:
-                # Named, not swallowed: a timeout here is a document the client
-                # will not find in the ZIP, and a run that hides it looks
-                # complete while being short.
-                detail = (getattr(exc, "msg", None) or str(exc) or "").strip()
-                errors.append(f"{name}: {exc.__class__.__name__}")
-                logger.warning(" ├── Downloading: %s %s -> FAILED (%s%s)",
-                               name, position, exc.__class__.__name__,
-                               f": {detail[:120]}" if detail else "")
-        if errors:
-            run_manager.add_warning(
-                self.run_id,
-                f"{bid_number}: {len(errors)} of {len(attachments)} attachment(s) could "
-                f"not be saved — {'; '.join(errors)[:300]}",
-            )
-        return saved, errors
 
     def _attachment_list(self) -> list[dict[str, str]]:
         """The bid's attachments as `{file_id, name}`, in page order."""
@@ -1626,78 +1547,6 @@ class PhiladelphiaScraper(BaseScraper):
                     "— taking the %d found",
                     self.run_id, ATTACHMENT_SETTLE_READS, len(attachments))
         return attachments
-
-    def _download_one(
-        self, file_id: str, folder: Path, index: int, detail_url: str | None
-    ) -> str:
-        """Click one attachment, wait for it to land, and file it. Returns its name.
-
-        The click is retried once. The first attempt can fail for reasons that do
-        not repeat — the servlet was slow, the page had moved on — and reopening
-        the bid puts the link back where it can be clicked.
-        """
-        last: Exception | None = None
-        for attempt in (1, 2):
-            # What is already staged, so the wait cannot mistake the previous
-            # download for this one and return before the file has arrived.
-            staged = {p for p in self.download_dir.iterdir() if p.is_file()}
-            link = self._attachment_anchor(file_id, detail_url)
-            if link is None:
-                raise WebDriverException("the link is not on the detail page")
-            self.scroll_into_view(link)
-            self.driver.execute_script("arguments[0].click();", link)
-            try:
-                downloaded = self.wait_for_download(ignore=staged)
-                break
-            except TimeoutException as exc:
-                last = exc
-                if attempt == 2 or not detail_url:
-                    raise
-                logger.info("[run %s] attachment %s did not arrive — reopening the "
-                            "bid and trying once more", self.run_id, file_id)
-                self.navigate(detail_url)
-                time.sleep(SETTLE_SECONDS)
-        else:  # pragma: no cover - the loop either breaks or raises
-            raise last or TimeoutException("download did not complete")
-
-        target = folder / downloaded.name
-        if target.exists():
-            target = folder / f"{index}_{downloaded.name}"
-        shutil.move(str(downloaded), str(target))
-        return target.name
-
-    def _attachment_anchor(self, file_id: str, detail_url: str | None):
-        """The anchor for one attachment, or None if it is genuinely not there.
-
-        A download can leave the detail page behind — the click goes through the
-        servlet, and some bids come back on a different page than they left. So a
-        link that is missing is not believed the first time: the detail page is
-        loaded again and asked once more, which is the difference between four
-        attachments lost and four attachments saved.
-        """
-        # The ids the portal issues are numeric, so this cannot escape the
-        # predicate; the quoting is chosen so an id never has to be escaped.
-        xpath = ATTACHMENT_BY_ID_XPATH.format(file_id=file_id)
-        try:
-            found = self.driver.find_elements(By.XPATH, xpath)
-        except WebDriverException:
-            found = []
-        if found:
-            return found[0]
-        if not detail_url:
-            return None
-
-        logger.info("[run %s] attachment %s is not on the current page — reopening "
-                    "the bid", self.run_id, file_id)
-        try:
-            self.navigate(detail_url)
-            time.sleep(SETTLE_SECONDS)
-            found = self.driver.find_elements(By.XPATH, xpath)
-        except WebDriverException:
-            return None
-        return found[0] if found else None
-
-    # -- orchestration --------------------------------------------------------
 
     def flush_partial(self) -> int:
         """Philadelphia's rows, written where its archive expects to find them.
@@ -1829,9 +1678,9 @@ class PhiladelphiaScraper(BaseScraper):
 
             logger.info(
                 "[PIPELINE COMPLETE]: Total Processed: %d / Total Detected: %d "
-                "| %d document(s) saved, %d failed",
+                "| %d document(s) listed on the portal (none downloaded)",
                 len(self._records), len(self._records),
-                self._documents_downloaded, self._documents_failed,
+                self._documents_downloaded,
             )
             run_manager.update_run(self.run_id, status="completed", step="done")
             notify_scrape_completion(self.run_id, "philadelphia", len(self._records))
@@ -1871,7 +1720,6 @@ class PhiladelphiaScraper(BaseScraper):
                 "buyer": record.get("buyer"),
                 "close_date": record.get("bid_opening_date"),
                 "document_count": record.get("documents_downloaded", 0),
-                "folder": storage.folder_reference(record.get("bid_number") or ""),
                 "error": record.get("error"),
             })
 

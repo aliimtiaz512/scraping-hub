@@ -129,6 +129,51 @@ _RULE = "=" * 70
 _THIN = "-" * 70
 
 
+def render_items_cell(record: dict[str, Any]) -> str:
+    """One bid's line items, compact enough to live in a spreadsheet cell.
+
+    The long-form `render_items_text` below writes a standalone document — ruled
+    headings, the bid's identity printed at the top — because it used to be a
+    file sitting in a folder of PDFs with nothing to say which bid they belonged
+    to. In a cell all of that is noise: the bid number, title, organization,
+    buyer and dates are already columns on the same row, and repeating them
+    inside one cell makes the sheet unreadable.
+
+    So this prints the items and only the items, one per line:
+
+        Item #1 | Item Name: Traffic cone | Quantity: 250 | Unit of Measure: EA
+        Item #2 | Item Name: Barricade tape | Quantity: 40 | Unit of Measure: RL
+
+    A bid with no item breakdown says so in a sentence rather than coming back
+    blank, because blank reads as "not captured" and this is "the city published
+    none".
+    """
+    items = record.get("items") or []
+    if not items:
+        return "The portal published no line-item breakdown for this bid."
+
+    lines = []
+    for position, item in enumerate(items, start=1):
+        parts = [f"Item #{item.get('item_number') or position}"]
+        printed = set()
+        for field, heading in ITEM_FIELDS:
+            printed.add(field)
+            value = " ".join(str(item.get(field) or "").split())
+            if value:
+                parts.append(f"{heading}: {value}")
+        # Anything the page carried that ITEM_FIELDS has no heading for — kept
+        # for the same reason the long form keeps it: the portal's tables are not
+        # identical across bids, and a field we have no name for is still data.
+        for key, value in item.items():
+            if key in printed or key == "item_number":
+                continue
+            text = " ".join(str(value or "").split())
+            if text:
+                parts.append(f"{str(key).replace('_', ' ').title()}: {text}")
+        lines.append(" | ".join(parts))
+    return "\n".join(lines)
+
+
 def render_items_text(record: dict[str, Any]) -> str:
     """`bid_items_details.txt` for one bid.
 

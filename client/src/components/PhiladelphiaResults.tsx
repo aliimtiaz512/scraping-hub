@@ -7,9 +7,13 @@ import { DataTable } from "@/components/ui";
  * The Open Bids a run has captured so far.
  *
  * The columns are the ones a reader acts on — what it is, who wants it, when it
- * opens — plus how many files came with it and the folder they are in, because
- * that folder name is how a row in the console maps to a directory in the
- * downloaded ZIP.
+ * opens — plus how many documents the city published against it.
+ *
+ * That count is not a download count. This portal fetches no attachments: the
+ * run delivers one spreadsheet, and the count is there so a reader can see a bid
+ * has paperwork and go to the portal for it. The last column used to name the
+ * bid's folder in the ZIP; there is no ZIP, so it now carries the error a bid
+ * hit, or nothing.
  */
 export default function PhiladelphiaResults({ bids }: { bids: BidResult[] }) {
   if (bids.length === 0) return null;
@@ -20,7 +24,7 @@ export default function PhiladelphiaResults({ bids }: { bids: BidResult[] }) {
     <DataTable
       caption={
         `${bids.length} open bid${bids.length === 1 ? "" : "s"}` +
-        ` · ${documents} document${documents === 1 ? "" : "s"} saved`
+        ` · ${documents} document${documents === 1 ? "" : "s"} published on the portal`
       }
       headers={[
         { label: "Bid #" },
@@ -28,7 +32,7 @@ export default function PhiladelphiaResults({ bids }: { bids: BidResult[] }) {
         { label: "Buyer" },
         { label: "Bid Opening Date" },
         { label: "Documents", className: "text-center" },
-        { label: "Folder in archive" },
+        { label: "Status" },
       ]}
     >
       {bids.map((bid, index) => (
@@ -46,10 +50,10 @@ export default function PhiladelphiaResults({ bids }: { bids: BidResult[] }) {
           <td className="whitespace-nowrap px-4 py-3 text-ink-600">{bid.close_date ?? "—"}</td>
           <td className="tabular px-4 py-3 text-center text-ink-600">{bid.document_count ?? 0}</td>
           <td
-            className="max-w-xs truncate px-4 py-3 font-mono text-xs text-ink-500"
-            title={bid.error ?? bid.folder ?? ""}
+            className="max-w-xs truncate px-4 py-3 text-xs text-ink-500"
+            title={bid.error ?? ""}
           >
-            {bid.error ? <span className="text-red-600">{bid.error}</span> : bid.folder ?? "—"}
+            {bid.error ? <span className="text-red-600">{bid.error}</span> : "captured"}
           </td>
         </tr>
       ))}

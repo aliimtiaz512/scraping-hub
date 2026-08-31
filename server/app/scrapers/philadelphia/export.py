@@ -18,7 +18,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from app.core import excel_style
 from app.db import SessionLocal
-from app.scrapers.philadelphia import details, flags, storage
+from app.scrapers.philadelphia import details, flags
 from app.scrapers.philadelphia.models import (
     EXCEL_COLUMNS,
     PhiladelphiaBid,
@@ -197,10 +197,15 @@ def _cell(source: Any, attr: str) -> Any:
         record = {field: getter(field) for field in flags.INSPECTED_FIELDS}
         record["bid_number"] = getter("bid_number")
         return flags.status(record) if attr == "flag_status" else flags.reason(record)
-    if attr == "folder":
-        return storage.folder_reference(getter("bid_number") or "")
     if attr == "item_count":
         return len(getter("items") or [])
+    if attr == "item_details":
+        # Rendered from `items` rather than read from a stored column, so a sheet
+        # rebuilt from the database months later reads identically to the one
+        # that shipped — and so the change needed no migration.
+        return details.render_items_cell(
+            {"items": getter("items") or [], "bid_number": getter("bid_number")}
+        )
     if attr == "additional_header":
         # A scraped record has already had this rendered; a database row has
         # the header table it is rendered from.

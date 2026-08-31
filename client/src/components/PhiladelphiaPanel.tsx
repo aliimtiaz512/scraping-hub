@@ -84,8 +84,8 @@ export default function PhiladelphiaPanel() {
       <LaunchBar
         summary={
           criteria > 0
-            ? `A search of the open bids on ${criteria} criteri${criteria === 1 ? "on" : "a"}: every matching bid's detail page, header information and attachments — one folder per bid inside a single ZIP.`
-            : "Every open bid: summary row, detail-page header information, and all attachments — one folder per bid inside a single ZIP."
+            ? `A search of the open bids on ${criteria} criteri${criteria === 1 ? "on" : "a"}: every matching bid's detail page, header information and line items — one spreadsheet, no document downloads.`
+            : "Every open bid: summary row, detail-page header information and line items — one spreadsheet, no document downloads."
         }
       >
         <div className="flex items-center gap-2">

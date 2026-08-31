@@ -177,10 +177,19 @@ EXCEL_COLUMNS: list[tuple[str, str]] = [
     ("flag_status", "Niche Flag"),
     ("flag_reason", "Niche Flag Reason"),
 
-    # 3. Where its files are, and how to get back to the portal.
+    # 3. What else the bid carries, and how to get back to the portal.
+    #
+    # `Folder` used to sit here, holding a path inside the run's ZIP. There is
+    # no ZIP any more — a Philadelphia run delivers one spreadsheet and no
+    # documents — so the column would name a folder nobody has. `Detail URL` is
+    # what replaced it: the reader who wants a document goes there for it.
+    #
+    # `Line Item Details` is new for the same reason. The item breakdown used to
+    # be a text file in that folder, which made it the one thing that would have
+    # been lost with the archive.
     ("documents_downloaded", "Total Document Count"),
     ("item_count", "Line Items"),
-    ("folder", "Folder"),
+    ("item_details", "Line Item Details"),
     ("additional_header", "Additional Header Information"),
     ("detail_url", "Detail URL"),
 ]

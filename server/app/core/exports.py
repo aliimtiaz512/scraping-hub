@@ -32,7 +32,9 @@ logger = logging.getLogger(__name__)
 XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 # Portals whose runs download real document files → their download is a ZIP.
-DOC_PORTALS = {"myflorida", "myflorida_sweep", "bidnet", "northdakota", "philadelphia"}
+# Philadelphia left this set when it stopped downloading attachments; it counts
+# them and links to the portal instead. See EXCEL_ONLY_PORTALS below.
+DOC_PORTALS = {"myflorida", "myflorida_sweep", "bidnet", "northdakota"}
 
 # Portals whose run produces nothing but the spreadsheet, so wrapping it in a
 # ZIP adds a folder to unpack for no gain. SAM downloads each bid's attachments
@@ -54,7 +56,11 @@ DOC_PORTALS = {"myflorida", "myflorida_sweep", "bidnet", "northdakota", "philade
 # EMMA is here for the same reason as SAM: it opens each solicitation's
 # documents only to screen their text against the keyword blocklist, then
 # deletes them — the spreadsheet of passing bids is the entire deliverable.
-EXCEL_ONLY_PORTALS = {"sam", "septa", "ridemetro", "unison", "emma"}
+# Philadelphia joined them by request: it used to ship a ZIP of every bid's
+# attachments, and the client wanted the bids without the paperwork. It now
+# downloads nothing at all — its detail pages are read for the header, the line
+# items and the *count* of documents published, all of which are columns.
+EXCEL_ONLY_PORTALS = {"sam", "septa", "ridemetro", "unison", "emma", "philadelphia"}
 
 
 def is_excel_only(run: dict[str, Any]) -> bool:
