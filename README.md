@@ -308,14 +308,29 @@ Portal-specific extras:
 
 ### Server
 
+One-time setup:
+
 ```bash
 cd server
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 cp .env.example .env   # fill in creds, DATABASE_URL, and (optionally) notifications
 .venv/bin/python create_tables.py
+```
+
+Run the API:
+
+```bash
+cd server
 .venv/bin/uvicorn main:app --reload --port 9000
 ```
+
+`--port 9000` is not optional. Without it uvicorn takes its own default of 8000,
+and that failure is quiet in both directions: every panel in the console reports
+"Failed to fetch" (the client is built against `NEXT_PUBLIC_API_URL=http://localhost:9000`),
+and every download link in a completion email points at `PUBLIC_BASE_URL`, which
+nothing is then serving. If the console cannot reach the API, check the port
+first: `curl -s localhost:9000/`.
 
 Credentials in `server/.env`:
 
@@ -397,21 +412,23 @@ existing table is applied from there.
 
 ### Client
 
+One-time setup:
+
 ```bash
 cd client
 npm install
-# .env should contain: NEXT_PUBLIC_API_URL=http://localhost:9000
+cp .env.example .env   # then set NEXT_PUBLIC_API_URL=http://localhost:9000
+```
+
+Run the console:
+
+```bash
+cd client
 npm run dev
 ```
 
-Open http://localhost:4000 and pick a portal from the console.
-
-### Tests
-
-```bash
-cd server
-.venv/bin/python -m pytest tests -q
-```
+Open http://localhost:4000 and pick a portal from the console. The API must
+already be running on 9000, or every panel loads empty.
 
 ## Notes
 
