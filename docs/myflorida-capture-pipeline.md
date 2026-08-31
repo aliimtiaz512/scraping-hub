@@ -49,9 +49,9 @@ of the portal, and the documents behind that opinion were already gone.
 Now: every ad the search returns is captured as it stands, its attachments kept,
 and the reviewer decides. Concretely —
 
-* `sweep/scraper.py` imports no classifier. `_visit_bid` became `_capture_bid`
-  and keeps what it downloads; `_classify` became `_record`, which merges the
-  portal's export columns with what the detail page gave and interprets nothing.
+* `sweep/scraper.py` imports no classifier. `_visit_bid` became `_capture_bid`,
+  which keeps what it downloads and builds the row from the results grid and the
+  parsed detail page, interpreting nothing.
 * `sweep/export.py` gained `save_capture()`, which writes the bid row and stops:
   no per-niche score rows, `primary_niche = "UNREVIEWED"` — a placeholder in a
   NOT NULL column, not a verdict.
@@ -84,19 +84,60 @@ MyFlorida_Export/
         └── Attachment.pdf
 ```
 
-* **The summary is the index.** Every column the portal's own export carries,
-  plus `Niche`, `Matched Keyword` and `Folder` — and `Folder` holds a path
-  *inside the archive* (`Bids_Data/DMS-21-22-001`), not an absolute server path
-  the reader has no access to. No row is dropped.
+* **The summary is the index**, and it is the same seventeen columns for every
+  run — see `workbook.RECORD_COLUMNS`. No row is dropped, no row is scored, and
+  no column says accept or reject.
 * **Folders are named for the ad number alone.** It is the only part of a bid
   that is unique, short, stable and quotable back at the portal; titles are long,
   truncate differently in different places, and two ads can share one. The title
   is in the sheet, where it is searchable.
 * **The root folder is inside the workspace**, so the ZIP unpacks to a single
   `MyFlorida_Export/` instead of scattering files into the current directory.
-* `_exports/` (the raw per-search workbooks the summary is stitched from) and
-  `_downloads/` (Chrome's staging) sit outside that root, which is what keeps
-  them out of the archive.
+* `_exports/` (the portal's own per-search workbooks, kept as its record of the
+  search — the summary is no longer built from them) and `_downloads/` (Chrome's
+  staging) sit outside that root, which is what keeps them out of the archive.
+
+### What is in the summary sheet
+
+Both flows fill the same seventeen columns from two sources, and only two:
+
+| # | Column | Source |
+|---|---|---|
+| 1 | Advertisement Number | grid — the Number cell's link text |
+| 2 | Agency Advertisement Number | grid |
+| 3 | Version Number | grid |
+| 4 | Title | grid |
+| 5 | Advertisement Type | grid |
+| 6 | Agency | grid (the Organization column) |
+| 7 | Status | detail page |
+| 8 | Open Date | grid (posting Start Date) |
+| 9 | Closing Date | grid (posting End Date) |
+| 10 | Published Date | detail page (`#topBar`) |
+| 11 | Commodity Codes | detail page — `code — description`, pairs joined by ` \| ` |
+| 12 | Contact Person | detail page |
+| 13 | Contact Email | detail page (the `mailto:` href) |
+| 14 | Contact Phone | detail page |
+| 15 | Description | detail page (`#mainSection`) |
+| 16 | Documents | how many attachments were saved |
+| 17 | Detail Page URL | the resolved `/detail/` address |
+
+Three things worth knowing about that split:
+
+* **The grid is preferred wherever both have the field.** Four of these columns
+  are on the detail page too, but the grid gives them in one read per page
+  instead of one page load per ad, and the value is the same.
+* **The posting window is the grid's alone.** The detail page's `#topBar` carries
+  Start/End dates of its own; the grid's are what columns 8 and 9 mean, on every
+  row, so a reviewer sorting by closing date is sorting one thing.
+* **The detail URL cannot come from the grid.** The Number cell links through a
+  JS click handler and has no `href` — the address exists only once the route
+  has resolved, which is why it is captured on the detail page.
+
+`myflorida/detail.py` holds every detail-page selector and explains what each is
+anchored on; `tests/test_myflorida_detail.py` pins them against a real captured
+page. The sheet used to be the portal's own Export-to-Excel file passed through,
+which made its shape depend on the search and left out everything the export does
+not carry — status, commodity codes, contact, version, the link back to the ad.
 
 The sweep left `EXCEL_ONLY_PORTALS` as part of this: it was there because it
 deleted its attachments and the sheet was the whole deliverable. It keeps them

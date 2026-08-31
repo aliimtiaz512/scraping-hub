@@ -8,8 +8,8 @@ and portal fixes to login/search land in both flows:
                         accordion expansion is skipped. The posting-date window
                         is *not* overridden: `run` calls the parent's
                         `apply_date_range` against the same two fields.
-  _capture_bid          reads `#mainSection` and keeps every attachment in the
-                        bid's own folder.
+  _capture_bid          parses the whole detail page (`myflorida/detail.py`)
+                        and keeps every attachment in the bid's own folder.
   run                   pagination, capture, and the packaged delivery.
 
 Pagination is the substantive addition. The parent assumes a single page,
@@ -49,7 +49,6 @@ from app.core import run_manager
 from app.core.base_scraper import StopRequested
 from app.core.exports import archive_run
 from app.scrapers.myflorida import dates, storage
-from app.scrapers.myflorida.ingest import map_row, parse_excel
 from app.scrapers.myflorida.scraper import (
     BID_ATTEMPTS,
     BID_PAGE_TIMEOUT,
@@ -58,7 +57,7 @@ from app.scrapers.myflorida.scraper import (
     describe_error,
 )
 from app.scrapers.myflorida.sweep import export
-from app.scrapers.myflorida.workbook import build_from_records, merge_exports
+from app.scrapers.myflorida.workbook import build_from_records
 from app.services.notifier import notify_scrape_completion
 
 logger = logging.getLogger(__name__)
@@ -237,20 +236,19 @@ class SweepScraper(MFMPScraper):
 
     # -- per-bid ------------------------------------------------------------
 
-    def _read_description(self) -> str:
-        """The ad body from `#mainSection`.
+    def _await_detail(self) -> None:
+        """Block until `#mainSection` is in the DOM before the page is parsed.
 
-        Read as rendered text: the markup nests <p> inside <p>, which is invalid
-        HTML, so the parsed DOM does not match the source and innerText is the
-        only reading that survives the browser's re-parse. It also turns &nbsp;
-        into ordinary spaces.
+        `DETAIL_RENDER_SECONDS` is a settle, not a guarantee, and the parse reads
+        a snapshot of the page rather than re-querying it — so parsing a beat
+        early gives a record of empty strings with no error to explain it. The ad
+        body is the last part of the page to arrive, which makes it the thing
+        worth waiting on.
         """
         try:
-            element = self.wait(10).until(EC.presence_of_element_located(SEL["description"]))
-            return (element.text or "").strip()
+            self.wait(10).until(EC.presence_of_element_located(SEL["description"]))
         except (TimeoutException, WebDriverException):
             run_manager.add_warning(self.run_id, "description (#mainSection) not found on a bid")
-            return ""
 
     def _capture_bid(self, bid: dict) -> dict[str, Any]:
         """Open a bid, read it, keep every attachment, come back.
@@ -264,7 +262,7 @@ class SweepScraper(MFMPScraper):
 
         A document that fails to download is recorded against the bid rather
         than raised: a bid with three of four attachments is still worth having,
-        and the missing one is named in the summary sheet.
+        and the one that did not arrive is recorded against the run.
         """
         number = bid["number"]
         self.set_step(f"capturing:{number}")
@@ -275,9 +273,9 @@ class SweepScraper(MFMPScraper):
         self.wait(BID_PAGE_TIMEOUT).until(lambda d: "/detail/" in d.current_url)
         time.sleep(DETAIL_RENDER_SECONDS)  # the route resolving is not the render
 
-        detail_url = self.driver.current_url
-        description = self._read_description()
-        title = bid.get("title", "")
+        self._await_detail()
+        parsed = self.read_detail()
+        title = parsed.get("title") or bid.get("title", "")
 
         folder = storage.bid_folder(self.run_dir, number, title)
         saved: list[str] = []
@@ -304,11 +302,10 @@ class SweepScraper(MFMPScraper):
         time.sleep(1)
 
         return {
-            "ad_number": number,
-            "title": title,
-            "description": description,
-            "detail_url": detail_url,
-            "documents": saved,
+            **self._summary_row(bid, parsed, saved),
+            # Not summary columns — where the files went and what would not
+            # download. The console's live table and the archive need both; the
+            # sheet carries the count and the files are in the ZIP beside it.
             "folder": storage.folder_reference(number, title),
             "document_errors": errors,
         }
@@ -360,12 +357,18 @@ class SweepScraper(MFMPScraper):
     # -- orchestration ------------------------------------------------------
 
     def _collect_all_pages(self) -> list[dict]:
-        """Walk every page, exporting each one's metadata as we go.
+        """Walk every page, reading its rows and exporting it as we go.
 
-        The export is taken per page because whether the portal's Export button
-        covers the whole result set or only what is displayed is unverified; a
-        per-page export is correct either way, and `merge_exports` already
-        de-duplicates by ad number.
+        The rows are what the run is built on: `collect_bids` takes all eight
+        grid columns, so an advertisement arrives here already carrying its
+        identifiers and its posting window, and the detail page fills in the
+        rest.
+
+        The portal's own export is still taken per page — whether its Export
+        button covers the whole result set or only what is displayed is
+        unverified, and a per-page export is correct either way. Nothing is
+        built from those files any more; they are staged under `_exports/` as
+        the portal's own record of the search and excluded from the archive.
         """
         collected: list[dict] = []
         seen: set[str] = set()
@@ -410,50 +413,6 @@ class SweepScraper(MFMPScraper):
             collected = collected[: self.max_bids]
         return collected
 
-    def _metadata_by_ad(self) -> dict[str, dict[str, Any]]:
-        """Portal export columns keyed by ad number.
-
-        The results grid carries only number and title; agency, type, dates and
-        any commodity-code column come from the export. Reuses the niche flow's
-        `map_row` so "which column is the ad number" stays in one place.
-        """
-        out: dict[str, dict[str, Any]] = {}
-        for path in self.exports:
-            try:
-                for raw in parse_excel(path):
-                    mapped = map_row(raw)
-                    ad = (mapped.get("ad_number") or "").strip()
-                    if ad and ad not in out:
-                        out[ad] = {**mapped, "raw_data": raw}
-            except Exception:  # noqa: BLE001 — a bad export must not fail the run
-                logger.exception("[run %s] could not read export %s", self.run_id, path)
-        return out
-
-    def _record(self, captured: dict[str, Any], meta: dict[str, Any]) -> dict[str, Any]:
-        """One advertisement as it will be stored and summarised.
-
-        The portal's own export columns (agency, type, status, dates) merged with
-        what the detail page gave (description, attachments, the folder they are
-        in). Nothing is interpreted: no score, no niche, no verdict — the row is
-        what the portal said, plus where the files went.
-        """
-        return {
-            "ad_number": captured["ad_number"],
-            "title": captured.get("title") or meta.get("title"),
-            "agency": meta.get("agency"),
-            "ad_type": meta.get("ad_type"),
-            "status": meta.get("status"),
-            "ad_date": meta.get("ad_date"),
-            "open_date": meta.get("open_date"),
-            "close_date": meta.get("close_date"),
-            "description": captured.get("description"),
-            "detail_url": captured.get("detail_url"),
-            "documents": captured.get("documents") or [],
-            "folder": captured.get("folder"),
-            "document_errors": captured.get("document_errors") or [],
-            "raw_data": meta.get("raw_data"),
-        }
-
     def flush_partial(self) -> int:
         """Package the advertisements captured before Stop.
 
@@ -497,8 +456,7 @@ class SweepScraper(MFMPScraper):
                 run_manager.update_run(self.run_id, no_results=True)
             else:
                 bids = self._collect_all_pages()
-                metadata = self._metadata_by_ad()
-                records = self._process(bids, metadata)
+                records = self._process(bids)
 
             self._finalize(records)
             run_manager.update_run(self.run_id, status="completed", step="done")
@@ -525,9 +483,7 @@ class SweepScraper(MFMPScraper):
             run_manager.update_run(self.run_id, finished_at=datetime.now().isoformat())
             run_manager.remove_empty_folder(self.run_id)
 
-    def _process(
-        self, bids: list[dict], metadata: dict[str, dict[str, Any]]
-    ) -> list[dict[str, Any]]:
+    def _process(self, bids: list[dict]) -> list[dict[str, Any]]:
         """Open every collected bid and keep it, page by page. No bid is skipped
         on the strength of anything read from it."""
         records: list[dict[str, Any]] = []
@@ -555,8 +511,7 @@ class SweepScraper(MFMPScraper):
                 if captured is None:
                     continue
 
-                record = self._record(captured, metadata.get(bid["number"], {}))
-                records.append(record)
+                records.append(captured)
                 run_manager.update_run(
                     self.run_id,
                     bids_processed=len(records),
@@ -581,31 +536,26 @@ class SweepScraper(MFMPScraper):
         to be: the deliverable is now a ZIP whose root holds the sheet next to
         the documents it indexes, so the file has to exist at package time
         whatever the database is doing.
+
+        A summary is not optional — it is the archive's index — so a run with
+        records always writes one, and a failure here is recorded rather than
+        raised.
         """
         if not records:
             run_manager.update_run(self.run_id, no_results=True)
 
         self.set_step("merging_workbook")
-        # The portal's own per-page exports, stitched into one sheet, with each
-        # row pointing at the folder holding that ad's documents. Falls back to
-        # building the sheet from what was captured if the portal's exports are
-        # unusable — a summary is not optional, it is the archive's index.
-        folder_by_ad = {r["ad_number"]: r.get("folder", "") for r in records}
+        # One way to build the sheet, shared with the niche flow: the fixed
+        # columns in `workbook.RECORD_COLUMNS`, filled from the results grid and
+        # each ad's detail page. The portal's own per-page exports used to be
+        # stitched into this sheet instead, which made its shape depend on the
+        # search; they are still downloaded and staged, but nothing is built
+        # from them.
         try:
-            if self.exports:
-                self.excel_path = merge_exports(
-                    self.exports, self.run_dir, self._niche_label(), {}, folder_by_ad
-                )
-            else:
-                self.excel_path = build_from_records(records, self.run_dir)
+            self.excel_path = build_from_records(records, self.run_dir)
         except Exception:  # noqa: BLE001 — never fail a run over the workbook
-            logger.exception("[run %s] summary sheet failed; rebuilding from records",
-                             self.run_id)
-            try:
-                self.excel_path = build_from_records(records, self.run_dir)
-            except Exception:  # noqa: BLE001
-                logger.exception("[run %s] summary rebuild failed too", self.run_id)
-                run_manager.add_error(self.run_id, "summary sheet could not be written")
+            logger.exception("[run %s] summary sheet failed", self.run_id)
+            run_manager.add_error(self.run_id, "summary sheet could not be written")
         if self.excel_path:
             run_manager.update_run(
                 self.run_id, excel_path=str(self.excel_path), excel_exported=True

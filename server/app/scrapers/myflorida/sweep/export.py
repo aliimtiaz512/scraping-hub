@@ -19,6 +19,7 @@ from app.scrapers.myflorida.sweep.config import OTHER, Config, get_config
 from app.scrapers.myflorida.sweep.models import SweepBid, SweepScore
 from app.scrapers.myflorida.sweep.routing import Classification
 from app.scrapers.myflorida.sweep.workbook import build_workbook
+from app.scrapers.myflorida.workbook import RECORD_COLUMNS
 
 logger = logging.getLogger(__name__)
 
@@ -192,7 +193,15 @@ def save_capture(run_id: str, records: list[dict[str, Any]]) -> int:
     stops: no `SweepScore` rows, no niche, no strength, because none was
     computed. Everything the portal and the detail page gave is kept, including
     which folder in the archive holds the ad's documents.
+
+    The detail-page fields the summary sheet carries but `SweepBid` has no
+    column for — agency advertisement number, version, published date, commodity
+    codes, the contact, the detail URL — go into `raw_data` whole. That is what
+    lets `_capture_rows` rebuild the *same seventeen columns* months later
+    without a migration; adding columns for them would need one, and the sheet
+    is the deliverable, not the table.
     """
+    sheet_fields = {key for key, _ in RECORD_COLUMNS} - {"document_count"}
     session = SessionLocal()
     stored = 0
     try:
@@ -215,7 +224,7 @@ def save_capture(run_id: str, records: list[dict[str, Any]]) -> int:
                 document_chars=0,
                 raw_data={
                     **(record.get("raw_data") or {}),
-                    "detail_url": record.get("detail_url"),
+                    **{key: record.get(key) for key in sheet_fields},
                     "folder": record.get("folder"),
                     "document_errors": record.get("document_errors") or [],
                 },
@@ -248,23 +257,25 @@ def _capture_rows(run_id: str) -> list[dict[str, Any]] | None:
         session.close()
     if not bids or any(bid.primary_niche != UNREVIEWED for bid in bids):
         return None
-    return [
-        {
-            "ad_number": bid.ad_number,
-            "title": bid.title,
-            "agency": bid.agency,
-            "ad_type": bid.ad_type,
-            "status": bid.status,
-            "ad_date": bid.ad_date,
-            "open_date": bid.open_date,
-            "close_date": bid.close_date,
-            "description": bid.description,
-            "documents": bid.documents or [],
-            "detail_url": (bid.raw_data or {}).get("detail_url"),
-            "folder": (bid.raw_data or {}).get("folder"),
-        }
-        for bid in bids
-    ]
+    # The columns with a table column of their own read from it; the rest come
+    # back out of `raw_data`, where `save_capture` put them. Column first so a
+    # run stored before the detail-page fields existed still rebuilds with the
+    # fields it did have, blank in the rest.
+    columns = {
+        "ad_number": "ad_number", "title": "title", "agency": "agency",
+        "ad_type": "ad_type", "status": "status", "open_date": "open_date",
+        "close_date": "close_date", "description": "description",
+    }
+    rows = []
+    for bid in bids:
+        raw = bid.raw_data or {}
+        row = {key: raw.get(key) for key, _ in RECORD_COLUMNS}
+        for key, attribute in columns.items():
+            row[key] = getattr(bid, attribute) or raw.get(key)
+        row["documents"] = bid.documents or []
+        row["folder"] = raw.get("folder")
+        rows.append(row)
+    return rows
 
 
 def generate_excel(run_id: str, out_path: str | Path) -> int:

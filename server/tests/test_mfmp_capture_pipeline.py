@@ -260,10 +260,48 @@ def test_the_summary_holds_every_captured_bid(tmp_path):
     assert path == storage.summary_path(tmp_path)
     assert len(rows) == 6, "a header and five bids — none filtered out"
     headers = [str(h) for h in rows[0]]
-    for expected in ("Title", "Ad Number", "Agency", "Closing Date", "Documents", "Folder"):
+    for expected in ("Title", "Advertisement Number", "Agency", "Closing Date", "Documents"):
         assert expected in headers
     assert rows[1][headers.index("Documents")] == 2
-    assert rows[1][headers.index("Folder")] == "Bids_Data/AD-0"
+
+
+def test_the_summary_columns_are_the_same_for_every_run(tmp_path):
+    """The sheet used to be the portal's own export passed through, so its shape
+    depended on the search. A reviewer comparing two runs is comparing one
+    spreadsheet now, and an ad that rendered nothing still fills every column."""
+    from openpyxl import load_workbook
+
+    expected = [header for _, header in workbook.RECORD_COLUMNS]
+
+    full = workbook.build_from_records(
+        [{key: "x" for key, _ in workbook.RECORD_COLUMNS}], tmp_path / "full"
+    )
+    bare = workbook.build_from_records([{"ad_number": "AD-1"}], tmp_path / "bare")
+
+    for path in (full, bare):
+        headers = next(load_workbook(path).active.iter_rows(values_only=True))
+        assert [str(h) for h in headers] == expected
+    assert len(expected) == 17
+
+
+def test_a_bid_whose_detail_page_failed_still_reaches_the_sheet(tmp_path):
+    """Its status and commodity codes are gone, but the row names it, dates it
+    and says who posted it. A row that silently vanished would be worse."""
+    from openpyxl import load_workbook
+
+    path = workbook.build_from_records(
+        [{"ad_number": "AD-9", "title": "Grid only", "agency": "DMS",
+          "open_date": "08/26/2026", "close_date": "08/29/2026"}],
+        tmp_path,
+    )
+    sheet = load_workbook(path).active
+    header, row = list(sheet.iter_rows(values_only=True))[:2]
+    cells = dict(zip((str(h) for h in header), row))
+
+    assert cells["Advertisement Number"] == "AD-9"
+    assert cells["Closing Date"] == "08/29/2026"
+    assert cells["Status"] is None
+    assert cells["Documents"] == 0
 
 
 def test_the_zip_is_the_export_root_with_documents_in_place(tmp_path, monkeypatch):
@@ -318,3 +356,149 @@ def test_the_summary_is_not_shipped_twice(tmp_path, monkeypatch):
 
     with zipfile.ZipFile(out) as zf:
         assert zf.namelist() == ["MyFlorida_Export/MyFlorida_Bids_Summary.xlsx"]
+
+
+# =============================================================================
+# The results grid and the detail page, as the summary sheet's two sources
+# =============================================================================
+
+
+class FakeCell:
+    def __init__(self, text, link=None):
+        self.text = text
+        self._link = link
+
+    def find_elements(self, _by, _value):
+        return [FakeCell(self._link)] if self._link is not None else []
+
+
+class FakeRow:
+    def __init__(self, cells):
+        self._cells = cells
+
+    def find_elements(self, _by, _value):
+        return self._cells
+
+
+class FakeGrid:
+    """A driver whose results table is the portal's eight columns."""
+
+    def __init__(self, rows):
+        self.rows = rows
+
+    def find_elements(self, _by, _value):
+        return self.rows
+
+
+def _grid_row(number="AD-16589"):
+    """One results row, in the portal's column order."""
+    return FakeRow([
+        FakeCell("Intent to Award Single Source provider to Cochlear Americas"),
+        FakeCell(f"  {number} ", link=number),
+        FakeCell("IA-27-038"),
+        FakeCell("1"),
+        FakeCell("Florida School for the Deaf and the Blind (FSDB)"),
+        FakeCell("Agency Decision"),
+        FakeCell("08/26/2026 01:30 AM"),
+        FakeCell("08/29/2026 01:30 AM"),
+    ])
+
+
+def test_the_grid_gives_the_row_everything_it_alone_carries(tmp_path, monkeypatch):
+    """The posting window has no other source — it is on the grid and not on the
+    detail page's topBar under those names, so the sheet's Open and Closing
+    dates are only ever as good as this read."""
+    instance = _scraper(tmp_path, monkeypatch, FakeGrid([_grid_row()]))
+
+    bid = instance.collect_bids()[0]
+
+    assert bid["ad_number"] == "AD-16589"
+    assert bid["agency_ad_number"] == "IA-27-038"
+    assert bid["version"] == "1"
+    assert bid["agency"] == "Florida School for the Deaf and the Blind (FSDB)"
+    assert bid["ad_type"] == "Agency Decision"
+    assert bid["open_date"] == "08/26/2026 01:30 AM"
+    assert bid["close_date"] == "08/29/2026 01:30 AM"
+
+
+def test_the_ad_number_is_the_link_text_not_the_cell_text(tmp_path, monkeypatch):
+    """It is the dedup key, the documents folder name and the database's unique
+    constraint. The cell's rendered text has padding the link's does not, and a
+    key that differs by a space forks every one of those."""
+    instance = _scraper(tmp_path, monkeypatch, FakeGrid([_grid_row()]))
+
+    bid = instance.collect_bids()[0]
+
+    assert bid["ad_number"] == "AD-16589"
+    assert bid["number"] == "AD-16589"
+
+
+def test_a_row_with_no_link_is_not_collected(tmp_path, monkeypatch):
+    """Without an ad number there is nothing to open, nowhere to put its files
+    and no key to record it under."""
+    row = FakeRow([FakeCell("A title"), FakeCell("AD-1")])  # no anchor
+    instance = _scraper(tmp_path, monkeypatch, FakeGrid([row]))
+
+    assert instance.collect_bids() == []
+
+
+def test_the_detail_page_fills_what_the_grid_cannot(tmp_path, monkeypatch):
+    """Status, commodity codes and the contact exist on no grid column."""
+    instance = _scraper(tmp_path, monkeypatch, FakeGrid([]))
+    parsed = {"status": "OPEN", "commodity_codes": "42211705 — Hearing aid",
+              "contact_name": "Kim Whitwam", "published_date": "08/05/2026 12:32 AM"}
+
+    row = instance._summary_row({"ad_number": "AD-16589", "title": "T"}, parsed, ["a.pdf"])
+
+    assert row["status"] == "OPEN"
+    assert row["commodity_codes"] == "42211705 — Hearing aid"
+    assert row["contact_name"] == "Kim Whitwam"
+    assert row["documents"] == ["a.pdf"]
+
+
+def test_the_grid_wins_on_identity_and_the_posting_window(tmp_path, monkeypatch):
+    """The detail page's topBar carries Start/End dates of its own, and its
+    Advertisement Number is a second reading of the run's key. Both defer to the
+    grid: the key has to be the string everything else is filed under, and the
+    two dates have to mean the same thing on every row of the sheet."""
+    instance = _scraper(tmp_path, monkeypatch, FakeGrid([]))
+    bid = {"ad_number": "AD-16589", "open_date": "08/26/2026", "close_date": "08/29/2026"}
+    parsed = {"ad_number": "AD-99999", "open_date": "elsewhere", "close_date": "elsewhere"}
+
+    row = instance._summary_row(bid, parsed, [])
+
+    assert row["ad_number"] == "AD-16589"
+    assert row["open_date"] == "08/26/2026"
+    assert row["close_date"] == "08/29/2026"
+
+
+def test_a_detail_page_that_will_not_parse_does_not_fail_the_bid(tmp_path, monkeypatch):
+    """A hundred-bid run must not end because one page rendered badly."""
+    class Broken:
+        @property
+        def page_source(self):
+            raise RuntimeError("no page")
+
+        current_url = "https://x/detail/1"
+
+    instance = _scraper(tmp_path, monkeypatch, Broken())
+
+    assert instance.read_detail() == {}
+    run = run_manager.get_run(instance.run_id)
+    assert any("detail page" in w for w in run["warnings"])
+
+
+def test_a_bid_never_opened_still_reaches_the_sheet(tmp_path, monkeypatch):
+    """Stop landed, or the detail route timed out twice. The grid row is what is
+    left and it still names the ad, dates it and says who posted it."""
+    instance = _scraper(tmp_path, monkeypatch, FakeGrid([]))
+    found = {"AD-1": {"ad_number": "AD-1", "title": "Opened", "agency": "DMS"},
+             "AD-2": {"ad_number": "AD-2", "title": "Never opened", "agency": "FSDB"}}
+    instance._records["AD-1"] = {"ad_number": "AD-1", "title": "Opened", "status": "OPEN"}
+
+    records = instance._summary_records(found)
+
+    assert [r["ad_number"] for r in records] == ["AD-1", "AD-2"]
+    assert records[0]["status"] == "OPEN"
+    assert records[1]["agency"] == "FSDB", "the grid's fields, with no status"
+    assert not records[1].get("status")

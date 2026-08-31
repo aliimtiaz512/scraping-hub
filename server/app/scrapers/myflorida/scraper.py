@@ -1,7 +1,15 @@
 """Selenium automation for the MFMP vendor portal.
 
 Flow: login -> Advertisements -> Advanced Search -> search criteria -> Search ->
-Export Excel -> store in DB -> open each bid -> download documents.
+Export Excel -> open each bid -> read its detail page and download its
+documents -> one summary sheet -> store in DB.
+
+The summary sheet is built from what the scraper read, not from the portal's
+Export-to-Excel file: the results grid gives the identifiers and the posting
+window, and each ad's detail page gives the status, commodity codes, contact
+and the rest (`myflorida/detail.py`). The portal's export is still downloaded
+and staged under `_exports/` as its own record of the search, but the sheet no
+longer depends on it — see `myflorida/workbook.py` for why.
 
 A run searches one of two ways, decided by execute_run's arguments:
   commodity codes — a single search with every code selected.
@@ -35,9 +43,9 @@ from app.config import settings
 from app.core import run_manager
 from app.core.base_scraper import BaseScraper, StopRequested
 from app.core.filenames import sanitize_filename
-from app.scrapers.myflorida import accounts, dates, storage
+from app.scrapers.myflorida import accounts, dates, detail, storage
 from app.scrapers.myflorida.ingest import ingest_excel
-from app.scrapers.myflorida.workbook import merge_exports
+from app.scrapers.myflorida.workbook import build_from_records
 from app.core.exports import archive_run
 from app.services.notifier import notify_scrape_completion
 
@@ -146,9 +154,34 @@ SEL = {
     "export_excel": (By.XPATH, "//button[contains(., 'Export')]"),
 }
 
-# The advanced-search results table columns, in order: Title, Number, Agency Ad
-# Number, Version, Organization, Ad Type, Start Date, End Date. Title is cell 1;
-# the clickable Number link is cell 2.
+# The detail-page fields worth showing beside a bid in the live console. Short
+# ones only — see `process_bid`.
+LIVE_RESULT_FIELDS: tuple[str, ...] = ("status", "ad_type", "agency")
+
+# The advanced-search results table, by cell index: (index, record field).
+#
+# The portal emits these eight columns in this order — Title, Number, Agency Ad
+# Number, Version, Organization, Ad Type, Start Date, End Date — and `collect_bids`
+# reads them all. Cell 1 (Number) is absent from this map on purpose: its value is
+# taken from the link inside it rather than from the cell's text, because that
+# string is the run's key everywhere.
+#
+# Positional, because the grid's headers are not rendered as text a locator can
+# match. An index past the end of a row is skipped rather than guessed at, so a
+# portal that drops a column loses that field and nothing else — and the two
+# fields only obtainable here, the posting Start/End dates, are the last two, so
+# a column *added* at the front would show up as dates in the wrong cells rather
+# than silently. Worth checking here first if the sheet's dates ever look wrong.
+GRID_COLUMNS: tuple[tuple[int, str], ...] = (
+    (0, "title"),
+    (2, "agency_ad_number"),
+    (3, "version"),
+    (4, "agency"),
+    (5, "ad_type"),
+    (6, "open_date"),
+    (7, "close_date"),
+)
+
 MAX_RESULTS = "100"  # portal offers 25/50/75/100
 
 # The login form renders after the Angular bundle boots, which on a degraded
@@ -257,10 +290,14 @@ class MFMPScraper(BaseScraper):
         # at all, so later passes skip looking for them again.
         self._date_fields_missing = False
         # What the run has found so far, kept on the instance so Stop can
-        # deliver it: ad number -> the accumulated bid dict, and the per-search
-        # workbook exports waiting to be merged. Both modes fill these.
+        # deliver it: ad number -> the bid as the results grid gave it. Both
+        # modes fill this.
         self._found: dict[str, dict] = {}
-        self._exports: list[Path] = []
+        # Ad number -> the finished summary row, filled as each detail page
+        # is read. Separate from `_found` (which is the grid's view, built
+        # before the crawl) because a bid whose detail page failed still has
+        # a grid row worth shipping — see `_summary_records`.
+        self._records: dict[str, dict] = {}
         self.excel_path: Path | None = None
         # Resolved at the top of run() rather than here: a constructor that can
         # raise on a missing credential turns a misconfigured account into an
@@ -898,7 +935,22 @@ class MFMPScraper(BaseScraper):
         self._dismiss_overlay()
 
     def collect_bids(self) -> list[dict]:
-        """Read (number, title) for every result row.
+        """Read every result row into the fields the summary sheet needs.
+
+        The grid carries eight columns (see GRID_COLUMNS) and all of them are
+        taken, rather than the number and title this used to read. Four of them —
+        agency ad number, version, organization, ad type — also appear on the
+        detail page, and the grid is the better source: it is one read for the
+        whole page instead of one page load per ad, and it is the same value.
+
+        The two that are **only** here are the posting window's Start and End
+        dates, which is why this is where the summary's Open/Closing dates come
+        from.
+
+        The ad number is read from the link text specifically. It is this run's
+        key everywhere — the dedup set, the documents folder, the database's
+        unique constraint — so it has to be the string the grid's link carries
+        and not a second reading of it from somewhere else.
 
         Results are capped by the Maximum Results control (set to 100), so the
         table is a single page — the portal offers no pagination beyond that cap.
@@ -912,19 +964,72 @@ class MFMPScraper(BaseScraper):
                     continue
                 links = cells[1].find_elements(By.TAG_NAME, "a")
                 number = links[0].text.strip() if links else ""
-                title = cells[0].text.strip()
-                if number:
-                    bids.append({"number": number, "title": title})
+                if not number:
+                    continue
+                bid = {"number": number}
+                for index, field in GRID_COLUMNS:
+                    if index < len(cells):
+                        bid[field] = cells[index].text.strip()
+                # The link text wins over the Number cell's rendered text: a
+                # trailing space or a line break in the cell would fork the key.
+                bid["ad_number"] = number
+                bids.append(bid)
             except WebDriverException:
                 continue
         return bids
 
+    def read_detail(self) -> dict:
+        """The open detail page, parsed. Never raises — a page that will not
+        parse gives an empty record and the grid's fields carry the row.
+
+        Parsed from `page_source` in one pass rather than through a dozen
+        Selenium lookups; `myflorida/detail.py` explains why and holds every
+        selector.
+        """
+        try:
+            return detail.parse(self.driver.page_source, self.driver.current_url)
+        except Exception as exc:  # noqa: BLE001 — a bid is not worth a failed run
+            logger.warning("[run %s] detail page did not parse: %s",
+                           self.run_id, exc.__class__.__name__)
+            run_manager.add_warning(self.run_id, "a detail page could not be read")
+            return {}
+
+    def _summary_row(self, bid: dict, parsed: dict, documents: list[str]) -> dict:
+        """One advertisement as the summary sheet will carry it.
+
+        The grid wins on identity and the posting window, the detail page on
+        everything else, and a blank from either side falls through to the
+        other — an ad whose detail page failed still ships with its grid fields
+        rather than as an empty row.
+        """
+        row = {key: value for key, value in parsed.items() if value}
+        for key, value in bid.items():
+            if value and not row.get(key):
+                row[key] = value
+        # Identity and the posting window are the grid's, always: they are what
+        # the rest of the run is keyed on.
+        for key in ("ad_number", "open_date", "close_date"):
+            if bid.get(key):
+                row[key] = bid[key]
+        row["documents"] = documents
+        return row
+
     def process_bid(self, bid: dict) -> dict:
-        """Open a bid's detail page and download all of its documents.
+        """Open a bid's detail page, read it, and download all of its documents.
 
         The Number cell links via a JS click handler (no href), so we click it,
-        wait for the /detail/ route, download each attachment, then navigate back
-        — which restores the previous search results.
+        wait for the /detail/ route, read the page, download each attachment,
+        then navigate back — which restores the previous search results.
+
+        Reading the page costs nothing extra: this navigation was already
+        happening for the attachments, and the detail fields are lifted from the
+        same rendered page before the downloads start. It is done *before* them
+        deliberately — a download that hangs must not cost the row its status,
+        commodity codes and contact as well as its files.
+
+        The detail URL is captured here rather than from the grid: the Number
+        cell has no href to read, so the address only exists once the route has
+        actually resolved.
         """
         number, title = bid["number"], bid["title"]
         self.set_step(f"downloading_documents:{number}")
@@ -936,6 +1041,13 @@ class MFMPScraper(BaseScraper):
         self.wait(BID_PAGE_TIMEOUT).until(lambda d: "/detail/" in d.current_url)
         time.sleep(DETAIL_RENDER_SECONDS)  # the route resolving is not the render
 
+        parsed = self.read_detail()
+        # Only the short fields go onto the run result. It is appended to the
+        # run's live state and the whole run is persisted again on every bid, so
+        # a full advertisement body here would be rewritten a hundred times over
+        # a hundred-bid run. The complete row lives in `_records`, and the sheet
+        # is built from that.
+        result.update({key: parsed[key] for key in LIVE_RESULT_FIELDS if parsed.get(key)})
         bid_dir = storage.bid_folder(self.run_dir, number, title)
 
         doc_links = self.driver.find_elements(*SEL["document_links"])
@@ -956,6 +1068,8 @@ class MFMPScraper(BaseScraper):
             except (TimeoutException, WebDriverException, OSError) as exc:
                 result.setdefault("document_errors", []).append(f"doc {index}: {exc.__class__.__name__}")
 
+        self._records[number] = self._summary_row(bid, parsed, result["documents"])
+
         self.driver.back()
         self.wait(BID_PAGE_TIMEOUT).until(EC.presence_of_element_located(SEL["results_rows"]))
         time.sleep(1)
@@ -973,12 +1087,6 @@ class MFMPScraper(BaseScraper):
                 time.sleep(1)
         except (TimeoutException, WebDriverException):
             pass
-
-    def _bid_folder_name(self, bid: dict) -> str:
-        """Where this bid's documents live *inside the archive* — the value the
-        summary sheet's Folder column carries, so a row points at a real place in
-        the unpacked ZIP. See `myflorida/storage.py` for the layout."""
-        return storage.folder_reference(bid.get("number") or "", bid.get("title") or "")
 
     def _niche_label(self) -> str:
         """Human label for the run's niche, used for the merged workbook name."""
@@ -1039,9 +1147,14 @@ class MFMPScraper(BaseScraper):
         return outcome, bids
 
     def _export(self, suffix: str = "") -> Path | None:
-        """Capture the current result set to the exports staging folder before
-        crawling documents, so a failure in the per-bid crawl still leaves the
-        run's data on disk. Returns the export path, or None if the export failed."""
+        """Stage the portal's own export of the current result set.
+
+        Taken before the per-bid crawl, which is the long part: a run that dies
+        in the crawl still leaves the portal's own record of what the search
+        returned on disk under `_exports/`. The summary sheet is not built from
+        it — see `_finalize` — so a failure here is a warning, not a lost run.
+
+        Returns the export path, or None if the export failed."""
         try:
             return self.export_excel(suffix)
         except (TimeoutException, WebDriverException) as exc:
@@ -1049,25 +1162,40 @@ class MFMPScraper(BaseScraper):
             self.screenshot("export_excel")
             return None
 
-    def _finalize(self, exports: list[Path], found: dict[str, dict]) -> None:
-        """Merge the per-pass exports into one workbook, then ingest it once.
+    def _summary_records(self, found: dict[str, dict]) -> list[dict]:
+        """Every advertisement the run found, in the order it found them.
 
-        `found` maps ad number -> the accumulated bid dict (carrying matched
-        keywords), used to fill the merged workbook's Matched Keyword / Folder
-        columns. Both steps are best-effort: the files on disk are the source of
-        truth, so neither a merge nor a DB failure fails the run."""
-        if not exports:
+        An ad reaches this list whether or not its detail page was readable: a
+        bid that timed out twice has no `_records` entry, and its grid row is
+        used instead so the sheet still names it, dates it and says who posted
+        it. A row missing its status and commodity codes is worth having; a row
+        that silently vanished from the sheet is not.
+        """
+        return [self._records.get(number) or self._summary_row(bid, {}, [])
+                for number, bid in found.items()]
+
+    def _finalize(self, found: dict[str, dict]) -> None:
+        """Write the run's summary sheet, then ingest it once.
+
+        Built from what the run read — the results grid and each ad's detail
+        page — rather than from `exports`, which are the portal's own
+        Export-to-Excel files and are now kept only as staged evidence of the
+        search. See `myflorida/workbook.py`.
+
+        Both steps are best-effort: the files on disk are the source of truth,
+        so neither the sheet nor a DB failure fails the run."""
+        records = self._summary_records(found)
+        if not records:
             return
         self.set_step("merging_workbook")
-        keyword_by_ad = {num: ", ".join(entry.get("matched_keywords", [])) for num, entry in found.items()}
-        folder_by_ad = {num: self._bid_folder_name(entry) for num, entry in found.items()}
         try:
-            self.excel_path = merge_exports(
-                exports, self.run_dir, self._niche_label(), keyword_by_ad, folder_by_ad
+            self.excel_path = build_from_records(records, self.run_dir)
+            run_manager.update_run(
+                self.run_id, excel_path=str(self.excel_path), excel_exported=True
             )
-        except Exception as exc:  # noqa: BLE001 — a merge failure shouldn't fail the run
-            logger.exception("[run %s] workbook merge failed", self.run_id)
-            run_manager.add_error(self.run_id, f"workbook merge failed: {exc.__class__.__name__}")
+        except Exception as exc:  # noqa: BLE001 — the sheet shouldn't fail the run
+            logger.exception("[run %s] summary sheet failed", self.run_id)
+            run_manager.add_error(self.run_id, f"summary sheet failed: {exc.__class__.__name__}")
             return
 
         # No close-date pruning, and nothing else that drops rows: every
@@ -1142,11 +1270,9 @@ class MFMPScraper(BaseScraper):
         # the part a Stop lands in: the search itself is one page, so by here the
         # run already knows every ad it is going to report.
         self._found.update({b["number"]: {**b, "matched_keywords": []} for b in bids})
-        export = self._export()
-        if export:
-            self._exports.append(export)
+        self._export()
         self._process_bids(bids, set())
-        self._finalize(self._exports, self._found)
+        self._finalize(self._found)
 
     def _run_keywords(self) -> None:
         """One search per keyword, exports merged into one workbook by ad number.
@@ -1161,7 +1287,6 @@ class MFMPScraper(BaseScraper):
         # can still merge and deliver what the earlier keywords found. See
         # `flush_partial`.
         found = self._found
-        exports = self._exports
         any_results = False
         for index, keyword in enumerate(self.keywords, start=1):
             run_manager.update_run(self.run_id, keyword=keyword, keyword_progress=f"{index}/{len(self.keywords)}")
@@ -1186,29 +1311,29 @@ class MFMPScraper(BaseScraper):
                 elif keyword not in entry["matched_keywords"]:
                     entry["matched_keywords"].append(keyword)
             run_manager.update_run(self.run_id, bids_found=len(found))
-            export = self._export(keyword)
-            if export:
-                exports.append(export)
+            self._export(keyword)
             self._process_bids([found[b["number"]] for b in bids], processed)
         if not any_results:
             run_manager.update_run(self.run_id, no_results=True)
-        self._finalize(exports, found)
+        self._finalize(found)
 
     def flush_partial(self) -> int:
-        """Merge and store whatever the run found before Stop.
+        """Write and store whatever the run found before Stop.
 
-        `_finalize` is the completed path's own last step — the per-search
-        workbooks merged into one summary sheet, then ingested — so a stopped
-        run gets the same workbook rather than a second format. It is safe to
-        call here: it no-ops on an empty export list, and both the merge and the
-        ingest are already best-effort because neither may fail a run.
+        `_finalize` is the completed path's own last step — the summary sheet,
+        then the ingest — so a stopped run gets the same workbook rather than a
+        second format. It is safe to call here: it no-ops when nothing was
+        found, and both the sheet and the ingest are already best-effort because
+        neither may fail a run.
 
         A keyword run stopped at keyword nine of twenty delivers the eight that
-        finished plus whatever the ninth had exported before the stop landed.
+        finished plus whatever the ninth had reached before the stop landed. An
+        ad found but not yet opened ships with its grid fields — see
+        `_summary_records`.
         """
-        if not self._exports and not self._found:
+        if not self._found:
             return 0
-        self._finalize(self._exports, self._found)
+        self._finalize(self._found)
         return len(self._found)
 
     def _select_account(self) -> None:

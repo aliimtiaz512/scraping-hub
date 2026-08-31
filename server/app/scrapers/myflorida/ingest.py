@@ -26,24 +26,33 @@ def _normalize(header: str) -> str:
     return re.sub(r"[^a-z0-9]", "", str(header).lower())
 
 
-# Map a model field -> normalized header candidates (checked as substrings).
+# Map a model field -> normalized header candidates. Each is tried as an exact
+# header match first and only then as a substring; see `map_row`.
+#
+# The first name in each tuple is our own summary sheet's header (workbook.py),
+# so the sheet reads back exactly. The rest are the portal's export and the
+# other spellings a procurement export arrives with, and are what the substring
+# pass is for. Fields the sheet carries but the model has no column for —
+# agency advertisement number, version, the detail page URL — are absent here on
+# purpose: they reach the database through `raw_data`, which keeps the whole row.
 FIELD_CANDIDATES: dict[str, tuple[str, ...]] = {
-    "ad_number": ("adnumber", "advertisementnumber", "adid", "number", "solicitationnumber", "bidnumber"),
+    "ad_number": ("advertisementnumber", "adnumber", "adid", "number", "solicitationnumber", "bidnumber"),
     "title": ("title", "adtitle", "name", "solicitationtitle"),
-    # Added by the merged workbook (workbook.py), not present in the portal's own export.
+    # Written by runs made before the fixed summary schema; kept so their rows
+    # still read back. No sheet produces this column now.
     "matched_keyword": ("matchedkeyword",),
     "agency": ("agency", "organization", "customer", "department", "buyer"),
-    "ad_type": ("adtype", "type", "solicitationtype", "method"),
+    "ad_type": ("advertisementtype", "adtype", "type", "solicitationtype", "method"),
     "status": ("status", "state"),
     "description": ("description", "summary", "scope"),
-    "commodity_codes": ("commoditycode", "commoditycodes", "commodity", "nigp", "unspsc"),
-    "contact_name": ("contactname", "contact", "buyername"),
-    "contact_email": ("email", "contactemail"),
-    "contact_phone": ("phone", "contactphone", "telephone"),
+    "commodity_codes": ("commoditycodes", "commoditycode", "commodity", "nigp", "unspsc"),
+    "contact_name": ("contactperson", "contactname", "contact", "buyername"),
+    "contact_email": ("contactemail", "email"),
+    "contact_phone": ("contactphone", "phone", "telephone"),
     "estimated_amount": ("estimatedamount", "amount", "estimatedvalue", "value"),
-    "ad_date": ("addate", "advertisedate", "advertisementdate", "begindate", "startdate", "posteddate"),
+    "ad_date": ("publisheddate", "addate", "advertisedate", "advertisementdate", "begindate", "startdate", "posteddate"),
     "open_date": ("opendate", "openingdate", "responsedate", "duedate", "responsedue"),
-    "close_date": ("closedate", "closingdate", "enddate", "expirationdate"),
+    "close_date": ("closingdate", "closedate", "enddate", "expirationdate"),
 }
 
 STRING_FIELDS = {
@@ -92,18 +101,34 @@ def parse_excel(path: str | Path) -> list[dict[str, Any]]:
 
 
 def map_row(raw: dict[str, Any]) -> dict[str, Any]:
-    """Map a raw {header: value} row to known Bid fields (pure — no DB)."""
+    """Map a raw {header: value} row to known Bid fields (pure — no DB).
+
+    Every candidate is tried as an **exact** header match before any is tried as
+    a substring. Substring-first is what a portal export needs, where the header
+    might be "Ad #" or "Advertisement No."; it is actively wrong on our own
+    summary sheet, where "Agency" and "Agency Advertisement Number" are two
+    different columns and the substring pass reaches the longer one first,
+    filing the ad's agency number under its agency name. Exact-first settles
+    that without loosening anything: a header that matches a candidate outright
+    is the column that candidate names.
+    """
     normalized = {_normalize(h): h for h in raw}
     mapped: dict[str, Any] = {}
 
-    for field, candidates in FIELD_CANDIDATES.items():
-        if field in mapped:
-            continue
-        for candidate in candidates:
-            match = next((orig for norm, orig in normalized.items() if candidate in norm), None)
-            if match is not None and raw.get(match) not in (None, ""):
-                mapped[field] = raw[match]
-                break
+    def _match(candidate: str, exact: bool) -> str | None:
+        if exact:
+            return normalized.get(candidate)
+        return next((orig for norm, orig in normalized.items() if candidate in norm), None)
+
+    for exact in (True, False):
+        for field, candidates in FIELD_CANDIDATES.items():
+            if field in mapped:
+                continue
+            for candidate in candidates:
+                match = _match(candidate, exact)
+                if match is not None and raw.get(match) not in (None, ""):
+                    mapped[field] = raw[match]
+                    break
 
     if "estimated_amount" in mapped:
         mapped["estimated_amount"] = _to_decimal(mapped["estimated_amount"])
