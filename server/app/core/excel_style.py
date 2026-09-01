@@ -188,6 +188,14 @@ ROW_STYLES: dict[str, tuple[PatternFill, Font]] = {
     "reject": (PatternFill("solid", fgColor="FADBD8"), Font(color="78281F", bold=True)),
     # Undecided — a person still has to look at this one.
     "review": (PatternFill("solid", fgColor="FCF3CF"), Font(color="7D6608", bold=True)),
+    # Out of scope, in the client's own hand. Pure red rather than the pastel
+    # above, and that is the point: MFMP's criteria document specifies FFFF0000
+    # because it is the fill the client already applies by hand when they strike
+    # a bid off a sheet. A softer red would be a different mark from theirs, and
+    # the sheet is meant to arrive looking like the one they would have made.
+    # The type goes white because black on saturated red is barely readable
+    # across twenty columns.
+    "client_reject": (PatternFill("solid", fgColor="FFFF0000"), Font(color="FFFFFF", bold=True)),
 }
 
 

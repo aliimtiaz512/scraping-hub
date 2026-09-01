@@ -281,7 +281,7 @@ def test_the_summary_columns_are_the_same_for_every_run(tmp_path):
     for path in (full, bare):
         headers = next(load_workbook(path).active.iter_rows(values_only=True))
         assert [str(h) for h in headers] == expected
-    assert len(expected) == 17
+    assert len(expected) == 20
 
 
 def test_a_bid_whose_detail_page_failed_still_reaches_the_sheet(tmp_path):

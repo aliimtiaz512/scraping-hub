@@ -162,7 +162,7 @@ def test_the_sheet_carries_the_matrix_columns_without_losing_the_old_ones():
     for kept in ("Bid #", "Organization", "Buyer", "Description",
                  "Bid Opening Date", "Fiscal Year",
                  "Procurement / Solicitation Type", "Total Document Count",
-                 "Folder", "Detail URL"):
+                 "Detail URL"):
         assert kept in headers, f"{kept} was dropped from the summary sheet"
 
 
@@ -182,34 +182,10 @@ def test_the_verdict_reaches_the_sheet():
     assert sheet.cell(2, headers.index("Requirement Type") + 1).value == "HARDWARE"
 
 
-def test_evaluating_a_bid_does_not_touch_its_folder_or_its_text_file():
-    """The strict rule: PHL stays a multi-asset deliverable. The matrix adds
-    columns; it must not turn this into an Excel-only portal."""
-    out = Path(tempfile.mkdtemp())
-    record = {"bid_number": "B1", "description": "Jackhammers",
-              "items": [{"name": "Jackhammer", "quantity": "4", "unit": "EA"}]}
-    record.update(evaluation.evaluate(record))
-
-    storage.items_path(out, "B1").write_text("BID ITEM SPECIFICATIONS")
-    (storage.bid_folder(out, "B1") / "Spec.pdf").write_bytes(b"%PDF-1.4")
-    export.generate_excel_from_records([record], storage.summary_path(out))
-
-    written = {p.relative_to(out).as_posix() for p in out.rglob("*") if p.is_file()}
-    assert "CityOfPhiladelphia_Export/Bids_Data/B1/bid_items_details.txt" in written
-    assert "CityOfPhiladelphia_Export/Bids_Data/B1/Spec.pdf" in written
-    assert "CityOfPhiladelphia_Export/Philadelphia_Bids_Summary.xlsx" in written
-
-
-def test_the_portal_still_delivers_a_zip_not_a_bare_sheet():
-    from app.core import exports
-
-    assert "philadelphia" in exports.DOC_PORTALS
-    assert "philadelphia" not in exports.EXCEL_ONLY_PORTALS
-
-
-def test_a_rejected_bid_keeps_its_documents():
-    """The verdict is a column, not a filter — a REJECT still ships its folder,
-    because a reader disagreeing with the matrix needs the documents to say so."""
+def test_a_rejected_bid_keeps_its_row():
+    """The verdict is a column, not a filter — a REJECT still ships its row and
+    its document count, because a reader disagreeing with the matrix needs to
+    see the bid to say so."""
     record = {"bid_number": "B2624630",
               "description": "Custodial Service and Maintenance Supplies",
               "documents_downloaded": 11}
@@ -346,7 +322,7 @@ def test_the_bid_is_identified_before_anything_judges_it():
     assert headers[0] == "Bid #"
     assert headers.index("Description") < headers.index("Evaluation Status")
     assert headers.index("Bid Opening Date") < headers.index("Evaluation Status")
-    assert headers.index("Evaluation Status") < headers.index("Folder")
+    assert headers.index("Evaluation Status") < headers.index("Detail URL")
 
 
 def test_the_two_kinds_of_status_are_not_both_called_status():
@@ -468,3 +444,10 @@ def test_an_unevaluated_bid_is_not_silently_treated_as_pursued():
     values[_COLUMN_INDEX["decision"]] = "PENDING"
 
     assert _row_style(values) == "review"
+
+
+def test_the_portal_delivers_a_bare_sheet_not_a_zip():
+    from app.core import exports
+
+    assert "philadelphia" in exports.EXCEL_ONLY_PORTALS
+    assert "philadelphia" not in exports.DOC_PORTALS

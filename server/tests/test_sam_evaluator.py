@@ -76,13 +76,20 @@ CASES = [
         decision="PURSUE", rule="A",  # would have been killed pre-Fix-4
     ),
 
-    # ---- Fix 3: US-Mainland unlisted service -> MANUAL_REVIEW ----------------
+    # ---- Binary engine: US-Mainland unlisted service is now resolved --------
+    # This case asserted MANUAL_REVIEW until the binary engine landed
+    # (SAM_Binary_Engine_Prompt_and_Criteria.pdf). The bid still matches no
+    # rule; what changed is that "no rule matched" is no longer an answer.
+    # 541990 is not in the step-4a gate table, so it reaches the scorer and is
+    # rejected on its own numbers: service-sector NAICS (0.25), no procurement
+    # structure at all (0.00), no primary verb (0.50), an ordinary description
+    # (0.60) — a total of 0.23, well under the 0.40 reject threshold.
     dict(
         bid="MR-001",
         title="Braille Transcription Services, Denver, CO",
         naics="541990",
         body="Convert printed manuals to braille for distribution.",
-        decision="MANUAL_REVIEW", rule="none",
+        decision="REJECT", rule="structural_score",
     ),
 
     # ---- Fix 3: NAICS 238xxx Rule C re-run rules (US Mainland -> PURSUE) -----
@@ -121,8 +128,12 @@ CASES = [
 
 
 def run_case(c: dict) -> tuple[bool, str]:
+    # `binary=True` because that is how SAM runs. The flag is opt-in on the
+    # shared engine (Philadelphia and Unison keep MANUAL_REVIEW), so a SAM suite
+    # that omitted it would be testing a configuration SAM never uses.
     res = evaluate_bid(
-        c["bid"], c["body"], CONFIG, naics_code=c["naics"], title=c["title"]
+        c["bid"], c["body"], CONFIG, naics_code=c["naics"], title=c["title"],
+        binary=True,
     )
     ok = res["decision"] == c["decision"] and res["rule"] == c["rule"]
     detail = (

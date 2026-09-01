@@ -148,5 +148,8 @@ def evaluate_bid_endpoint(body: EvaluateRequest) -> dict:
     result = evaluate(
         body.bid_id, body.full_text,
         naics_code=body.naics_code or "", title=body.title or "",
+        # SAM is binary — the endpoint has to answer the way a run would, or it
+        # is a preview of a different engine than the one that decides.
+        binary=True,
     )
     return result

@@ -120,6 +120,9 @@ Both flows fill the same seventeen columns from two sources, and only two:
 | 15 | Description | detail page (`#mainSection`) |
 | 16 | Documents | how many attachments were saved |
 | 17 | Detail Page URL | the resolved `/detail/` address |
+| 18 | Evaluation Status | PURSUE / REJECT / MANUAL_REVIEW |
+| 19 | Evaluation Reason | which tier and category decided it |
+| 20 | AI Notes | the resolution layer's one-line reason |
 
 Three things worth knowing about that split:
 
@@ -132,6 +135,18 @@ Three things worth knowing about that split:
 * **The detail URL cannot come from the grid.** The Number cell links through a
   JS click handler and has no `href` — the address exists only once the route
   has resolved, which is why it is captured on the detail page.
+
+### The evaluation
+
+Columns 18–20 come from `myflorida/evaluation.py`, which implements
+`MFMP_Bid_Evaluation_Criteria.docx` — deterministic tiers first, then
+`myflorida/ollama_bridge.py` for what they cannot decide, the same shape as the
+SAM engine. REJECT rows are filled with the client's own red (`FFFF0000`),
+unresolved MANUAL_REVIEW rows yellow, PURSUE rows left clean.
+
+**The verdict is a column, never a filter.** Every advertisement the search
+returned reaches the sheet whatever the engine made of it — a REJECT arrives red
+rather than absent, which is what lets a reader disagree with it.
 
 `myflorida/detail.py` holds every detail-page selector and explains what each is
 anchored on; `tests/test_myflorida_detail.py` pins them against a real captured

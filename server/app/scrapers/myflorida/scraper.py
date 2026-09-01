@@ -43,7 +43,7 @@ from app.config import settings
 from app.core import run_manager
 from app.core.base_scraper import BaseScraper, StopRequested
 from app.core.filenames import sanitize_filename
-from app.scrapers.myflorida import accounts, dates, detail, storage
+from app.scrapers.myflorida import accounts, dates, detail, evaluation, ollama_bridge, storage
 from app.scrapers.myflorida.ingest import ingest_excel
 from app.scrapers.myflorida.workbook import build_from_records
 from app.core.exports import archive_run
@@ -1012,7 +1012,58 @@ class MFMPScraper(BaseScraper):
             if bid.get(key):
                 row[key] = bid[key]
         row["documents"] = documents
+        self._evaluate(row)
         return row
+
+    def _evaluate(self, row: dict) -> None:
+        """Classify one advertisement and write the verdict onto its row.
+
+        Two layers, in the order the criteria document sets out. The
+        deterministic tiers decide most bids from the commodity codes and the
+        title (`myflorida/evaluation.py`); only what they route to
+        MANUAL_REVIEW reaches the model, and only when that bid's own
+        attachments are on disk to read (`myflorida/ollama_bridge.py`).
+
+        **The verdict is a column, never a filter.** Every advertisement the
+        search returned reaches the sheet whatever the engine made of it — a
+        REJECT arrives red rather than absent, which is what lets a reader
+        disagree with it. Nothing here drops a row.
+
+        Best-effort throughout: an evaluation that fails leaves the bid
+        MANUAL_REVIEW with the reason saying so, because a run that dies over a
+        classification is worse than a bid nobody classified.
+        """
+        verdict = evaluation.evaluate(row)
+        row["decision"] = verdict["decision"]
+        row["evaluation_reason"] = verdict["reason"]
+        row["evaluation_rule"] = verdict["rule"]
+        row["ai_notes"] = ""
+        evaluation.log_verdict(row, verdict)
+
+        if verdict["decision"] != evaluation.MANUAL_REVIEW:
+            return
+
+        # The documents are already on disk — every MFMP bid downloads its
+        # attachments — so resolving costs the model call and nothing else.
+        folder = storage.bid_folder(
+            self.run_dir, row.get("ad_number") or "", row.get("title") or "",
+            create=False,
+        )
+        resolved = ollama_bridge.resolve(row, verdict, folder)
+        if resolved is None:
+            # Ollama is off, unreachable, or would not commit. The bid keeps the
+            # rules' verdict and the sheet tints it yellow for a person, which is
+            # the honest outcome — nobody decided it.
+            row["ai_notes"] = "Not resolved automatically — needs a person"
+            return
+
+        row["decision"] = resolved["decision"]
+        row["ai_notes"] = resolved["ai_notes"]
+        row["ai_confidence"] = resolved["confidence"]
+        logger.info(
+            " ├── [AI RESOLUTION]: %s -> %s (%s confidence)",
+            row.get("ad_number") or "?", resolved["decision"], resolved["confidence"],
+        )
 
     def process_bid(self, bid: dict) -> dict:
         """Open a bid's detail page, read it, and download all of its documents.

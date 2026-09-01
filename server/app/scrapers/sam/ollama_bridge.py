@@ -142,16 +142,24 @@ RULE_C = """
 6. HVAC Install/Repair/Maintenance"""
 
 
-def build_brief(title, naics_code, naics_title, full_text, location, stopped_at_step) -> str:
+def build_brief(title, naics_code, naics_title, full_text, location, stopped_at_step,
+                scores=None) -> str:
     """Assemble the ~400-token structured brief Ollama receives.
 
     ``full_text`` is read only to lift the first 300 chars of the description
     section; its attachment content never reaches this string.
+
+    ``scores`` is the structural engine's breakdown for a bid in the uncertain
+    0.40-0.80 band (spec Part A step 4). Passing it changes what the model is
+    being asked: not "classify this bid" but "the engine scored these four
+    dimensions and landed between its thresholds — break the tie". Omitted,
+    the brief is exactly what it was, so every existing caller is unaffected.
     """
     desc_opening = get_description_opening(full_text, chars=300)
     ts = _extract_title_signals(title)
     ds = _extract_desc_signals(desc_opening)
     cat = _get_naics_category(naics_code)
+    score_section = _score_section(scores)
     return f"""NOTICE TITLE: {title}
 NAICS: {naics_code} — {naics_title}
 NAICS CATEGORY: {cat}
@@ -171,7 +179,8 @@ DESCRIPTION OPENING:
 {desc_opening}
 
 WHY THE RULE ENGINE STOPPED: {stopped_at_step}
-(Bid matched neither Rule B nor Rule C — reached MANUAL_REVIEW)
+(Bid matched neither Rule B nor Rule C)
+{score_section}
 
 RULE B — EXCLUDED SERVICES (REJECT, any location):
 {RULE_B}
@@ -192,6 +201,25 @@ DECISION: <PURSUE|REJECT|MANUAL_REVIEW>
 RULE: <Rule A | Rule B #N — Name | Rule C #N — Name | none>
 REASON: <one sentence, max 20 words>
 CONFIDENCE: <HIGH|MEDIUM|LOW>"""
+
+
+def _score_section(scores) -> str:
+    """The structural breakdown, as the spec's SCORES block — or nothing.
+
+    Empty when no scores were passed, so a brief built the old way is byte for
+    byte what it was.
+    """
+    if not scores:
+        return ""
+    return f"""
+PRE-COMPUTED SCORES (from structural engine):
+  NAICS alignment    : {scores.get('naics_alignment', 0):.2f} (weight 40%)
+  Procurement struct : {scores.get('procurement_structure', 0):.2f} (weight 35%)
+  Primary verb       : {scores.get('primary_verb', 0):.2f} (weight 15%)
+  Scope clarity      : {scores.get('scope_clarity', 0):.2f} (weight 10%)
+  COMBINED SCORE     : {scores.get('total', 0):.2f} (uncertain band: 0.40-0.80)
+Engine is uncertain. Use bid context to decide PURSUE or REJECT.
+"""
 
 
 # -- response parsing ---------------------------------------------------------
@@ -225,6 +253,12 @@ def _parse_ollama_response(raw: str) -> dict | None:
     if decision not in VALID_DECISIONS:
         logger.warning(f"Ollama malformed decision: {decision!r}")
         return None
+    # MANUAL_REVIEW is no longer a decision the engine can emit (the binary
+    # spec). A model that answers with it has declined to choose, which is the
+    # same thing as not answering — the caller then applies its own fallback.
+    if decision == "MANUAL_REVIEW":
+        logger.info("Ollama declined to choose — treated as no answer")
+        return None
 
     if confidence not in {"HIGH", "MEDIUM", "LOW"}:
         confidence = "LOW"
@@ -253,7 +287,7 @@ def _parse_ollama_response(raw: str) -> dict | None:
 
 
 # -- public entry point -------------------------------------------------------
-def ollama_evaluate(title, naics_code, naics_title, full_text, result) -> dict | None:
+def ollama_evaluate(title, naics_code, naics_title, full_text, result, scores=None) -> dict | None:
     """Consult Ollama for one MANUAL_REVIEW bid.
 
     Builds a structured brief (~400 tokens), calls Ollama, parses the response,
@@ -275,6 +309,7 @@ def ollama_evaluate(title, naics_code, naics_title, full_text, result) -> dict |
         full_text,  # read here for extraction only — NOT sent to Ollama
         location,
         stopped_at,
+        scores,
     )
 
     payload = {

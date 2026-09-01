@@ -59,7 +59,43 @@ RECORD_COLUMNS: tuple[tuple[str, str], ...] = (
     ("description", "Description"),
     ("document_count", "Documents"),
     ("detail_url", "Detail Page URL"),
+    # The evaluation, last: a reader identifies a bid before anything judges it,
+    # and the verdict is a column rather than a filter — no row is ever dropped
+    # for what the engine made of it. See `myflorida/evaluation.py`.
+    ("decision", "Evaluation Status"),
+    ("evaluation_reason", "Evaluation Reason"),
+    ("ai_notes", "AI Notes"),
 )
+
+#: How a row is tinted, by what its verdict means. Returned to
+#: `excel_style.write_table`, which owns the palette.
+#:
+#: REJECT is the client's own pure red (FFFF0000) — the criteria document names
+#: that colour because it is the mark they already make by hand. MANUAL_REVIEW
+#: is yellow and means exactly one thing: nobody has decided this, neither the
+#: rules nor the model, so a person still has to look. PURSUE is left clean,
+#: which is what makes the other two visible at all.
+_ROW_TINT = {
+    "REJECT": "client_reject",
+    "MANUAL_REVIEW": "review",
+}
+
+
+def _row_style(values: list) -> str | None:
+    """The tint for one written row, read off the cell that was written.
+
+    Read back rather than re-derived from the record: a second pass could
+    disagree with the first, and a row filled red whose Evaluation Status says
+    PURSUE is worse than either answer on its own.
+    """
+    decision = str(values[_DECISION_INDEX] or "").strip().upper()
+    return _ROW_TINT.get(decision)
+
+
+#: Where Evaluation Status lands in a written row. Taken from the column list
+#: rather than hardcoded, so inserting a column cannot move the tint onto the
+#: wrong cell.
+_DECISION_INDEX = next(i for i, (key, _) in enumerate(RECORD_COLUMNS) if key == "decision")
 
 
 def _cell(record: dict, key: str):
@@ -83,7 +119,12 @@ def build_summary_at(records: list[dict], out_path: Path) -> int:
     """
     workbook, sheet = excel_style.new_workbook("Bids")
     rows = ([_cell(record, key) for key, _ in RECORD_COLUMNS] for record in records)
-    count = excel_style.write_table(sheet, [header for _, header in RECORD_COLUMNS], rows)
+    count = excel_style.write_table(
+        sheet,
+        [header for _, header in RECORD_COLUMNS],
+        rows,
+        row_style=_row_style,
+    )
     workbook.save(str(out_path))
     logger.info("wrote %d captured bid(s) to %s", count, Path(out_path).name)
     return count

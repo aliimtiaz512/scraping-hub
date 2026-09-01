@@ -47,6 +47,9 @@ def evaluate(
     naics_code: str = "",
     title: str = "",
     requirement_hint: str | None = None,
+    naics_title: str = "",
+    resolver=None,
+    binary: bool = False,
 ) -> dict:
     """Evaluate one bid with the vendored funnel, using live DB kill-words.
 
@@ -56,6 +59,17 @@ def evaluate(
     `requirement_hint` is passed straight through for a portal that can prove the
     requirement type structurally (Unison's Line Item table). SAM does not set
     it, so SAM's decisions are unaffected — see `evaluate_bid`.
+
+    `resolver` is the tie-breaker the binary engine calls for a bid whose
+    structural score lands in the uncertain 0.40-0.80 band. It is injected here
+    rather than imported by the engine so that the engine stays a pure module —
+    importable, and testable, on a machine with no Ollama and no network. A
+    caller that passes nothing gets the spec's own fallback: an unresolved bid
+    in that band is REJECTed rather than shown to anyone.
+
+    `binary` switches on the binary engine (steps 4a/4b). Off by default: this
+    function is also Philadelphia's and Unison's evaluator, and only SAM asked
+    for MANUAL_REVIEW to be removed.
     """
     session = SessionLocal()
     try:
@@ -69,6 +83,7 @@ def evaluate(
     return evaluate_bid(
         notice_id, full_text, cfg,
         naics_code=naics_code, title=title, requirement_hint=requirement_hint,
+        naics_title=naics_title, resolver=resolver, binary=binary,
     )
 
 

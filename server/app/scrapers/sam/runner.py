@@ -87,37 +87,50 @@ def execute_run(
         notice_id, title, naics_code, full_text = _bid_to_record(bid)
         naics_title = bid.get("NAICS Title", "")
         ollama_decision = ollama_rule = ollama_confidence = None
+
+        def _resolve(*, title, naics_code, naics_title, full_text, result, scores):
+            """The tie-breaker for a bid in the scorer's uncertain band.
+
+            The engine used to hand this job back here, because it produced a
+            third decision state (MANUAL_REVIEW) and the runner intercepted it.
+            The binary engine resolves the bid itself and calls this instead, so
+            the policy that used to live around the interception — record what
+            the model said for auditing, and honour shadow mode — lives in this
+            closure rather than being lost with the branch.
+
+            Returns the model's result, or None to leave the engine with its own
+            fallback. Shadow mode returns None deliberately: the answer is
+            recorded and the run behaves exactly as if Ollama were switched off.
+            """
+            nonlocal ollama_decision, ollama_rule, ollama_confidence
+            ollama_result = ollama_evaluate(
+                title=title,
+                naics_code=naics_code,
+                naics_title=naics_title,
+                full_text=full_text,  # brief builder reads this; Ollama does NOT
+                result=result,        # carries location + stopped_at_step
+                scores=scores,        # the four dimensions and the total
+            )
+            if ollama_result is None:
+                return None
+            # Always record the raw output for auditing, whether or not it is
+            # allowed to decide.
+            ollama_decision = ollama_result["decision"]
+            ollama_rule = ollama_result["rule"]
+            ollama_confidence = ollama_result["confidence"]
+            if OLLAMA_SHADOW_MODE:
+                return None
+            if ollama_confidence == "LOW":
+                # It answered, but not with enough conviction to beat the
+                # engine's own fallback.
+                return None
+            return ollama_result
+
         try:
-            result = evaluate(notice_id, full_text, naics_code=naics_code, title=title)
-
-            # ── Ollama wall ──────────────────────────────────────────────────
-            # Intercept only bids the rule engine could not decide. Ollama sees a
-            # ~400-token structured brief, never full_text. A None result
-            # (disabled/timeout/error/malformed) leaves MANUAL_REVIEW untouched.
-            if result.get("decision") == "MANUAL_REVIEW":
-                ollama_result = ollama_evaluate(
-                    title=title,
-                    naics_code=naics_code,
-                    naics_title=naics_title,
-                    full_text=full_text,  # brief builder reads this; Ollama does NOT
-                    result=result,        # carries location + stopped_at_step
-                )
-                if ollama_result is not None:
-                    # Always record Ollama's raw output for auditing, regardless
-                    # of whether it is allowed to replace the decision.
-                    ollama_decision = ollama_result["decision"]
-                    ollama_rule = ollama_result["rule"]
-                    ollama_confidence = ollama_result["confidence"]
-                    if not OLLAMA_SHADOW_MODE:
-                        # Live mode — apply confidence gating.
-                        if ollama_confidence == "HIGH":
-                            result = ollama_result
-                        elif ollama_confidence == "MEDIUM":
-                            result = ollama_result
-                            result["reason"] += " [Ollama — medium confidence, verify]"
-                        # LOW confidence: keep MANUAL_REVIEW unchanged.
-            # ─────────────────────────────────────────────────────────────────
-
+            result = evaluate(
+                notice_id, full_text, naics_code=naics_code, title=title,
+                naics_title=naics_title, resolver=_resolve, binary=True,
+            )
             decision = result.get("decision", "PENDING")
             reason = result.get("reason", "")
         except Exception as exc:  # noqa: BLE001 — an eval error must not drop the bid

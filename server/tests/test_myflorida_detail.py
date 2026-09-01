@@ -3,7 +3,7 @@
 The fixture is a real detail page (AD-16589, an Agency Decision from the Florida
 School for the Deaf and the Blind) captured as the browser rendered it, Angular
 scope attributes and comment placeholders intact. What these pin down is that
-each of the seventeen summary columns has a source that actually resolves, and
+each summary column the parser feeds has a source that actually resolves, and
 the four readings that took a second attempt to get right:
 
   * the End Date's leading `&nbsp;`, which a plain strip leaves on the value
@@ -192,7 +192,14 @@ def test_a_page_that_will_not_parse_still_returns_every_field():
 
 def test_the_parser_and_the_sheet_agree_on_field_names():
     """The sheet reads its cells straight off the parser's record, so a renamed
-    field would silently blank a column rather than fail."""
-    sheet_keys = {key for key, _ in RECORD_COLUMNS} - {"document_count"}
+    field would silently blank a column rather than fail.
+
+    Three columns are not the parser's: `document_count` is computed from the
+    saved attachments, and the evaluation columns come from
+    `myflorida/evaluation.py`. They are named here rather than excluded by a
+    wildcard, so a *fourth* unaccounted column still fails this test.
+    """
+    not_from_the_parser = {"document_count", "decision", "evaluation_reason", "ai_notes"}
+    sheet_keys = {key for key, _ in RECORD_COLUMNS} - not_from_the_parser
 
     assert sheet_keys <= set(detail.FIELDS)

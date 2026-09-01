@@ -282,20 +282,7 @@ def test_the_layout_is_one_root_with_the_summary_at_its_top(tmp_path):
     assert storage.summary_path(tmp_path).parent == root
 
 
-def test_each_bid_gets_a_folder_named_for_its_bid_number(tmp_path):
-    folder = storage.bid_folder(tmp_path, "B2727750")
-
-    assert folder.is_dir()
-    assert folder.parent.name == "Bids_Data"
-    assert folder.name == "B2727750"
-
-
-def test_the_folder_column_points_inside_the_archive():
-    assert storage.folder_reference("B2727750") == "Bids_Data/B2727750"
-    assert not storage.folder_reference("B2727750").startswith("/")
-
-
-def test_the_summary_carries_every_bid_and_names_its_folder(tmp_path):
+def test_the_summary_carries_every_bid_and_its_document_count(tmp_path):
     from openpyxl import load_workbook
 
     from app.scrapers.philadelphia import export
@@ -313,49 +300,8 @@ def test_the_summary_carries_every_bid_and_names_its_folder(tmp_path):
     assert len(rows) == 5, "a header and four bids — none filtered out"
     headers = [str(h) for h in rows[0]]
     assert headers == [header for _, header in EXCEL_COLUMNS]
-    assert rows[1][headers.index("Folder")] == "Bids_Data/B0"
+    assert "Folder" not in headers, "there is no ZIP for a folder column to point into"
     assert rows[1][headers.index("Total Document Count")] == 2
-
-
-def test_the_zip_is_the_export_root_with_each_bids_files_in_place(tmp_path, monkeypatch):
-    """What a reviewer downloads unpacks to one folder: the sheet at the top and
-    each bid's documents under its own number."""
-    from app.core import exports
-
-    run_dir = tmp_path / "run"
-    run_dir.mkdir()
-    storage.summary_path(run_dir).write_text("summary")
-    (storage.bid_folder(run_dir, "B2727750") / "Terms.pdf").write_text("one")
-    storage.items_path(run_dir, "B2727750").write_text("BID ITEM SPECIFICATIONS")
-    (storage.bid_folder(run_dir, "B2727732") / "Stickers.pdf").write_text("two")
-
-    run = {
-        "run_id": "abc123", "scraper": "philadelphia", "folder": str(run_dir),
-        "excel_path": str(storage.summary_path(run_dir)), "search": "all open bids",
-    }
-    monkeypatch.setattr(exports, "excel_bytes", lambda r: (b"regenerated", "Philadelphia_(x).xlsx"))
-    out = tmp_path / "out.zip"
-    exports.build_zip(run, out)
-
-    with zipfile.ZipFile(out) as zf:
-        names = sorted(zf.namelist())
-
-    assert names == [
-        "CityOfPhiladelphia_Export/Bids_Data/B2727732/Stickers.pdf",
-        "CityOfPhiladelphia_Export/Bids_Data/B2727750/Terms.pdf",
-        "CityOfPhiladelphia_Export/Bids_Data/B2727750/bid_items_details.txt",
-        "CityOfPhiladelphia_Export/Philadelphia_Bids_Summary.xlsx",
-    ], names
-    assert not any(name.endswith(".json") for name in names), (
-        "the archive must contain nothing a non-technical reader cannot open"
-    )
-
-
-def test_the_portal_delivers_a_zip_not_a_bare_sheet():
-    from app.core import exports
-
-    assert "philadelphia" in exports.DOC_PORTALS
-    assert "philadelphia" not in exports.EXCEL_ONLY_PORTALS
 
 
 # =============================================================================
@@ -779,86 +725,6 @@ def test_an_attachment_rendered_twice_is_listed_once(browser, tmp_path):
     assert [a["file_id"] for a in attachments] == ["600001", "600002"]
 
 
-def test_an_attachment_is_found_by_id_not_by_position(browser, tmp_path):
-    """The fourth file is the fourth file wherever it sits in the anchor list."""
-    scraper = _scraper_on(_render(browser, ATTACHMENTS_HTML), tmp_path)
-    link = scraper._attachment_anchor("500004", None)
-
-    assert link is not None
-    assert link.text.strip() == "LGBTQ_Applicant_Data_Form Bid B2727714.pdf"
-
-
-def test_a_download_that_leaves_the_page_reopens_the_bid(browser, tmp_path):
-    """B2727714 lost four of five attachments this way: the first download took
-    the browser off the detail page, and every file after it was reported as no
-    longer on the page. Reopening the bid is what makes the rest reachable."""
-    from urllib.parse import quote
-
-    scraper = _scraper_on(_render(browser, AFTER_DOWNLOAD_HTML), tmp_path)
-    detail_url = ("data:text/html;charset=utf-8,"
-                  + quote(f"<html><body>{ATTACHMENTS_HTML}</body></html>"))
-
-    link = scraper._attachment_anchor("500002", detail_url)
-
-    assert link is not None, "the file was still there — the page had moved on"
-    assert link.text.strip() == "Micro Purchase Terms and Conditions B2727714.pdf"
-
-
-def test_a_missing_attachment_is_still_reported_when_reopening_does_not_help(
-    browser, tmp_path
-):
-    """The reload is a second opinion, not a guarantee — a file that is genuinely
-    gone must still be named rather than quietly dropped."""
-    from urllib.parse import quote
-
-    scraper = _scraper_on(_render(browser, AFTER_DOWNLOAD_HTML), tmp_path)
-    detail_url = ("data:text/html;charset=utf-8,"
-                  + quote(f"<html><body>{ATTACHMENTS_HTML}</body></html>"))
-
-    assert scraper._attachment_anchor("999999", detail_url) is None
-
-
-def test_every_attachment_is_saved_even_when_each_click_leaves_the_page(
-    browser, tmp_path
-):
-    """The whole loop, against a page that empties itself after every download:
-    five listed, five saved, none reported missing."""
-    from urllib.parse import quote
-
-    scraper = _scraper_on(_render(browser, ATTACHMENTS_HTML), tmp_path)
-    detail_url = ("data:text/html;charset=utf-8,"
-                  + quote(f"<html><body>{ATTACHMENTS_HTML}</body></html>"))
-    folder = tmp_path / "bid"
-    folder.mkdir()
-    clicked: list[str] = []
-
-    # Stand in for the servlet: the click lands, a file arrives, and the page it
-    # was clicked from is gone. Everything else the scraper runs — reading the
-    # attachment list, scrolling — goes through to the real browser.
-    real_execute = browser.execute_script
-
-    def fake_execute(script, *args):
-        if "click()" not in script:
-            return real_execute(script, *args)
-        clicked.append(args[0].text.strip())
-        _render(browser, AFTER_DOWNLOAD_HTML)
-
-    def fake_download(timeout=None, ignore=None):
-        landing = tmp_path / f"{len(clicked)}.pdf"
-        landing.write_bytes(b"%PDF-1.4")
-        return landing
-
-    scraper.driver = _FakeClickDriver(browser, fake_execute)
-    scraper.wait_for_download = fake_download
-
-    saved, errors = scraper.download_attachments("B2727714", folder, detail_url)
-
-    assert errors == []
-    assert len(saved) == 5
-    assert clicked[1] == "Micro Purchase Terms and Conditions B2727714.pdf"
-    assert clicked[4] == "80-247B FORM_Rev 11-2023~15.pdf"
-
-
 # =============================================================================
 # The layout table that wraps the bid table
 # =============================================================================
@@ -971,32 +837,6 @@ def test_cell_text_is_normalised_before_it_is_recorded(browser, tmp_path):
 # =============================================================================
 # Document counts: what the sheet reports vs what is on disk
 # =============================================================================
-
-
-def test_the_document_count_is_taken_from_the_bids_folder(tmp_path):
-    folder = storage.bid_folder(tmp_path, "B2727714")
-    for name in ("Specs_Part1.pdf", "Pricing_Sheet.xlsx", "Terms.pdf"):
-        (folder / name).write_bytes(b"%PDF-1.4")
-
-    assert storage.saved_documents(tmp_path, "B2727714") == [
-        "Pricing_Sheet.xlsx", "Specs_Part1.pdf", "Terms.pdf",
-    ]
-
-
-@pytest.mark.parametrize("generated", sorted(storage.GENERATED_FILENAMES))
-def test_the_runs_own_files_are_not_counted_as_documents(tmp_path, generated):
-    """`bid_items_details.txt` is written by the run, not published by the city —
-    counting it would report one document for a bid that has none. The retired
-    JSON name is here too: a workspace left over from before it was dropped must
-    not start counting as a document now."""
-    folder = storage.bid_folder(tmp_path, "B2626875")
-    (folder / generated).write_text("written by the run")
-
-    assert storage.saved_documents(tmp_path, "B2626875") == []
-
-
-def test_a_bid_whose_folder_was_never_made_counts_zero(tmp_path):
-    assert storage.saved_documents(tmp_path, "B0000000") == []
 
 
 def test_a_download_wait_does_not_return_a_file_that_was_already_there(tmp_path):
@@ -1189,56 +1029,6 @@ def test_the_sheet_rebuilt_from_the_database_reads_the_same(tmp_path):
     assert export._cell(Row(), "item_count") == 1
 
 
-def test_the_item_text_file_is_readable_without_software():
-    from app.scrapers.philadelphia import details
-
-    text = details.render_items_text({
-        "bid_number": "23-10492",
-        "description": "Pump Replacement Services",
-        "fiscal_year": "FY2027",
-        "items": [
-            {"item_number": "1", "name": "Submersible Water Pump (50HP)",
-             "quantity": "2", "unit": "Each",
-             "specification": "High-efficiency industrial pump with cast iron casing."},
-            {"item_number": "2", "name": "Installation & Piping",
-             "quantity": "1", "unit": "Lot",
-             "specification": "Complete on-site installation and pressure testing."},
-        ],
-    })
-
-    assert "BID ITEM SPECIFICATIONS" in text
-    assert "Bid Number: 23-10492" in text
-    assert "Title: Pump Replacement Services" in text
-    assert "Fiscal Year: FY2027" in text
-    assert "Item #1:" in text and "Item #2:" in text
-    assert "  - Item Name: Submersible Water Pump (50HP)" in text
-    assert "  - Quantity: 2" in text
-    assert "  - Unit of Measure: Each" in text
-    assert "  - Specification Details: Complete on-site installation and pressure testing." in text
-    assert "{" not in text and "}" not in text, "this is prose, not a data format"
-
-
-def test_a_bid_with_no_items_still_gets_a_file_that_names_it():
-    """A folder of PDFs with nothing saying which bid they belong to is what
-    this file exists to prevent."""
-    from app.scrapers.philadelphia import details
-
-    text = details.render_items_text({"bid_number": "B2727750", "description": "Jackhammers"})
-
-    assert "Bid Number: B2727750" in text
-    assert "no line-item breakdown" in text
-
-
-def test_an_item_column_the_city_adds_is_printed_rather_than_dropped():
-    from app.scrapers.philadelphia import details
-
-    text = details.render_items_text({
-        "bid_number": "B1", "items": [{"name": "Pump", "manufacturer": "Grundfos"}],
-    })
-
-    assert "  - Manufacturer: Grundfos" in text
-
-
 def test_the_item_table_is_read_with_its_columns_named(browser, tmp_path):
     scraper = _scraper_on(_render(browser, ITEMS_HTML), tmp_path)
     items = scraper.scrape_items("23-10492")
@@ -1268,25 +1058,6 @@ def test_a_detail_page_with_no_item_table_reads_as_no_items(browser, tmp_path):
     scraper = _scraper_on(_render(browser, HEADER_HTML), tmp_path)
 
     assert scraper.scrape_items("B2727750") == []
-
-
-def test_the_item_file_lands_in_the_bids_own_folder(tmp_path):
-    from app.core import run_manager
-
-    run = run_manager.create_run("philadelphia", tmp_path)
-    scraper = PhiladelphiaScraper(run["run_id"])
-    scraper._write_items_file({
-        "bid_number": "B2727750", "description": "Jackhammers",
-        "items": [{"name": "Jackhammer", "quantity": "4"}],
-    })
-
-    written = storage.items_path(scraper.run_dir, "B2727750")
-    assert written.name == "bid_items_details.txt"
-    assert "Bids_Data/B2727750" in str(written)
-    assert "  - Item Name: Jackhammer" in written.read_text()
-    assert storage.saved_documents(scraper.run_dir, "B2727750") == [], (
-        "the file the run wrote is not one of the city's documents"
-    )
 
 
 # =============================================================================
@@ -1645,23 +1416,108 @@ def test_the_grid_layout_still_wins_when_the_page_has_one(browser, tmp_path):
     assert items[0]["unit"] == "Each"
 
 
-def test_the_block_items_reach_the_text_file_readably():
+
+# =============================================================================
+# One spreadsheet, no documents
+#
+# The client asked for the bids without their paperwork, so nothing is
+# downloaded and the run delivers a bare .xlsx. Two things had to survive that:
+# the attachments still have to be *counted*, and the line items — which used to
+# live only in a text file inside the ZIP — had to move into the sheet.
+# =============================================================================
+
+
+def test_the_scraper_has_no_way_to_download_an_attachment():
+    """Not "does not call it" — the machinery is gone. A method left behind is a
+    method something reintroduces."""
+    from app.scrapers.philadelphia.scraper import PhiladelphiaScraper
+
+    for gone in ("download_attachments", "_download_one", "_attachment_anchor",
+                 "_write_items_file"):
+        assert not hasattr(PhiladelphiaScraper, gone), f"{gone} is still here"
+
+
+def test_the_storage_layout_is_a_single_sheet():
+    """No `Bids_Data/`, no per-bid folders, nothing to reference."""
+    for gone in ("bid_folder", "bids_data", "items_path", "folder_reference",
+                 "saved_documents", "GENERATED_FILENAMES", "BIDS_DIRNAME"):
+        assert not hasattr(storage, gone), f"storage.{gone} is still here"
+
+
+def test_the_line_items_moved_into_the_sheet_rather_than_being_lost():
+    """They used to be `bid_items_details.txt` in the bid's folder — the one
+    thing that lived only in the archive."""
     from app.scrapers.philadelphia import details
 
-    text = details.render_items_text({
-        "bid_number": "B2626551",
-        "description": "6x4 CNG Truck with 20HD Compactor Body",
-        "items": [{
-            "item_number": "1",
-            "name": "FREIGHTLINER 114SD CHASSIS AS PER DFS SPEC 25026CNGb.25",
-            "commodity_code": "42831-002-156", "nigp_code": "072-08",
-            "quantity": "2", "unit": "EA", "unit_price": "$284,000.00",
-            "specification": "Chassis to be delivered to the Streets Department.",
-        }],
+    cell = details.render_items_cell({
+        "bid_number": "23-10492",
+        "items": [
+            {"item_number": "1", "name": "Submersible Water Pump (50HP)",
+             "quantity": "2", "unit": "Each"},
+            {"item_number": "2", "name": "Installation & Piping", "quantity": "1"},
+        ],
     })
 
-    assert "Item #1:" in text
-    assert "  - Item Name: FREIGHTLINER 114SD CHASSIS AS PER DFS SPEC 25026CNGb.25" in text
-    assert "  - Quantity: 2" in text
-    assert "  - Commodity Code: 42831-002-156" in text
-    assert "  - NIGP Code: 072-08" in text
+    assert cell.splitlines()[0].startswith("Item #1 |")
+    assert "Item Name: Submersible Water Pump (50HP)" in cell
+    assert len(cell.splitlines()) == 2, "one line per item"
+
+
+def test_the_item_cell_does_not_repeat_the_columns_beside_it():
+    """The long-form text file printed the bid number, title and dates because
+    it sat alone in a folder. In a cell they are already on the row."""
+    from app.scrapers.philadelphia import details
+
+    cell = details.render_items_cell({
+        "bid_number": "23-10492", "description": "Pump Replacement Services",
+        "fiscal_year": "FY2027", "items": [{"name": "Pump", "quantity": "2"}],
+    })
+
+    assert "23-10492" not in cell
+    assert "Pump Replacement Services" not in cell
+    assert "FY2027" not in cell
+
+
+def test_a_bid_with_no_items_says_so_rather_than_coming_back_blank():
+    """Blank reads as "not captured"; this is "the city published none"."""
+    from app.scrapers.philadelphia import details
+
+    assert "no line-item breakdown" in details.render_items_cell({"bid_number": "B1"})
+
+
+def test_an_item_column_the_city_adds_is_kept_rather_than_dropped():
+    from app.scrapers.philadelphia import details
+
+    cell = details.render_items_cell({"items": [{"name": "Pump", "manufacturer": "Grundfos"}]})
+
+    assert "Manufacturer: Grundfos" in cell
+
+
+def test_the_items_column_rebuilds_identically_from_the_database(tmp_path):
+    """A download months later must match the sheet that shipped. The column is
+    rendered from the stored `items` JSON, which is why it needed no migration."""
+    from openpyxl import load_workbook
+
+    from app.scrapers.philadelphia import details, export
+
+    items = [{"item_number": "1", "name": "Pump", "quantity": "2", "unit": "EA"}]
+    path = storage.summary_path(tmp_path)
+    export.generate_excel_from_records(
+        [{"bid_number": "B1", "description": "Pumps", "items": items}], path
+    )
+    sheet = load_workbook(path).active
+    headers = [str(h) for h in next(sheet.iter_rows(values_only=True))]
+
+    cell = sheet.cell(2, headers.index("Line Item Details") + 1).value
+    assert cell == details.render_items_cell({"items": items, "bid_number": "B1"})
+    assert sheet.cell(2, headers.index("Line Items") + 1).value == 1
+
+
+def test_the_portal_delivers_a_bare_sheet_not_a_zip():
+    """The client asked for the bids without their paperwork. Nothing is
+    downloaded, so a ZIP would be a folder to unpack around a single file."""
+    from app.core import exports
+
+    assert "philadelphia" in exports.EXCEL_ONLY_PORTALS
+    assert "philadelphia" not in exports.DOC_PORTALS
+    assert exports.is_excel_only({"scraper": "philadelphia"}) is True

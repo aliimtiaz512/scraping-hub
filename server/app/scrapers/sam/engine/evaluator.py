@@ -820,13 +820,262 @@ def _service_signal_present(hay: str, naics_full: str = "") -> bool:
 # Public API
 # ===========================================================================
 
-def evaluate_bid(
+# ===========================================================================
+# STEP 4a — Hard Reject Gate (spec B4)
+# ===========================================================================
+# NAICS ranges only. No keywords, no bid content, nothing product-specific: the
+# gate has to give the same answer for a bid written next year about a product
+# nobody has heard of yet, and a keyword cannot promise that.
+#
+# The 238 split is the part to be careful with. 236xxx and 237xxx reject on
+# their three-character sector, but 238xxx does NOT — 238210 (cable), 238220
+# (HVAC), 238290 (industrial hardware) and 238390 (other) are Rule C
+# installation trades and must pass the gate. Only the six-character codes
+# listed below are rejected, which is why six characters are checked first.
+
+REJECT_3CHAR: dict[str, str] = {
+    "236": "Rule B #5 — Construction & Demolition Services",
+    "237": "Rule B #5 — Construction & Demolition Services",
+    "511": "Rule B #3 — Management Software / Publishing",
+    "513": "Rule B #3 — Management Software / Publishing",
+    "611": "Rule B #9 — Training Services",
+    "112": "Out-of-scope — Animal Production",
+    "114": "Out-of-scope — Fishing and Hunting",
+}
+
+REJECT_6CHAR: dict[str, str] = {
+    "238320": "Rule B #5 — Painting & Wall Covering",
+    "238330": "Rule B #5 — Flooring Contractors",
+    "238140": "Rule B #5 — Masonry Contractors",
+    "238170": "Rule B #5 — Siding Contractors",
+    "238910": "Rule B #5 — Site Preparation",
+    "238310": "Rule B #5 — Drywall & Insulation",
+    "238370": "Rule B #5 — Plumbing & Building Construction",
+    "561720": "Rule B #10 — Custodial Services",
+    "561730": "Out-of-scope — Landscaping Services",
+    "561790": "Out-of-scope — Other Building Services",
+    "541380": "Rule B #1 — Testing Laboratory Services",
+    "541511": "Out-of-scope — IT Custom Programming Services",
+    "541513": "Out-of-scope — Computer Facilities Management",
+    "541519": "Out-of-scope — Other Computer Services",
+    "115310": "Out-of-scope — Forestry Support Activities",
+    "562991": "Out-of-scope — Septic Tank / Waste Services",
+}
+
+
+def _naics_digits(naics_code: str) -> str:
+    """The code as bare digits — "541519 — Other Services" -> "541519"."""
+    return re.sub(r"\D", "", str(naics_code or ""))
+
+
+def _check_hard_reject_gate(naics: str) -> str | None:
+    """The rejection reason for this NAICS, or None if it passes the gate.
+
+    Six characters before three, because 238 is split: the six-character table
+    rejects painting, flooring, masonry and the rest, while 238210/238220/
+    238290/238390 fall through to the scorer as the Rule C installation trades
+    they are. Matching the three-character prefix first would reject every one
+    of them, including the HVAC bids the spec's own test case protects.
+    """
+    digits = _naics_digits(naics)
+    if not digits:
+        return None
+    reason = REJECT_6CHAR.get(digits[:6])
+    if reason:
+        return reason
+    return REJECT_3CHAR.get(digits[:3])
+
+
+# ===========================================================================
+# STEP 4b — Structural scoring (spec B5)
+# ===========================================================================
+# Four dimensions, all structural. The constraint the spec opens with is the
+# whole design: "would this rule still be correct if the specific product
+# changed but the NAICS and structure stayed the same?" Every signal below is a
+# NAICS band, a FAR-standard phrase, a title token (P/N, NSN, QTY) or a verb
+# stem — never a product, a brand, or a domain vocabulary.
+
+#: Dimension 1 — the more specific band wins. 3346x sits inside 311–339, so
+#: checking the long prefixes first is what makes "hardware-adjacent, verify"
+#: mean anything: read the other way round it would score 1.00 like any other
+#: manufacturer.
+_NAICS_BANDS: tuple[tuple[tuple[str, ...], float], ...] = (
+    (("2381", "2382", "2383", "2386"), 0.85),   # Rule C installation trades
+    (("3346", "5616", "8113"), 0.65),           # hardware-adjacent — verify
+)
+
+# Prefixed `_SCORE_` deliberately. `_SERVICE_VERBS` is already a module-level
+# *tuple* further up (line ~348), unpacked with `*` by the Rule B and Rule C
+# checks — defining a regex under the same name here silently rebound it and
+# broke every one of those calls, which is precisely the "no existing decision
+# changes" the spec's acceptance criterion 3 forbids. These three belong to the
+# scorer and say so.
+_SCORE_PRODUCT_VERBS = re.compile(r"(purchas|supply|procur|acquir|furnish|deliver)", re.I)
+_SCORE_SERVICE_VERBS = re.compile(r"(maintain|repair|overhaul|inspect|calibrat|clean|survey)", re.I)
+_SCORE_INSTALL_VERBS = re.compile(r"(install|replac|upgrade)", re.I)
+
+_PN_NSN_RE = re.compile(r"\bP/?N\b|\bNSN\b|\bNIIN\b", re.I)
+_QTY_RE = re.compile(r"\bQTY\b|\bquantity\b", re.I)
+
+#: How short a description has to be before it counts as absent. A bid with no
+#: description is a bid with no structure to read, and dimensions 2 and 4 both
+#: penalise it rather than scoring it neutral.
+_BLANK_DESCRIPTION_CHARS = 30
+
+
+def _description_opening(full_text: str, chars: int = 300) -> str:
+    """The first `chars` of the description section, never attachment text.
+
+    Deliberately a copy of `ollama_bridge.get_description_opening` rather than an
+    import of it: this module is pure — logging and re — and importing the bridge
+    would pull `requests` into an engine that has to stay callable with no
+    network stack present.
+    """
+    marker = "=== Description ==="
+    text = full_text or ""
+    start = text.find(marker)
+    if start == -1:
+        raw = text[:chars]
+    else:
+        content = text.find("\n", start) + 1
+        nxt = text.find("===", content)
+        raw = text[content:nxt] if nxt != -1 else text[content:]
+    return raw[:chars].replace("\n", " ").strip()
+
+
+def _clamp(value: float) -> float:
+    return max(0.0, min(1.0, value))
+
+
+def _score_naics_alignment(naics: str) -> float:
+    """Dimension 1 (40%) — which sector the buyer filed this under."""
+    digits = _naics_digits(naics)
+    if not digits:
+        return 0.25
+    for prefixes, score in _NAICS_BANDS:
+        if digits.startswith(prefixes):
+            return score
+    if _is_manufacturing(_naics_prefix(digits)):
+        return 1.00
+    return 0.25
+
+
+def _score_procurement_structure(title: str, description: str) -> float:
+    """Dimension 2 (35%) — FAR-standard phrasing and title tokens.
+
+    These are phrases the FAR itself makes a contracting officer write.
+    "Commercial products" and "commercial services" are the two halves of FAR
+    12's own distinction, and a statement of work is what a services buy carries
+    instead of a part number — so each says a great deal about the shape of the
+    requirement without naming anything being bought.
+    """
+    desc = (description or "").lower()
+    title_l = (title or "").lower()
+    score = 0.0
+    if "commercial products" in desc:
+        score += 0.50
+    if _PN_NSN_RE.search(title or ""):
+        score += 0.30
+    if _QTY_RE.search(title or ""):
+        score += 0.20
+    if "brand name" in title_l:
+        score += 0.25
+    if "commercial services" in desc:
+        score -= 0.30
+    if "statement of work" in desc or "pws" in desc:
+        score -= 0.40
+    if len(desc.strip()) < _BLANK_DESCRIPTION_CHARS:
+        score -= 0.50
+    return _clamp(score)
+
+
+def _score_primary_verb(title: str) -> float:
+    """Dimension 3 (15%) — what the title says is being done.
+
+    Verb stems, not product words: "repair" reads the same whether the thing
+    repaired is a pump or a radar, which is exactly the property the spec's
+    design constraint asks for.
+    """
+    hay = title or ""
+    product = bool(_SCORE_PRODUCT_VERBS.search(hay))
+    service = bool(_SCORE_SERVICE_VERBS.search(hay))
+    install = bool(_SCORE_INSTALL_VERBS.search(hay))
+    if product and service:
+        return 0.35
+    if product:
+        return 1.00
+    if service:
+        return 0.00
+    if install:
+        return 0.75
+    return 0.50
+
+
+def _score_scope_clarity(description: str) -> float:
+    """Dimension 4 (10%) — is the requirement stated precisely enough to quote?"""
+    desc = (description or "").lower()
+    score = 0.60
+    if any(word in desc for word in ("technical spec", "drawing", "specification")):
+        score += 0.30
+    if len(desc.strip()) < _BLANK_DESCRIPTION_CHARS:
+        score -= 0.40
+    return _clamp(score)
+
+
+#: The bands the total is read against (spec B5). A bid between them is the only
+#: thing the model is ever asked about.
+PURSUE_THRESHOLD = 0.80
+REJECT_THRESHOLD = 0.40
+
+
+def _compute_structural_score(
+    title: str, description: str, naics: str, due_date: str | None = None
+) -> dict:
+    """The four dimensions and their weighted total.
+
+    `due_date` is accepted because the spec's Step 4b call passes it and B6
+    anticipates new dimensions; nothing reads it today, and a dimension that did
+    would have to be added to B5 first.
+    """
+    d1 = _score_naics_alignment(naics)
+    d2 = _score_procurement_structure(title, description)
+    d3 = _score_primary_verb(title)
+    d4 = _score_scope_clarity(description)
+    total = 0.40 * d1 + 0.35 * d2 + 0.15 * d3 + 0.10 * d4
+    return {
+        "naics_alignment": round(d1, 4),
+        "procurement_structure": round(d2, 4),
+        "primary_verb": round(d3, 4),
+        "scope_clarity": round(d4, 4),
+        "total": round(total, 4),
+    }
+
+
+def _build_reason(decision: str, scores: dict, naics: str) -> str:
+    """Why the scorer landed where it did, in one readable line.
+
+    Names the dimensions rather than a rule number, because at this step there
+    is no rule — reaching it is precisely what "no rule matched" means.
+    """
+    shape = (
+        f"NAICS {scores['naics_alignment']:.2f} / structure "
+        f"{scores['procurement_structure']:.2f} / verb {scores['primary_verb']:.2f} / "
+        f"scope {scores['scope_clarity']:.2f}"
+    )
+    verdict = "product-shaped bid" if decision == "PURSUE" else "no product signal"
+    return f"Structural score {scores['total']:.2f} — {verdict} ({shape})"
+
+
+def _decide(
     bid_id: str,
     full_text: str,
     config: dict,
     naics_code: str = "",
     title: str = "",
     requirement_hint: str | None = None,
+    naics_title: str = "",
+    resolver=None,
+    binary: bool = False,
 ) -> dict:
     """
     Evaluate a bid per Company_Bid_Selection_Criteria.docx (company decision guide).
@@ -1007,22 +1256,186 @@ def evaluate_bid(
             logger.info(f"[EVAL] {bid_id} -> REJECT @ Rule C #{num} (outside US Mainland)")
         return result
 
-    # ── Service on neither list → split by location (Fix 3) ──────────────────
-    # An unlisted service matches neither Rule C (allowed) nor Rule B (excluded).
-    #   * OUTSIDE US Mainland → REJECT: the location alone disqualifies it, so no
-    #     human review is warranted.
-    #   * INSIDE US Mainland  → MANUAL_REVIEW: it could still be in scope; flag
-    #     it for a human to validate against Rules B/C rather than auto-reject.
-    if location == "US_MAINLAND":
-        result.update(
-            decision="MANUAL_REVIEW", stopped_at_step=4, rule="none",
-            reason=reason_manual_review(),
-        )
-        logger.info(f"[EVAL] {bid_id} -> MANUAL_REVIEW (unlisted service, US Mainland)")
-    else:
+    # ── Service on neither list ─────────────────────────────────────────────
+    # Reaching here means the bid matched no rule at all: not a kill-word, not
+    # hardware, not Rule B, not Rule C.
+    #
+    # OUTSIDE US Mainland this is still an outright REJECT (spec B7: "Unlisted
+    # service → REJECT"). The location alone disqualifies it, so it never
+    # reaches the gate or the scorer — and keeping this branch is also what
+    # holds acceptance criterion 3, since sending these through the scorer could
+    # promote an existing REJECT to PURSUE.
+    if location != "US_MAINLAND":
         result.update(
             decision="REJECT", stopped_at_step=4, rule="none",
             reason=reason_not_listed_outside(),
         )
         logger.info(f"[EVAL] {bid_id} -> REJECT (unlisted service, outside US Mainland)")
+        return result
+
+    # INSIDE US Mainland this is MANUAL_REVIEW — a third decision state that
+    # puts the bid back in front of a person — unless the caller asked for a
+    # binary answer.
+    #
+    # `binary` is opt-in rather than the default because this engine is shared.
+    # SAM_Binary_Engine_Prompt_and_Criteria.pdf is a SAM document, but
+    # `evaluate_bid` also decides every Philadelphia and Unison bid, and both of
+    # those portals have their own criteria, their own MANUAL_REVIEW rows and
+    # their own amber styling for them. Removing the state for everyone would
+    # silently rewrite two products nobody asked about.
+    if not binary:
+        result.update(
+            decision="MANUAL_REVIEW", stopped_at_step=4, rule="none",
+            reason=reason_manual_review(),
+        )
+        logger.info(f"[EVAL] {bid_id} -> MANUAL_REVIEW (unlisted service, US Mainland)")
+        return result
+
+    # From here down is the binary engine (spec Part A), in two steps.
+    #
+    # ── STEP 4a: hard reject gate ───────────────────────────────────────────
+    hard_reject = _check_hard_reject_gate(naics_code)
+    if hard_reject:
+        result.update(
+            decision="REJECT", stopped_at_step="4a", rule="naics_gate",
+            reason=hard_reject, score=0.05,
+        )
+        logger.info(f"[EVAL] {bid_id} -> REJECT @ step 4a ({hard_reject})")
+        return result
+
+    # ── STEP 4b: structural scoring ─────────────────────────────────────────
+    scores = _compute_structural_score(
+        title=classify_text,
+        description=_description_opening(full_text),
+        naics=naics_code,
+    )
+    total = scores["total"]
+
+    if total >= PURSUE_THRESHOLD:
+        decision = "PURSUE"
+    elif total <= REJECT_THRESHOLD:
+        decision = "REJECT"
+    else:
+        # The uncertain band, and the only place the model is consulted. The
+        # resolver is injected rather than imported: this module is pure, and an
+        # engine that reaches for the network on its own cannot be evaluated in
+        # a test or on a machine with no Ollama.
+        #
+        # Falling back to REJECT when nothing resolves is the spec's own
+        # instruction — `(ollama or {}).get('decision', 'REJECT')`. It is the
+        # cost of a binary contract: with no model reachable, an ambiguous bid
+        # is dropped rather than shown to anyone.
+        resolved = None
+        if resolver is not None:
+            try:
+                resolved = resolver(
+                    title=title, naics_code=naics_code, naics_title=naics_title,
+                    full_text=full_text, result=result, scores=scores,
+                )
+            except Exception as exc:  # noqa: BLE001 — a resolver is never worth a failed bid
+                logger.warning(f"[EVAL] {bid_id} resolver failed: {exc}")
+        decision = (resolved or {}).get("decision") or "REJECT"
+        if decision == "MANUAL_REVIEW":
+            # The engine is binary. A resolver that will not commit is a
+            # resolver that did not answer.
+            decision = "REJECT"
+
+    result.update(
+        decision=decision, stopped_at_step="4b", rule="structural_score",
+        reason=_build_reason(decision, scores, naics_code), score=total,
+        score_breakdown=scores,
+    )
+    logger.info(f"[EVAL] {bid_id} -> {decision} @ step 4b (score {total:.2f})")
     return result
+
+
+# ===========================================================================
+# STEP 5 — the JSON output schema (spec Part A step 5)
+# ===========================================================================
+
+#: `stopped_at_step` -> the spec's `decision_path` name.
+#:
+#: One value is not in the spec's enum: `step4_location_gate`. The spec's Part A
+#: pseudocode drops the location split when it replaces the MANUAL_REVIEW block,
+#: but Part B7 keeps it — "Outside US Mainland … Unlisted service → REJECT" — and
+#: so does this engine, because routing those bids through the scorer could
+#: promote an existing REJECT to PURSUE and break acceptance criterion 3. The
+#: branch is real, so it is named rather than folded into a path it is not.
+_DECISION_PATHS: dict[object, str] = {
+    0: "step0_killword",
+    2: "step1_hardware",
+    3: "step2_rule_b",
+    4: "step4_location_gate",
+    5: "step3_rule_c",
+    "4a": "step4a_naics_gate",
+    "4b": "step4b_structural_score",
+}
+
+#: The confidence a deterministic rule carries. A rule that matched is not a
+#: guess, so the only paths with a real number below 1.0 are the gate (a flat
+#: 0.05, per the spec) and the scorer (its own total).
+_RULE_CONFIDENCE = 1.0
+
+BINARY_DECISIONS = ("PURSUE", "REJECT")
+
+
+def _apply_schema(result: dict) -> dict:
+    """Stamp the spec's output schema onto a ladder result, in place.
+
+    Additive on purpose. `decision`, `reason`, `rule`, `location` and
+    `stopped_at_step` all stay exactly as they were, because `runner.py`,
+    `export.py`, `models.py` and the console read them — the spec's "one
+    targeted change" is about not rewriting those consumers, not about
+    withholding the new fields from them.
+    """
+    decision = result.get("decision")
+    reason = result.get("reason") or ""
+    score = result.get("score")
+    if score is None:
+        score = _RULE_CONFIDENCE
+
+    result["solicitation_id"] = result.get("bid_id")
+    result["final_decision"] = decision
+    result["confidence_score"] = round(float(score), 4)
+    result["decision_path"] = _DECISION_PATHS.get(
+        result.get("stopped_at_step"), "step4b_structural_score"
+    )
+    result["match_reasons"] = [reason] if decision == "PURSUE" and reason else []
+    result["rejection_reasons"] = [reason] if decision == "REJECT" and reason else []
+    result.setdefault("score_breakdown", {})
+    return result
+
+
+def evaluate_bid(*args, **kwargs) -> dict:
+    """Evaluate one bid through the decision ladder, then stamp the output schema.
+
+    With `binary=True` the decision is always PURSUE or REJECT — never anything
+    else. That is what SAM asks for, and this wrapper guarantees two things:
+
+    **MANUAL_REVIEW is unreachable.** The ladder does not produce it for a binary
+    caller, and this is the belt to that brace: anything that is not one of the
+    two binary values is coerced to REJECT and logged loudly. A third state
+    leaking downstream is the failure the change exists to prevent, and it
+    should be impossible rather than merely unlikely.
+
+    Without `binary` the ladder is exactly what it was — three decision states,
+    MANUAL_REVIEW included — because Philadelphia and Unison share this engine
+    and neither asked for a binary answer.
+
+    **Every bid carries the full schema.** `solicitation_id`, `final_decision`,
+    `confidence_score`, `decision_path`, `match_reasons`, `rejection_reasons`
+    and `score_breakdown` are present on every result, whichever step decided
+    it — added alongside the existing keys, never in place of them.
+    """
+    result = _decide(*args, **kwargs)
+
+    if kwargs.get("binary") and result.get("decision") not in BINARY_DECISIONS:
+        logger.error(
+            "[EVAL] %s produced a non-binary decision %r at step %r — coercing to "
+            "REJECT; the ladder has a path that does not resolve",
+            result.get("bid_id"), result.get("decision"), result.get("stopped_at_step"),
+        )
+        result["decision"] = "REJECT"
+        result["reason"] = result.get("reason") or "Unresolved by the decision ladder"
+
+    return _apply_schema(result)
