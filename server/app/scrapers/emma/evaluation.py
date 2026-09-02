@@ -4,6 +4,12 @@ One rule: if any blocked phrase appears in the bid's own text OR in any document
 downloaded for it, the bid is REJECTED. Everything else PASSES, and only the
 passing bids are reported and exported.
 
+Three lists, three reasons, recorded separately so a run can say which fired:
+
+    REJECT_KEYWORDS        work that is out of scope for us
+    MASTER_CONTRACT_PHRASES  open only to existing master-contract holders
+    NOT_BIDDABLE_PHRASES   not a solicitation at all (Requests for Information)
+
 Matching is whole-phrase and word-boundary anchored, so "Construction" does not
 fire on "constructive" and "Audit" does not fire on "auditorium". Phrases are
 matched with flexible whitespace, so a line break between words in an extracted
@@ -64,6 +70,30 @@ MASTER_CONTRACT_PHRASES: list[str] = [
     "Master Contract Holder",
 ]
 
+# Requests for Information are discarded too, and for a different reason again:
+# an RFI is not a solicitation at all. It asks the market to describe what it can
+# supply so the agency can write a real bid later — there is nothing to price and
+# nothing to win, so a run that reported them would be padding its own count.
+#
+# Its own list rather than another entry in REJECT_KEYWORDS, because the three
+# lists mean three different things and the run log says which fired: "out of
+# scope work", "open only to master-contract holders", and "not biddable at all".
+# The same split exists in the SAM engine, where `rfi` and `sources sought` are
+# kill-words checked ahead of the Rule B/C scope lists rather than inside them.
+#
+# "RFI" is included as its own phrase. Matching is word-boundary anchored, so it
+# fires on the standalone token and not inside another word — and in procurement
+# text a bare "RFI" is a Request for Information essentially without exception.
+# Drop it from this list if a real bid is ever screened out by it.
+NOT_BIDDABLE_PHRASES: list[str] = [
+    "Request for Information",
+    # The plural is spelled out because `_compile` only makes the *last* word's
+    # "s" optional — that covers "Renovation(s)" and "Janitorial Service(s)", but
+    # this is the one phrase in the file whose plural falls on the head noun.
+    "Requests for Information",
+    "RFI",
+]
+
 # Bid fields whose text is screened alongside the documents.
 _TEXT_FIELDS = (
     "title",
@@ -97,6 +127,7 @@ def _compile(phrase: str) -> re.Pattern[str]:
 _PATTERNS: list[tuple[str, re.Pattern[str], str]] = (
     [(k, _compile(k), "keyword") for k in REJECT_KEYWORDS]
     + [(k, _compile(k), "master_contract") for k in MASTER_CONTRACT_PHRASES]
+    + [(k, _compile(k), "not_biddable") for k in NOT_BIDDABLE_PHRASES]
 )
 
 
