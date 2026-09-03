@@ -131,12 +131,17 @@ export interface BidResult {
 export interface RideMetroAgency {
   name: string;
   url: string;
+  /** The portal's own id for the row, e.g. "1080662-ca". */
+  agency_id?: string;
   /** The agency's supplier-registration status: "Complete" | "Incomplete". */
   status: string;
   /** True when the run skipped it — registration Incomplete, so no portal. */
   skipped: boolean;
   opportunities: number;
   error?: string | null;
+  /** Why it has no rows when that is a fact about the agency, not a failure —
+   * an organisation that publishes no public portal. */
+  note?: string | null;
 }
 
 /** One row of the Active Jobs panel: a run on any portal, trimmed to what the

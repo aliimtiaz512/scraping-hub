@@ -35,6 +35,9 @@ _BID_FIELDS = {
 NOTE_EMPTY = "No open public opportunities."
 NOTE_SKIPPED = "Skipped — supplier registration Incomplete."
 NOTE_FAILED = "Could not be read: {error}"
+# Reached, but the organisation publishes no public portal — a standing fact
+# about the agency, so it reads as a statement rather than as a failure.
+NOTE_NO_PORTAL = "No public opportunities portal for this agency."
 
 
 def _parse_dt(value: Any) -> datetime | None:
@@ -150,6 +153,9 @@ def _note_for(agency: dict[str, Any]) -> str:
         return NOTE_FAILED.format(error=agency["error"])
     if agency.get("skipped"):
         return NOTE_SKIPPED
+    # Reached, and there is a reason it has nothing — not a failure to read it.
+    if agency.get("note"):
+        return agency["note"]
     return NOTE_EMPTY
 
 

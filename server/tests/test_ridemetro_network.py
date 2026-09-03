@@ -17,9 +17,16 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from openpyxl import load_workbook  # noqa: E402
 
+from selenium.common.exceptions import NoSuchElementException  # noqa: E402
+from selenium.webdriver.common.by import By  # noqa: E402
+
 from app.scrapers.ridemetro import export, opportunities, workbook  # noqa: E402
 from app.scrapers.ridemetro.models import SHEET_COLUMNS  # noqa: E402
-from app.scrapers.ridemetro.network import Agency, go_to_selector  # noqa: E402
+from app.scrapers.ridemetro.network import (  # noqa: E402
+    Agency,
+    go_to_selector,
+    read_agencies,
+)
 
 HEADERS_WITH_DEPARTMENT = ["Status", "Ref. #", "Project", "Department", "Close Date", "Days Left", "Action"]
 HEADERS_WITHOUT_DEPARTMENT = ["Status", "Ref. #", "Project", "Close Date", "Days Left", "Action"]
@@ -98,6 +105,40 @@ def test_incomplete_is_not_mistaken_for_complete():
     assert not Agency("A", "", "https://a.bonfirehub.com").is_complete
 
 
+def test_an_agency_with_no_portal_is_not_reported_as_a_failure():
+    """My Network lists every organisation the account has touched, and some
+    publish no public portal at all. That is a fact about the agency: it reads
+    as a note, not as "could not be read"."""
+    agency = Agency("Bonfire", "Complete", "", agency_id="1080662-ca")
+    agency.note = export.NOTE_NO_PORTAL
+    record = agency.as_record()
+    assert record["error"] is None
+    assert record["skipped"] is False
+    assert export._note_for(record) == export.NOTE_NO_PORTAL
+
+
+def test_an_agency_with_nothing_open_is_a_success_not_a_failure():
+    """An empty portal is a result, not a crash. The agency was reached, its
+    list was read, and it held nothing — so nothing anywhere in the record marks
+    it failed, and the report says so in words rather than leaving a gap."""
+    agency = Agency("Ada County Highway District", "Complete",
+                    "https://achdidaho.bonfirehub.com", agency_id="3042794-us")
+    record = agency.as_record()
+
+    assert record["opportunities"] == 0
+    assert record["error"] is None      # not a failure
+    assert record["note"] is None       # nor a portal that could never have one
+    assert record["skipped"] is False   # it was visited
+    assert export._note_for(record) == export.NOTE_EMPTY
+
+
+def test_a_real_failure_still_outranks_a_note():
+    record = Agency("A", "Complete", "https://a.bonfirehub.com").as_record()
+    record["error"] = "timed out"
+    record["note"] = export.NOTE_NO_PORTAL
+    assert export._note_for(record).startswith("Could not be read:")
+
+
 def test_agency_record_reports_the_skip():
     record = Agency("Ada County", "Incomplete", "https://adacounty.bonfirehub.com/registration").as_record()
     assert record["skipped"] is True
@@ -106,8 +147,147 @@ def test_agency_record_reports_the_skip():
 
 def test_go_to_selector_quotes_names_with_parentheses_and_quotes():
     name = 'Metropolitan Transit Authority of Harris County (METRO)'
-    assert go_to_selector(name)[1] == f'a[aria-label="Go to {name}"]'
-    assert go_to_selector('The "Big" County')[1] == 'a[aria-label="Go to The \\"Big\\" County"]'
+    assert go_to_selector(name)[1] == (
+        f'a[aria-label="Go to {name}"], button[aria-label="Go to {name}"]'
+    )
+    assert go_to_selector('The "Big" County')[1] == (
+        'a[aria-label="Go to The \\"Big\\" County"], '
+        'button[aria-label="Go to The \\"Big\\" County"]'
+    )
+
+
+def test_go_to_selector_matches_the_button_form_too():
+    """Half the reason agencies went missing: the roster renders "Go to Agency"
+    as a <button> for some agencies, and a locator naming only <a> finds
+    neither the control nor, through it, the agency."""
+    assert "button[aria-label=" in go_to_selector("Bonfire")[1]
+
+
+# -- reading the roster ------------------------------------------------------
+
+
+class FakeControl:
+    """A "Go to Agency" control. `href` is None on the <button> form, which is
+    what Selenium returns for an attribute an element does not carry."""
+
+    def __init__(self, name, href=None):
+        self._attrs = {"aria-label": f"Go to {name}", "href": href}
+
+    def get_attribute(self, name):
+        return self._attrs.get(name)
+
+
+class FakeText:
+    def __init__(self, text):
+        self._text = text
+
+    def get_attribute(self, name):
+        return self._text if name == "textContent" else None
+
+    @property
+    def text(self):
+        return self._text
+
+
+class FakeCard:
+    """One <li data-testid="agency-…-list-item"> of the My Network list."""
+
+    def __init__(self, agency_id, name, status, control=None, heading=True):
+        self._attrs = {"data-testid": f"agency-{agency_id}-list-item"}
+        self._name = name
+        self._status = status
+        self._control = control
+        self._heading = heading
+
+    def get_attribute(self, name):
+        return self._attrs.get(name)
+
+    def find_element(self, by, value):
+        if by == By.XPATH:  # the Status box
+            return FakeText(f"Status{self._status}")
+        if "aria-label^=" in value:  # the "Go to Agency" control
+            if self._control is None:
+                raise NoSuchElementException(value)
+            return self._control
+        if value == "p":  # the card heading
+            if not self._heading:
+                raise NoSuchElementException(value)
+            return FakeText(self._name)
+        if value.startswith("input"):  # the select checkbox
+            return _SelectBox(self._name)
+        raise NoSuchElementException(value)
+
+
+class _SelectBox:
+    """<input type="checkbox" aria-label="Select Bonfire"> — the name's last
+    hiding place when a card has neither a control nor a heading."""
+
+    def __init__(self, name):
+        self._name = name
+
+    def get_attribute(self, name):
+        return f"Select {self._name}" if name == "aria-label" else None
+
+
+class FakeRoster:
+    def __init__(self, cards):
+        self._cards = cards
+
+    def find_elements(self, by, value):
+        return self._cards
+
+
+# The four shapes the live page actually serves, in the order it lists them.
+ROSTER_CARDS = [
+    # Incomplete, linked at /registration — read, then skipped by status.
+    FakeCard("2974208-us", "Metropolitan Transit Authority of Harris County (METRO)",
+             "Incomplete",
+             FakeControl("Metropolitan Transit Authority of Harris County (METRO)",
+                         "https://ridemetro.bonfirehub.com/registration")),
+    # Incomplete AND button-rendered.
+    FakeCard("1086816-ca", "Agriculture Financial Services Corporation", "Incomplete",
+             FakeControl("Agriculture Financial Services Corporation")),
+    # Complete and linked — the case that always worked.
+    FakeCard("2169295-us", "Harris County", "Complete",
+             FakeControl("Harris County", "https://harriscountytx.bonfirehub.com")),
+    # Complete and button-rendered — the case that was silently dropped.
+    FakeCard("1080662-ca", "Bonfire", "Complete", FakeControl("Bonfire")),
+]
+
+
+def test_button_rendered_agencies_are_in_the_roster():
+    """The bug: "Go to Agency" is a <button> with no href on some cards, and a
+    locator that named only <a> dropped those agencies from the sweep entirely
+    rather than merely losing their URL."""
+    agencies = read_agencies(FakeRoster(ROSTER_CARDS))
+    assert [a.name for a in agencies] == [
+        "Metropolitan Transit Authority of Harris County (METRO)",
+        "Agriculture Financial Services Corporation",
+        "Harris County",
+        "Bonfire",
+    ]
+    bonfire = agencies[3]
+    assert bonfire.url == ""          # no href to fall back to
+    assert bonfire.is_complete        # …but it is scraped all the same
+    assert bonfire.agency_id == "1080662-ca"
+
+
+def test_only_incomplete_agencies_are_left_out_of_the_sweep():
+    agencies = read_agencies(FakeRoster(ROSTER_CARDS))
+    assert [a.name for a in agencies if a.is_complete] == ["Harris County", "Bonfire"]
+    assert [a.agency_id for a in agencies if a.is_incomplete] == ["2974208-us", "1086816-ca"]
+
+
+def test_a_card_with_no_control_is_still_listed():
+    """It cannot be opened, but leaving it out would hide the gap from the
+    Active-count reconciliation that is meant to catch exactly this."""
+    agencies = read_agencies(FakeRoster([FakeCard("999-us", "Ghost County", "Complete")]))
+    assert [(a.name, a.url) for a in agencies] == [("Ghost County", "")]
+
+
+def test_a_card_with_no_readable_name_is_dropped():
+    card = FakeCard("999-us", "", "Complete", heading=False)
+    assert read_agencies(FakeRoster([card])) == []
 
 
 # -- reading one agency's open list ------------------------------------------

@@ -63,7 +63,7 @@ export default function RideMetroResults({
 }
 
 function Roster({ agencies }: { agencies: RideMetroAgency[] }) {
-  const scraped = agencies.filter((a) => !a.skipped).length;
+  const scraped = agencies.filter((a) => !a.skipped && !a.error && !a.note).length;
 
   return (
     <section className="rounded-xl border border-ink-200 bg-white p-4 shadow-sm">
@@ -80,6 +80,10 @@ function Roster({ agencies }: { agencies: RideMetroAgency[] }) {
               {agency.error ? (
                 <span className="text-red-600" title={agency.error}>
                   Failed
+                </span>
+              ) : agency.note ? (
+                <span className="text-ink-400" title={agency.note}>
+                  No portal
                 </span>
               ) : agency.skipped ? (
                 <span className="text-ink-400">Skipped · {agency.status || "Incomplete"}</span>
