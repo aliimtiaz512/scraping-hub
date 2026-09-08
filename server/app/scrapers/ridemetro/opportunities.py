@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import re
+from dataclasses import dataclass
 from typing import Any
 
 from selenium.common.exceptions import NoSuchElementException, StaleElementReferenceException
@@ -26,51 +27,132 @@ from selenium.webdriver.common.by import By
 
 logger = logging.getLogger(__name__)
 
-PANE = "#openOpportunitiesTabPane"
+@dataclass(frozen=True)
+class ListSource:
+    """One of the portal's opportunity lists — a tab and the pane behind it.
+
+    Everything table-shaped here is scoped to a pane id for a reason worth
+    spelling out: DataTables numbers its tables in *initialisation* order, so
+    `#DataTables_Table_0` is the open list only on agencies where nothing else
+    initialises first. On an agency where the account has been invited to
+    something, My Opportunities takes `_0` and the open list becomes `_1` —
+    reading by that id silently returns rows from the wrong tab (observed on two
+    of the four agencies in the live network). The pane id is stable; the table
+    id is not.
+    """
+
+    label: str
+    tab_id: str
+    pane_id: str
+
+    @property
+    def pane_sel(self) -> str:
+        return f"#{self.pane_id}"
+
+    @property
+    def tab(self) -> tuple[str, str]:
+        return (By.CSS_SELECTOR, f"#{self.tab_id}")
+
+    @property
+    def tab_link(self) -> tuple[str, str]:
+        return (By.CSS_SELECTOR, f"#{self.tab_id} a")
+
+    @property
+    def pane(self) -> tuple[str, str]:
+        return (By.CSS_SELECTOR, self.pane_sel)
+
+    @property
+    def table(self) -> tuple[str, str]:
+        # The pane holds two tables: a header clone (no id) inside
+        # .dataTables_scrollHead, and the real one, which carries the id.
+        pane = self.pane_sel
+        return (By.CSS_SELECTOR,
+                f"{pane} table[id^='DataTables_Table_'], {pane} table.dataTable")
+
+    @property
+    def header_cells(self) -> tuple[str, str]:
+        pane = self.pane_sel
+        return (By.CSS_SELECTOR,
+                f"{pane} table[id^='DataTables_Table_'] thead th, "
+                f"{pane} .dataTables_scrollBody thead th")
+
+    @property
+    def rows(self) -> tuple[str, str]:
+        pane = self.pane_sel
+        return (By.CSS_SELECTOR,
+                f"{pane} table[id^='DataTables_Table_'] tbody tr, "
+                f"{pane} .dataTables_scrollBody tbody tr")
+
+    @property
+    def processing(self) -> tuple[str, str]:
+        # DataTables' own "fetching" banner. Present in the DOM from the start
+        # and toggled by display, so its *visibility* is the signal, not its
+        # presence.
+        return (By.CSS_SELECTOR,
+                f"{self.pane_sel} .dataTables_processing, .dataTables_processing")
+
+    @property
+    def empty_cell(self) -> tuple[str, str]:
+        # The single full-width cell DataTables puts in an otherwise rowless
+        # table. It carries "Loading…" while the AJAX call is in flight and the
+        # portal's real empty-state text once it has settled — the same element
+        # in two very different states, which is the trap this module exists to
+        # avoid.
+        pane = self.pane_sel
+        return (By.CSS_SELECTOR, f"{pane} td.dataTables_empty, {pane} tbody td[colspan]")
+
+
+#: An agency's public list. What almost every portal in the network serves, and
+#: the default everywhere.
+OPEN = ListSource("Open Public Opportunities", "openOpportunitiesTab", "openOpportunitiesTabPane")
+
+#: The account's own invitations and submissions. Scoped to the signed-in vendor
+#: rather than to an agency, and the *only* list some portals render — the
+#: region session portal has this tab and no other. Read only when there is no
+#: public list to read; see `agency_scoped` for why that distinction matters.
+MINE = ListSource("My Opportunities", "myOpportunitiesTab", "myOpportunitiesTabPane")
+
+#: Which lists are a fact about the agency whose portal we are standing on. My
+#: Opportunities is not: it is the same list whichever agency routed us there,
+#: so rows read from it describe the account, not the agency.
+AGENCY_SCOPED = {OPEN.label: True, MINE.label: False}
+
+
+def agency_scoped(source: ListSource) -> bool:
+    return AGENCY_SCOPED.get(source.label, True)
+
+
+PANE = OPEN.pane_sel  # kept: the open list is still what "the pane" means
 
 SEL = {
-    "tab_link": (By.CSS_SELECTOR, "#openOpportunitiesTab a"),
-    # The tab itself, as opposed to the pane behind it. A portal that has no
-    # public list has no such tab at all — which is a settled fact about that
-    # portal, and the thing to test before waiting on a pane that cannot appear.
-    "open_tab": (By.CSS_SELECTOR, "#openOpportunitiesTab"),
-    # Every tab the portal offers. Read for its labels when the open one is
-    # missing, so the run log says what the page *did* have.
+    # Portal-level, not scoped to either list.
     "tabs": (By.CSS_SELECTOR, "[id$='OpportunitiesTab'], .nav-tabs > li, [role='tab']"),
-    "pane": (By.CSS_SELECTOR, PANE),
-    # The pane holds two tables: a header clone (no id) inside
-    # .dataTables_scrollHead, and the real one, which carries the id.
-    "table": (By.CSS_SELECTOR, f"{PANE} table[id^='DataTables_Table_'], {PANE} table.dataTable"),
-    "header_cells": (
-        By.CSS_SELECTOR,
-        f"{PANE} table[id^='DataTables_Table_'] thead th, {PANE} .dataTables_scrollBody thead th",
-    ),
-    "rows": (
-        By.CSS_SELECTOR,
-        f"{PANE} table[id^='DataTables_Table_'] tbody tr, {PANE} .dataTables_scrollBody tbody tr",
-    ),
     "opportunity_link": (By.CSS_SELECTOR, "a[href*='/opportunities/']"),
-    # Enough of the portal's tab chrome to say "this page is a Bonfire agency
-    # portal", separately from whether the open list rendered on it. Without
-    # that distinction, an org that publishes no portal at all and a portal
-    # whose pane was slow look identical: a timeout on the pane selector.
+    # Enough of the portal's tab chrome to say "this page is a Bonfire portal",
+    # separately from whether either list rendered on it. Without that
+    # distinction, an org that publishes no portal at all and a portal whose
+    # pane was slow look identical: a timeout on the pane selector.
     "portal_markers": (
         By.CSS_SELECTOR,
         "#openOpportunitiesTab, #openOpportunitiesTabPane, "
+        "#myOpportunitiesTab, #myOpportunitiesTabPane, "
         "[id$='OpportunitiesTab'], [id$='OpportunitiesTabPane']",
     ),
-    # DataTables' own "fetching" banner. Present in the DOM from the start and
-    # toggled by display, so its *visibility* is the signal, not its presence.
-    "processing": (By.CSS_SELECTOR, f"{PANE} .dataTables_processing, .dataTables_processing"),
-    # The single full-width cell DataTables puts in an otherwise rowless table.
-    # It carries "Loading…" while the AJAX call is in flight and the portal's
-    # real empty-state text once it has settled — the same element in two very
-    # different states, which is the trap this module exists to avoid.
-    "empty_cell": (By.CSS_SELECTOR, f"{PANE} td.dataTables_empty, {PANE} tbody td[colspan]"),
-    # Any frame inside the pane. The portals seen so far render the table into
-    # the main document; this exists so that if one ever embeds it instead, the
-    # run says so rather than timing out on a selector that cannot match.
+    # Any frame inside the page. The portals seen so far render their tables
+    # into the main document; this exists so that if one ever embeds them
+    # instead, the run says so rather than timing out on a selector that cannot
+    # match.
     "frames": (By.CSS_SELECTOR, "iframe, frame"),
+    # The open list's selectors, under their historical names, so callers that
+    # only ever mean the public list keep reading the way they always did.
+    "open_tab": OPEN.tab,
+    "tab_link": OPEN.tab_link,
+    "pane": OPEN.pane,
+    "table": OPEN.table,
+    "header_cells": OPEN.header_cells,
+    "rows": OPEN.rows,
+    "processing": OPEN.processing,
+    "empty_cell": OPEN.empty_cell,
 }
 
 # Text that means "this table has finished loading and holds nothing". Matched
@@ -130,13 +212,13 @@ def _text(element) -> str:
     return re.sub(r"\s+", " ", (element.get_attribute("textContent") or "")).strip()
 
 
-def read_headers(driver) -> list[str]:
-    """The open list's column headers, in order.
+def read_headers(driver, source: ListSource = OPEN) -> list[str]:
+    """A list's column headers, in order.
 
     The header cells inside the scroll body are collapsed to zero height, so
     their text is read from the DOM (see `_text`).
     """
-    return [_text(th) for th in driver.find_elements(*SEL["header_cells"])]
+    return [_text(th) for th in driver.find_elements(*source.header_cells)]
 
 
 # Hydration states, in the order a page moves through them.
@@ -146,17 +228,38 @@ EMPTY   = "empty"    # the table said so: it has settled and holds nothing
 IDLE    = "idle"     # built, not fetching, and holding nothing — but not saying so
 
 
-def _has_table(driver) -> bool:
-    return bool(driver.find_elements(*SEL["table"]))
+def _has_table(driver, source: ListSource = OPEN) -> bool:
+    return bool(driver.find_elements(*source.table))
 
 
-def _is_processing(driver) -> bool:
+def _pane_says_empty(driver, source: ListSource) -> bool:
+    """Does a table-less pane say in plain text that it holds nothing?
+
+    Not every list renders a DataTable at all. The region session portal's My
+    Opportunities pane is a single line of prose — "There is currently nothing
+    to display here." — with no table, no rows and no placeholder cell, so every
+    table-shaped check comes back empty-handed and the state would otherwise sit
+    at LOADING until the deadline.
+
+    Only consulted when the pane holds no table, which is what keeps it safe:
+    with rows on screen this would be reading the whole list's text.
+    """
+    panes = driver.find_elements(*source.pane)
+    if not panes or _has_table(driver, source):
+        return False
+    try:
+        return bool(_SETTLED_EMPTY.search(_text(panes[0])))
+    except StaleElementReferenceException:
+        return False
+
+
+def _is_processing(driver, source: ListSource = OPEN) -> bool:
     """Is DataTables' "fetching" banner on screen?
 
     The element is always in the DOM, so presence proves nothing; only
     `is_displayed()` distinguishes a request in flight from an idle table.
     """
-    for banner in driver.find_elements(*SEL["processing"]):
+    for banner in driver.find_elements(*source.processing):
         try:
             if banner.is_displayed():
                 return True
@@ -165,7 +268,7 @@ def _is_processing(driver) -> bool:
     return False
 
 
-def hydration_state(driver) -> str:
+def hydration_state(driver, source: ListSource = OPEN) -> str:
     """How far along the open list's client-side render is.
 
     Four answers, because "no rows" has three different meanings and only one of
@@ -186,20 +289,23 @@ def hydration_state(driver) -> str:
     reports an agency with live bids as having none. A silent nothing is worse
     than a timeout, and this is what separates the two cases.
     """
-    if _is_processing(driver):
+    if _is_processing(driver, source):
         return LOADING
 
-    rows = driver.find_elements(*SEL["rows"])
+    rows = driver.find_elements(*source.rows)
     if not rows:
+        # A pane that says so in prose, with no table at all.
+        if _pane_says_empty(driver, source):
+            return EMPTY
         # No rows at all. If DataTables has not built the table yet there is
         # still something to wait for; if it has, and is not fetching, then this
         # is a portal that renders an empty table rather than a placeholder —
         # nothing is coming, but it never says so, hence IDLE rather than EMPTY.
-        return IDLE if _has_table(driver) else LOADING
+        return IDLE if _has_table(driver, source) else LOADING
 
     # A row carrying a reference or a link is a real opportunity — the same test
     # `read_rows` applies, so the two can never disagree about what counts.
-    headers = read_headers(driver)
+    headers = read_headers(driver, source)
     for row in rows:
         try:
             record = _extract_row(row, headers)
@@ -210,7 +316,7 @@ def hydration_state(driver) -> str:
 
     # No real rows. Whether that is "finished and empty" or "not finished yet"
     # is written in the placeholder cell.
-    for cell in driver.find_elements(*SEL["empty_cell"]):
+    for cell in driver.find_elements(*source.empty_cell):
         try:
             text = _text(cell)
         except StaleElementReferenceException:
@@ -224,7 +330,7 @@ def hydration_state(driver) -> str:
     # explains why. Same situation as a rowless table: quite possibly finished
     # and empty, but the page has not said so, so it is not EMPTY on this
     # evidence alone. The caller decides how long to keep looking.
-    return IDLE if _has_table(driver) else LOADING
+    return IDLE if _has_table(driver, source) else LOADING
 
 
 def offered_tabs(driver) -> list[str]:
@@ -262,7 +368,7 @@ def has_frames(driver) -> bool:
     return bool(driver.find_elements(*SEL["frames"]))
 
 
-def read_rows(driver) -> list[dict[str, Any]]:
+def read_rows(driver, source: ListSource = OPEN) -> list[dict[str, Any]]:
     """Every opportunity in the open list, as scraped field dicts.
 
     The whole list renders at once (the pane has no server-side pagination), so
@@ -270,11 +376,11 @@ def read_rows(driver) -> list[dict[str, Any]]:
     time." placeholder row carries neither a ref number nor a link and is
     dropped.
     """
-    headers = read_headers(driver)
+    headers = read_headers(driver, source)
     if not headers:
-        logger.warning("open opportunities pane has no header row")
+        logger.warning("%s pane has no header row", source.label)
     records: list[dict[str, Any]] = []
-    for row in driver.find_elements(*SEL["rows"]):
+    for row in driver.find_elements(*source.rows):
         try:
             record = _extract_row(row, headers)
         except StaleElementReferenceException:
@@ -300,6 +406,13 @@ def _extract_row(row, headers: list[str]) -> dict[str, Any]:
             value = _text(cell)
             if value:
                 details[key] = value
+                details["raw_data"][header] = value
+        elif _normalise(header) not in ("", "action"):
+            # A column our schema does not name. Kept in raw_data rather than
+            # dropped, so a list that carries fields the public one does not
+            # loses nothing on the way through.
+            value = _text(cell)
+            if value:
                 details["raw_data"][header] = value
         elif _normalise(header) == "action":
             links = cell.find_elements(*SEL["opportunity_link"])

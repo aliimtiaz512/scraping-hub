@@ -68,14 +68,6 @@ SEL = {
 # for an agency whose root doesn't redirect there.
 PORTAL_PATH = "/portal/?tab=openOpportunities"
 
-# Where "Go to Agency" lands for an agency the SPA has no portal URL for. It is
-# the region's session-scoped portal rather than any one agency's: it opens on
-# My Opportunities — the things this vendor account was invited to — and has no
-# Open Public Opportunities tab, because no agency is in scope to have a public
-# list. Every agency whose control is a button (see `network`) is in this
-# position, which is *why* the control is a button and not a link.
-SESSION_HOSTS = ("session.bonfirehub.com", "session.bonfirehub.ca")
-
 # How long to wait for the browser tab that "Go to Agency" opens.
 NEW_TAB_TIMEOUT = 30
 
@@ -386,11 +378,25 @@ class RideMetroScraper(BaseScraper):
         """Open one agency's portal in its own tab and read the open list."""
         opened = self._open_agency(agency)
         try:
-            self._await_opportunities(agency)
-            records = opportunities.read_rows(self.driver)
+            source = self._await_opportunities(agency)
+            records = opportunities.read_rows(self.driver, source)
+
+            if not opportunities.agency_scoped(source):
+                # These rows describe the signed-in account, not the agency
+                # whose name they will appear under. Say so where a reader will
+                # see it rather than leaving the distinction in the run log.
+                agency.note = export.NOTE_MY_OPPORTUNITIES_EMPTY
+                logger.info(
+                    "[run %s] %s: %d row(s) from %s — account-scoped, not this "
+                    "agency's public list",
+                    self.run_id, agency.label, len(records), source.label,
+                )
+
             for details in records:
                 details["agency"] = agency.name
                 details["agency_url"] = agency.url
+                # Provenance travels with the row: two lists, two meanings.
+                details.setdefault("raw_data", {})["List"] = source.label
                 details["zip_filename"] = None
                 self._records.append(details)
 
@@ -510,14 +516,6 @@ class RideMetroScraper(BaseScraper):
         self.navigate(agency.url)
         return SAME_TAB
 
-    def _on_session_portal(self) -> bool:
-        """Are we on the region's shared session portal rather than an agency's?"""
-        try:
-            url = self.driver.current_url or ""
-        except WebDriverException:
-            return False
-        return any(host in url for host in SESSION_HOSTS)
-
     def _left_the_network(self) -> bool:
         """Is the current tab somewhere other than the supplier network?"""
         try:
@@ -525,7 +523,7 @@ class RideMetroScraper(BaseScraper):
         except WebDriverException:
             return False
 
-    def _await_opportunities(self, agency: Agency) -> None:
+    def _await_opportunities(self, agency: Agency) -> opportunities.ListSource:
         """Wait for the agency's Open Public Opportunities list to be readable.
 
         Three things have to be true before the list can be read, and they fail
@@ -543,6 +541,11 @@ class RideMetroScraper(BaseScraper):
 
         *The list has to have rendered* — which is not the same as existing; see
         `_await_hydrated_rows`.
+
+        Returns the list it settled on, because that is not always the public
+        one: a portal with no Open Public Opportunities tab still has My
+        Opportunities, and reading that is better than reading nothing. The
+        caller needs to know which, since the two do not mean the same thing.
         """
         for attempt in (1, 2):
             try:
@@ -552,18 +555,15 @@ class RideMetroScraper(BaseScraper):
                 # different tab, and the whole budget again on portals that have
                 # no public list at all and never could show one.
                 self.wait(PANE_TIMEOUT).until(
-                    EC.any_of(
-                        EC.presence_of_element_located(opportunities.SEL["pane"]),
-                        EC.presence_of_element_located(opportunities.SEL["open_tab"]),
-                    )
+                    EC.any_of(*[
+                        EC.presence_of_element_located(locator)
+                        for source in (opportunities.OPEN, opportunities.MINE)
+                        for locator in (source.pane, source.tab)
+                    ])
                 )
                 break
             except TimeoutException:
-                # The fallback rewrites the tab on whatever host we are on. On
-                # the session host that is pointless — no path there carries an
-                # agency's list — so decide now rather than spending the budget
-                # twice to reach the same conclusion.
-                if attempt == 2 or self._on_session_portal():
+                if attempt == 2:
                     raise self._diagnose_missing_pane(agency) from None
                 target = urljoin(self.driver.current_url or agency.url, PORTAL_PATH)
                 logger.info(
@@ -572,9 +572,11 @@ class RideMetroScraper(BaseScraper):
                 )
                 self.navigate(target)
 
+        source = self._choose_list(agency)
+
         try:
             self.wait(15).until(
-                EC.element_to_be_clickable(opportunities.SEL["tab_link"])
+                EC.element_to_be_clickable(source.tab_link)
             ).click()
         except (TimeoutException, WebDriverException):
             pass  # the tab is active on load; the click is only a safeguard
@@ -582,15 +584,41 @@ class RideMetroScraper(BaseScraper):
         # We may have got this far on the tab alone — the pane is built when the
         # tab is selected, so it can still be a moment away.
         try:
-            self.wait(PANE_TIMEOUT).until(
-                EC.presence_of_element_located(opportunities.SEL["pane"])
-            )
+            self.wait(PANE_TIMEOUT).until(EC.presence_of_element_located(source.pane))
         except TimeoutException:
             raise self._diagnose_missing_pane(agency) from None
 
-        self._await_hydrated_rows(agency)
+        self._await_hydrated_rows(agency, source)
+        return source
 
-    def _await_hydrated_rows(self, agency: Agency) -> None:
+    def _choose_list(self, agency: Agency) -> opportunities.ListSource:
+        """Which of the portal's lists this agency's bids are in.
+
+        The public list wherever there is one, which is every agency portal in
+        the network. The region session portal — where an agency the SPA has no
+        portal URL for ends up — renders only My Opportunities, so that is what
+        gets read there.
+
+        The two are not equivalent, and the log says so each time: My
+        Opportunities is the account's own invitations and submissions, the same
+        list whichever agency routed us to it. Rows from it describe the vendor,
+        not the agency whose name they end up under.
+        """
+        if self.driver.find_elements(*opportunities.OPEN.tab) or self.driver.find_elements(
+            *opportunities.OPEN.pane
+        ):
+            return opportunities.OPEN
+
+        logger.info(
+            "[run %s] %s has no %s tab — reading %s instead (an account-scoped "
+            "list, not this agency's public one)",
+            self.run_id, agency.label, opportunities.OPEN.label, opportunities.MINE.label,
+        )
+        return opportunities.MINE
+
+    def _await_hydrated_rows(
+        self, agency: Agency, source: opportunities.ListSource = opportunities.OPEN
+    ) -> None:
         """Wait until the open list has actually rendered, not merely appeared.
 
         Waiting on the presence of a row was the bug this replaces. DataTables
@@ -611,21 +639,21 @@ class RideMetroScraper(BaseScraper):
 
         while time.monotonic() < deadline:
             self.raise_if_stopped()
-            state = opportunities.hydration_state(self.driver)
+            state = opportunities.hydration_state(self.driver, source)
 
             if state == opportunities.READY:
                 if polls:
                     logger.info(
-                        "[run %s] %s: open list hydrated after %.0fs",
-                        self.run_id, agency.label, polls * HYDRATION_POLL_S,
+                        "[run %s] %s: %s hydrated after %.0fs",
+                        self.run_id, agency.label, source.label, polls * HYDRATION_POLL_S,
                     )
                 return
 
             if state == opportunities.EMPTY:
                 # The portal said so itself.
                 logger.info(
-                    "[run %s] %s: no open opportunities — recording 0 bids",
-                    self.run_id, agency.label,
+                    "[run %s] %s: %s is empty — recording 0 bids",
+                    self.run_id, agency.label, source.label,
                 )
                 return
 
@@ -636,9 +664,10 @@ class RideMetroScraper(BaseScraper):
                 idle_polls += 1
                 if idle_polls >= IDLE_SETTLE_POLLS:
                     logger.info(
-                        "[run %s] %s: open list has been empty and idle for %.0fs "
-                        "with no placeholder — recording 0 bids",
-                        self.run_id, agency.label, idle_polls * HYDRATION_POLL_S,
+                        "[run %s] %s: %s has been empty and idle for %.0fs with "
+                        "no placeholder — recording 0 bids",
+                        self.run_id, agency.label, source.label,
+                        idle_polls * HYDRATION_POLL_S,
                     )
                     return
             else:
@@ -647,9 +676,11 @@ class RideMetroScraper(BaseScraper):
             polls += 1
             time.sleep(HYDRATION_POLL_S)
 
-        self._resolve_hydration_timeout(agency)
+        self._resolve_hydration_timeout(agency, source)
 
-    def _resolve_hydration_timeout(self, agency: Agency) -> None:
+    def _resolve_hydration_timeout(
+        self, agency: Agency, source: opportunities.ListSource = opportunities.OPEN
+    ) -> None:
         """Decide what a hydration deadline actually means.
 
         Two things end up here and only one of them is a failure. A table that
@@ -658,8 +689,8 @@ class RideMetroScraper(BaseScraper):
         agency whose portal renders no placeholder at all — has finished; it has
         nothing, and failing the agency over that would lose the other twenty.
         """
-        state = opportunities.hydration_state(self.driver)
-        has_table = bool(self.driver.find_elements(*opportunities.SEL["table"]))
+        state = opportunities.hydration_state(self.driver, source)
+        has_table = bool(self.driver.find_elements(*source.table))
 
         # An idle table only reaches the deadline if it kept flickering in and
         # out of idle for the whole budget — the settle check above returns
@@ -667,15 +698,15 @@ class RideMetroScraper(BaseScraper):
         # empty is still the right call; it just deserves saying out loud.
         if state == opportunities.IDLE:
             logger.warning(
-                "[run %s] %s: open list never settled in %ds but is idle and "
-                "empty — recording 0 bids",
-                self.run_id, agency.label, HYDRATION_TIMEOUT,
+                "[run %s] %s: %s never settled in %ds but is idle and empty "
+                "— recording 0 bids",
+                self.run_id, agency.label, source.label, HYDRATION_TIMEOUT,
             )
             return
 
         where = self.driver.current_url or "(unknown)"
         detail = (
-            f"the open list did not finish rendering in {HYDRATION_TIMEOUT}s at {where}"
+            f"{source.label} did not finish rendering in {HYDRATION_TIMEOUT}s at {where}"
         )
         if not has_table:
             detail += " — the pane is there but its table was never built"
@@ -729,27 +760,16 @@ class RideMetroScraper(BaseScraper):
         except WebDriverException:
             has_open_tab, tabs = True, []
 
-        # The session portal is shared across every agency the SPA has no portal
-        # URL for, so whatever it lists is not this agency's — reading it would
-        # attribute one shared list to several agencies. That makes it a settled
-        # verdict on the host alone, whatever tabs it happens to render.
-        if any(host in url for host in SESSION_HOSTS):
-            return NoOpportunitiesPortal(
-                f"'Go to Agency' lands on {where} — the region session portal. Its "
-                f"list is shared across agencies rather than scoped to this one, "
-                f"so nothing there can be attributed to {agency.name}"
-            )
-
-        # Otherwise "no open tab" is only a verdict if the portal's tab chrome
-        # actually rendered. With no tabs at all we cannot tell a portal that has
-        # no public list from one that had not finished drawing when the wait ran
-        # out — and calling the second one settled would drop a real agency's
+        # A portal offering neither list is a settled fact — but only if its tab
+        # chrome actually rendered. With no tabs at all we cannot tell a portal
+        # that has no lists from one that had not finished drawing when the wait
+        # ran out, and calling the second one settled would drop a real agency's
         # bids with no retry and no error.
         if not has_open_tab and tabs:
             return NoOpportunitiesPortal(
-                f"'Go to Agency' lands on {where}, a portal with no public "
-                f"opportunities list: it has no Open Public Opportunities tab, "
-                f"and offers {', '.join(tabs)}"
+                f"'Go to Agency' lands on {where}, a portal with neither an Open "
+                f"Public Opportunities nor a My Opportunities list. It offers: "
+                f"{', '.join(tabs)}"
             )
 
         detail = f"the Open Public Opportunities pane never rendered at {where}"

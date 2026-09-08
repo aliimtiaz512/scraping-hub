@@ -38,6 +38,13 @@ NOTE_FAILED = "Could not be read: {error}"
 # Reached, but the organisation publishes no public portal — a standing fact
 # about the agency, so it reads as a statement rather than as a failure.
 NOTE_NO_PORTAL = "No public opportunities portal for this agency."
+# This portal has no public list, so the account's own My Opportunities was read
+# instead — and it held nothing. Worth saying in full: "no open opportunities"
+# would imply a public list was checked, and none was.
+NOTE_MY_OPPORTUNITIES_EMPTY = (
+    "No public opportunities list on this portal. Read My Opportunities "
+    "(the account's own invitations and submissions) instead — it was empty."
+)
 
 
 def _parse_dt(value: Any) -> datetime | None:
