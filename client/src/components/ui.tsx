@@ -9,7 +9,7 @@ import type { RunStatus } from "@/lib/api";
  * on a view; everything else is `secondary` or `ghost`, so a page never has two
  * things competing to be pressed. Gold appears only as accent, never as a fill.
  */
-type Variant = "primary" | "secondary" | "ghost" | "danger" | "onDark";
+type Variant = "primary" | "secondary" | "ghost" | "danger" | "warning" | "success" | "onDark";
 
 const VARIANTS: Record<Variant, string> = {
   primary:
@@ -18,6 +18,14 @@ const VARIANTS: Record<Variant, string> = {
     "bg-white text-ink-800 ring-1 ring-ink-200 shadow-sm hover:bg-ink-50 hover:ring-ink-300 disabled:text-ink-300 disabled:shadow-none",
   ghost: "text-ink-600 hover:bg-ink-50 hover:text-ink-900 disabled:text-ink-300",
   danger: "bg-white text-red-700 ring-1 ring-red-200 shadow-sm hover:bg-red-50 disabled:text-red-300",
+  // Hold, not stop. Amber and outlined so it reads as a reversible interruption
+  // sitting next to Stop's red without competing with it.
+  warning:
+    "bg-amber-50 text-amber-800 ring-1 ring-amber-300 shadow-sm hover:bg-amber-100 hover:ring-amber-400 disabled:bg-amber-50/60 disabled:text-amber-300 disabled:ring-amber-100",
+  // Release. Filled green, because a parked run has exactly one obvious next
+  // move and it should look like the thing to press.
+  success:
+    "bg-emerald-600 text-white ring-1 ring-emerald-600 shadow-sm hover:bg-emerald-700 hover:ring-emerald-700 disabled:bg-emerald-200 disabled:ring-emerald-200 disabled:shadow-none",
   onDark:
     "bg-white/10 text-white ring-1 ring-white/25 backdrop-blur hover:bg-white/20 disabled:text-white/40",
 };

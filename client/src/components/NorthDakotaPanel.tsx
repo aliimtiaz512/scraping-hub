@@ -7,7 +7,8 @@ import RunStatusPanel from "@/components/RunStatus";
 import { Card, ErrorBanner, Field, LaunchBar, StartButton } from "@/components/ui";
 import LiveMonitor from "@/components/LiveMonitor";
 import StopButton from "@/components/StopButton";
-import { getRunStatus, startNorthDakotaScrape, type RunStatus } from "@/lib/api";
+import ScraperControls from "@/components/ScraperControls";
+import { getRunStatus, isRunActive, startNorthDakotaScrape, type RunStatus } from "@/lib/api";
 
 const POLL_INTERVAL_MS = 3000;
 
@@ -52,7 +53,9 @@ export default function NorthDakotaPanel() {
     }
   };
 
-  const isRunning = run !== null && (run.status === "pending" || run.status === "running");
+  // Paused is still running as far as this panel is concerned: the form stays
+  // locked and Start stays disabled until the run really ends.
+  const isRunning = isRunActive(run);
   const hasCriteria = [keyword, commodity].some((v) => v.trim() !== "");
 
   return (
@@ -91,6 +94,11 @@ export default function NorthDakotaPanel() {
         <div className="flex items-center gap-2">
           <StopButton run={run} onError={setError} />
           <LiveMonitor run={run} portal="northdakota" />
+          <ScraperControls
+            run={run}
+            onError={setError}
+            onStatusChange={(status) => setRun((prev) => (prev ? { ...prev, status } : prev))}
+          />
           <StartButton onClick={() => handleStart()} disabled={starting || isRunning} running={isRunning} starting={starting}>
             Search &amp; scrape
           </StartButton>

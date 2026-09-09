@@ -9,10 +9,12 @@ import RunStatusPanel, { stepLabel } from "@/components/RunStatus";
 import { Button, ErrorBanner, LaunchBar, StartButton } from "@/components/ui";
 import LiveMonitor from "@/components/LiveMonitor";
 import StopButton from "@/components/StopButton";
+import ScraperControls from "@/components/ScraperControls";
 import {
   getBidnetFilters,
   getBidnetNiches,
   getRunStatus,
+  isRunActive,
   refreshBidnetFilterOptions,
   runDownloadUrl,
   startBidnetBatch,
@@ -170,7 +172,9 @@ export default function BidnetPanel() {
     }
   };
 
-  const isRunning = run !== null && (run.status === "pending" || run.status === "running");
+  // Paused is still running as far as this panel is concerned: the form stays
+  // locked and Start stays disabled until the run really ends.
+  const isRunning = isRunActive(run);
   const refreshing = refreshRun !== null && (refreshRun.status === "pending" || refreshRun.status === "running");
   // Purchasing Group is the one filter that can be emptied into a search that
   // matches nothing — BidNet treats "no group" as "no results".
@@ -228,6 +232,11 @@ export default function BidnetPanel() {
         <div className="flex items-center gap-2">
           <StopButton run={run} onError={setError} />
           <LiveMonitor run={run} portal="bidnet" />
+          <ScraperControls
+            run={run}
+            onError={setError}
+            onStatusChange={(status) => setRun((prev) => (prev ? { ...prev, status } : prev))}
+          />
           <Button
             variant="secondary"
             size="lg"

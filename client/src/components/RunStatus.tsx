@@ -91,6 +91,9 @@ function runSubtitle(run: RunStatusData): string {
 
 export default function RunStatus({ run }: { run: RunStatusData }) {
   const inFlight = run.status === "running" || run.status === "pending";
+  // Parked, not finished. It gets its own line rather than the spinner: an
+  // animation on a run that is deliberately doing nothing reads as a hang.
+  const parked = run.status === "paused";
   const subtitle = runSubtitle(run);
   const download = runDownloadable(run);
   const excelOnly = downloadKind(run.scraper ?? "") === "excel";
@@ -126,6 +129,21 @@ export default function RunStatus({ run }: { run: RunStatusData }) {
             MyFloridaMarketPlace sent a code to the account. Type it into the browser
             window that opened — the run continues by itself the moment you are signed in
             {run.otp_wait_seconds ? `, and gives up after ${run.otp_wait_seconds}s` : ""}.
+          </p>
+        </div>
+      )}
+
+      {parked && (
+        <div className="border-b border-amber-200 bg-amber-50 px-5 py-3.5">
+          <div className="flex items-center gap-2.5">
+            <span className="h-3.5 w-3.5 shrink-0 rounded-full border-2 border-amber-400" aria-hidden />
+            <span className="text-sm font-medium text-amber-900">
+              Paused at {stepLabel(run.step)}
+            </span>
+          </div>
+          <p className="mt-1.5 text-xs text-amber-800">
+            The browser and the slot are still held. Resume from the toolbar above to
+            continue at the next record — nothing is re-collected.
           </p>
         </div>
       )}

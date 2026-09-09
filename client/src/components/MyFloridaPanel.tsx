@@ -10,10 +10,12 @@ import RunStatusPanel from "@/components/RunStatus";
 import { Card, ErrorBanner, LaunchBar, SegmentedControl, StartButton } from "@/components/ui";
 import LiveMonitor from "@/components/LiveMonitor";
 import StopButton from "@/components/StopButton";
+import ScraperControls from "@/components/ScraperControls";
 import {
   getCategories,
   getMyFloridaAccounts,
   getRunStatus,
+  isRunActive,
   getSweepRunStatus,
   startMyFloridaScrape,
   startMyFloridaSweep,
@@ -152,7 +154,9 @@ export default function MyFloridaPanel() {
     }
   };
 
-  const isRunning = run !== null && (run.status === "pending" || run.status === "running");
+  // Paused is still running as far as this panel is concerned: the form stays
+  // locked and Start stays disabled until the run really ends.
+  const isRunning = isRunActive(run);
   const activeAccount = accounts.find((a) => a.key === account);
   // Only once the catalog has loaded: before that there is nothing to be wrong
   // about, and a warning that flashes on every mount is noise.
@@ -243,6 +247,11 @@ export default function MyFloridaPanel() {
         <div className="flex items-center gap-2">
           <StopButton run={run} onError={setError} />
           <LiveMonitor run={run} portal="myflorida" />
+          <ScraperControls
+            run={run}
+            onError={setError}
+            onStatusChange={(status) => setRun((prev) => (prev ? { ...prev, status } : prev))}
+          />
           <StartButton
             onClick={() => handleStart()}
             disabled={

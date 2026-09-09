@@ -1073,6 +1073,20 @@ export function resumeScrape(
   return request(`/runs/${runId}/resume`, { method: "POST" });
 }
 
+/**
+ * A run that still owns a browser and a slot, and so is still the console's
+ * business: it can be paused, resumed, stopped and watched.
+ *
+ * `paused` belongs here with `running` — a parked run has not ended, it is
+ * holding. Treating it as finished is what used to re-enable a panel's form
+ * and hide its controls the moment someone pressed Pause.
+ */
+export function isRunActive(run: RunStatus | null | undefined): run is RunStatus {
+  return (
+    !!run && (run.status === "pending" || run.status === "running" || run.status === "paused")
+  );
+}
+
 export function getRunStatus(portal: Portal, runId: string): Promise<RunStatus> {
   return request(`/${portal}/scrape/status/${runId}`);
 }

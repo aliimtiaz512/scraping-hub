@@ -7,7 +7,8 @@ import RunStatusPanel from "@/components/RunStatus";
 import { Card, ErrorBanner, Field, LaunchBar, StartButton } from "@/components/ui";
 import LiveMonitor from "@/components/LiveMonitor";
 import StopButton from "@/components/StopButton";
-import { getRunStatus, startEmmaScrape, type RunStatus } from "@/lib/api";
+import ScraperControls from "@/components/ScraperControls";
+import { getRunStatus, isRunActive, startEmmaScrape, type RunStatus } from "@/lib/api";
 
 const POLL_INTERVAL_MS = 3000;
 
@@ -57,7 +58,9 @@ export default function EmmaPanel() {
     }
   };
 
-  const isRunning = run !== null && (run.status === "pending" || run.status === "running");
+  // Paused is still running as far as this panel is concerned: the form stays
+  // locked and Start stays disabled until the run really ends.
+  const isRunning = isRunActive(run);
   const hasCriteria = [keyword, status, category].some((v) => v.trim() !== "");
 
   return (
@@ -103,6 +106,11 @@ export default function EmmaPanel() {
         <div className="flex items-center gap-2">
           <StopButton run={run} onError={setError} />
           <LiveMonitor run={run} portal="emma" />
+          <ScraperControls
+            run={run}
+            onError={setError}
+            onStatusChange={(status) => setRun((prev) => (prev ? { ...prev, status } : prev))}
+          />
           <StartButton onClick={() => handleStart()} disabled={starting || isRunning} running={isRunning} starting={starting}>
             Search &amp; scrape
           </StartButton>

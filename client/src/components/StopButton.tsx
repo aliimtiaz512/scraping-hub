@@ -3,12 +3,12 @@
 import { useState } from "react";
 
 import { Button } from "@/components/ui";
-import { stopScrape, type RunStatus } from "@/lib/api";
+import { isRunActive, stopScrape, type RunStatus } from "@/lib/api";
 
 /**
- * Stops an in-flight run. Like LiveMonitor, it renders nothing unless a run is
- * actively going (pending/running) — so the button only exists WHILE scraping,
- * never before or after. Clicking it asks the backend to stop; the parent's
+ * Stops an in-flight run. Like LiveMonitor and ScraperControls, it renders
+ * nothing unless a run is actually going (pending/running/paused) — so the
+ * button only exists WHILE scraping, never before or after. Clicking it asks the backend to stop; the parent's
  * existing status polling then flips the run to "stopped" and this unmounts.
  *
  * The `onError` hook lets the host panel surface a failure (e.g. the run already
@@ -22,7 +22,10 @@ export default function StopButton({
   onError?: (message: string) => void;
 }) {
   const [stopping, setStopping] = useState(false);
-  const active = !!run && (run.status === "pending" || run.status === "running");
+  // Paused counts as active: a parked run is holding a browser and a slot, and
+  // stopping it outright — rather than resuming it only to stop it a moment
+  // later — is what the backend's STOPPABLE_STATUSES already allows.
+  const active = isRunActive(run);
   if (!active) return null;
 
   const handleStop = async () => {

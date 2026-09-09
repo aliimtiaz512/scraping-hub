@@ -7,9 +7,11 @@ import RunStatusPanel from "@/components/RunStatus";
 import { Card, ErrorBanner, LaunchBar, SegmentedControl, StartButton } from "@/components/ui";
 import LiveMonitor from "@/components/LiveMonitor";
 import StopButton from "@/components/StopButton";
+import ScraperControls from "@/components/ScraperControls";
 import {
   getRideMetroAccounts,
   getRunStatus,
+  isRunActive,
   startRideMetroScrape,
   type RideMetroAccount,
   type RunStatus,
@@ -56,7 +58,9 @@ export default function RideMetroPanel() {
   }, []);
 
   const selected = accounts.find((a) => a.key === account);
-  const isRunning = run !== null && (run.status === "pending" || run.status === "running");
+  // Paused is still running as far as this panel is concerned: the form stays
+  // locked and Start stays disabled until the run really ends.
+  const isRunning = isRunActive(run);
   const blocked = accounts.length > 0 && !selected?.configured;
 
   const handleStart = async (livePreview = false) => {
@@ -123,6 +127,11 @@ export default function RideMetroPanel() {
         <div className="flex items-center gap-2">
           <StopButton run={run} onError={setError} />
           <LiveMonitor run={run} portal="ridemetro" />
+          <ScraperControls
+            run={run}
+            onError={setError}
+            onStatusChange={(status) => setRun((prev) => (prev ? { ...prev, status } : prev))}
+          />
           <StartButton
             onClick={() => handleStart()}
             disabled={starting || isRunning || blocked || !account}

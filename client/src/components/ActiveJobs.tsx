@@ -5,8 +5,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   getJobLogs,
   getJobs,
-  pauseScrape,
-  resumeScrape,
   runDownloadUrl,
   stopScrape,
   type Job,
@@ -27,7 +25,11 @@ const POLL_INTERVAL_MS = 3000;
  * all portals, so this costs a single poll no matter how many are going.
  *
  * Collapsed it is a one-line bar; expanded it lists each job with its step, its
- * elapsed time, a Stop control, and an optional live log tail.
+ * elapsed time, a Stop control, and an optional live log tail. Pausing and
+ * resuming are deliberately NOT here: they are primary controls and live in each
+ * portal panel's toolbar next to Live preview (see ScraperControls), where they
+ * are full-size and where the person watching a run is actually looking. This
+ * bar keeps only what it alone can offer — a cross-portal view, and Stop.
  */
 export default function ActiveJobs() {
   const [jobs, setJobs] = useState<Job[]>([]);
@@ -101,19 +103,6 @@ export default function ActiveJobs() {
   const dismissStopped = (runId: string) =>
     setStopped((held) => held.filter((j) => j.run_id !== runId));
 
-  /** Park a job, or release one. Polled straight after rather than assumed: a
-   *  pause takes effect at the worker's next checkpoint, so the row should show
-   *  what the server actually did, not what was asked for. */
-  const handlePauseToggle = async (job: Job) => {
-    try {
-      if (job.status === "paused") await resumeScrape(job.run_id);
-      else await pauseScrape(job.run_id);
-      poll();
-    } catch (e) {
-      setError((e as Error).message);
-    }
-  };
-
   return (
     <div className="sticky bottom-0 z-30 border-t border-ink-200 bg-white/95 shadow-[0_-2px_12px_rgba(15,23,42,0.06)] backdrop-blur">
       <button
@@ -153,7 +142,6 @@ export default function ActiveJobs() {
                 logOpen={openLog === job.run_id}
                 onToggleLog={() => setOpenLog(openLog === job.run_id ? null : job.run_id)}
                 onStop={() => handleStop(job)}
-                onPauseToggle={() => handlePauseToggle(job)}
               />
             ))}
             {held.map((job) => (
@@ -175,13 +163,11 @@ function JobRow({
   logOpen,
   onToggleLog,
   onStop,
-  onPauseToggle,
 }: {
   job: Job;
   logOpen: boolean;
   onToggleLog: () => void;
   onStop: () => void;
-  onPauseToggle: () => void;
 }) {
   const queued = job.status === "queued";
   const parked = job.status === "paused";
@@ -210,26 +196,12 @@ function JobRow({
               kept climbing would read as though it were. */}
           <Elapsed since={job.started_at} paused={queued || parked} />
         </span>
-        {/* Only an executing job can be parked; a queued one is already
-            consuming nothing, so offering it here would be a button that
-            answers 409. */}
-        {(parked || job.status === "running") && (
-          <button
-            type="button"
-            onClick={onPauseToggle}
-            title={
-              parked
-                ? "Continue from the record after the last one finished — nothing is re-collected."
-                : "Hold at the next record. Keeps the browser and the slot; frees the network and CPU for another job."
-            }
-            className={`rounded border px-2 py-0.5 text-xs font-medium transition ${
-              parked
-                ? "border-emerald-200 text-emerald-700 hover:bg-emerald-50"
-                : "border-amber-200 text-amber-700 hover:bg-amber-50"
-            }`}
-          >
-            {parked ? "Resume" : "Pause"}
-          </button>
+        {/* Parked jobs say so here, but are released from the portal panel's
+            toolbar — this row reports, the panel controls. */}
+        {parked && (
+          <span className="rounded border border-amber-200 bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-700">
+            Paused
+          </span>
         )}
         <button
           type="button"

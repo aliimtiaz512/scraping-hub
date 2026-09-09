@@ -7,9 +7,11 @@ import SeptaResults from "@/components/SeptaResults";
 import { Card, ErrorBanner, LaunchBar, SegmentedControl, StartButton } from "@/components/ui";
 import LiveMonitor from "@/components/LiveMonitor";
 import StopButton from "@/components/StopButton";
+import ScraperControls from "@/components/ScraperControls";
 import {
   SEPTA_MODULES,
   getRunStatus,
+  isRunActive,
   startSeptaScrape,
   type RunStatus,
   type SeptaModule,
@@ -62,7 +64,9 @@ export default function SeptaPanel() {
     }
   };
 
-  const isRunning = run !== null && (run.status === "pending" || run.status === "running");
+  // Paused is still running as far as this panel is concerned: the form stays
+  // locked and Start stays disabled until the run really ends.
+  const isRunning = isRunActive(run);
   const inputClass =
     "w-full rounded-lg border border-ink-200 bg-white px-3 py-2 text-sm text-ink-900 shadow-sm transition placeholder:text-ink-400 focus:border-gold-400 focus:outline-none focus:ring-2 focus:ring-gold-400/25 disabled:cursor-not-allowed disabled:bg-ink-50 disabled:text-ink-400";
 
@@ -118,6 +122,11 @@ export default function SeptaPanel() {
         <div className="flex items-center gap-2">
           <StopButton run={run} onError={setError} />
           <LiveMonitor run={run} portal="septa" />
+          <ScraperControls
+            run={run}
+            onError={setError}
+            onStatusChange={(status) => setRun((prev) => (prev ? { ...prev, status } : prev))}
+          />
           <StartButton
             onClick={() => handleStart()}
             disabled={starting || isRunning}

@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
-import { getRunScreenshot, type Portal, type RunStatus } from "@/lib/api";
+import { getRunScreenshot, isRunActive, type Portal, type RunStatus } from "@/lib/api";
 import { Button, RunBadge } from "@/components/ui";
 import { stepLabel } from "@/components/RunStatus";
 
@@ -24,7 +24,10 @@ export default function LiveMonitor({ run, portal }: { run: RunStatus | null; po
   // finishes — hiding the button and closing the modal — and a later run never
   // auto-opens from a stale flag.
   const [openedRunId, setOpenedRunId] = useState<string | null>(null);
-  const active = !!run && (run.status === "pending" || run.status === "running");
+  // A parked run still has a browser standing on the page it stopped at, so the
+  // preview stays available while it is paused — that frame is often exactly
+  // what someone wants to look at before deciding whether to resume or stop.
+  const active = isRunActive(run);
 
   if (!run || !active) return null;
   const open = openedRunId === run.run_id;

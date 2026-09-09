@@ -4,7 +4,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Card, ErrorBanner, LaunchBar, RunBadge, StartButton } from "@/components/ui";
 import StopButton from "@/components/StopButton";
-import { getRunStatus, startCalEProcureScrape, type RunStatus } from "@/lib/api";
+import ScraperControls from "@/components/ScraperControls";
+import { getRunStatus, isRunActive, startCalEProcureScrape, type RunStatus } from "@/lib/api";
 
 const POLL_INTERVAL_MS = 3000;
 
@@ -51,7 +52,9 @@ export default function CalEProcurePanel() {
     }
   };
 
-  const isRunning = run !== null && (run.status === "pending" || run.status === "running");
+  // Paused is still running as far as this panel is concerned: the form stays
+  // locked and Start stays disabled until the run really ends.
+  const isRunning = isRunActive(run);
   const loggedIn = run?.status === "completed" && run.login_ok === true;
 
   return (
@@ -72,6 +75,11 @@ export default function CalEProcurePanel() {
       <LaunchBar summary="Signs in to caleprocure.ca.gov and confirms the session.">
         <div className="flex items-center gap-2">
           <StopButton run={run} onError={setError} />
+          <ScraperControls
+            run={run}
+            onError={setError}
+            onStatusChange={(status) => setRun((prev) => (prev ? { ...prev, status } : prev))}
+          />
           <StartButton onClick={handleStart} disabled={starting || isRunning} running={isRunning} starting={starting}>
             Test login
           </StartButton>

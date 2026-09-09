@@ -7,8 +7,10 @@ import UnisonResults from "@/components/UnisonResults";
 import { Card, ErrorBanner, LaunchBar, StartButton } from "@/components/ui";
 import LiveMonitor from "@/components/LiveMonitor";
 import StopButton from "@/components/StopButton";
+import ScraperControls from "@/components/ScraperControls";
 import {
   getRunStatus,
+  isRunActive,
   getUnisonFilters,
   startUnisonScrape,
   type RunStatus,
@@ -82,7 +84,9 @@ export default function UnisonPanel() {
     }
   };
 
-  const isRunning = run !== null && (run.status === "pending" || run.status === "running");
+  // Paused is still running as far as this panel is concerned: the form stays
+  // locked and Start stays disabled until the run really ends.
+  const isRunning = isRunActive(run);
   const selected = filters.find((f) => f.value === filterId);
 
   return (
@@ -118,6 +122,11 @@ export default function UnisonPanel() {
         <div className="flex items-center gap-2">
           <StopButton run={run} onError={setError} />
           <LiveMonitor run={run} portal="unison" />
+          <ScraperControls
+            run={run}
+            onError={setError}
+            onStatusChange={(status) => setRun((prev) => (prev ? { ...prev, status } : prev))}
+          />
           <StartButton onClick={() => handleStart()} disabled={starting || isRunning} running={isRunning} starting={starting}>
             Run scraper
           </StartButton>
