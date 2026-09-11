@@ -1,23 +1,23 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 
 import RunStatusPanel from "@/components/RunStatus";
 import UnisonResults from "@/components/UnisonResults";
 import { Card, ErrorBanner, LaunchBar, StartButton } from "@/components/ui";
 import LiveMonitor from "@/components/LiveMonitor";
 import StopButton from "@/components/StopButton";
+import RefreshButton from "@/components/RefreshButton";
 import ScraperControls from "@/components/ScraperControls";
+import SessionActivity from "@/components/SessionActivity";
+import { usePortalSession } from "@/lib/usePortalSession";
 import {
-  getRunStatus,
   isRunActive,
   getUnisonFilters,
   startUnisonScrape,
-  type RunStatus,
   type UnisonFilter,
 } from "@/lib/api";
 
-const POLL_INTERVAL_MS = 3000;
 const NO_FILTER = "-1";
 
 /**
@@ -32,20 +32,11 @@ const NO_FILTER = "-1";
 export default function UnisonPanel() {
   const [filters, setFilters] = useState<UnisonFilter[]>([]);
   const [filterId, setFilterId] = useState<string>(NO_FILTER);
-  const [run, setRun] = useState<RunStatus | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [starting, setStarting] = useState(false);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  const stopPolling = useCallback(() => {
-    if (pollRef.current) {
-      clearInterval(pollRef.current);
-      pollRef.current = null;
-    }
-  }, []);
-
-  useEffect(() => stopPolling, [stopPolling]);
-
+  // The run, its log tail, its error banner and the launching flag all live in
+  // the global session registry — not here. That is what lets this panel be
+  // unmounted and remounted (or simply hidden) without the scrape noticing.
+  const { run, error, starting, setError, launch, applyStatus, hasSession, reset } =
+    usePortalSession("unison");
   useEffect(() => {
     let cancelled = false;
     getUnisonFilters()
@@ -60,29 +51,7 @@ export default function UnisonPanel() {
     };
   }, []);
 
-  const handleStart = async (livePreview = false) => {
-    setError(null);
-    setStarting(true);
-    try {
-      const { run_id } = await startUnisonScrape(filterId, livePreview);
-      const status = await getRunStatus("unison", run_id);
-      setRun(status);
-      stopPolling();
-      pollRef.current = setInterval(async () => {
-        try {
-          const latest = await getRunStatus("unison", run_id);
-          setRun(latest);
-          if (latest.status === "completed" || latest.status === "failed" || latest.status === "stopped") stopPolling();
-        } catch {
-          // transient poll failure — keep trying
-        }
-      }, POLL_INTERVAL_MS);
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setStarting(false);
-    }
-  };
+  const handleStart = (livePreview = false) => launch(() => startUnisonScrape(filterId, livePreview));
 
   // Paused is still running as far as this panel is concerned: the form stays
   // locked and Start stays disabled until the run really ends.
@@ -125,8 +94,9 @@ export default function UnisonPanel() {
           <ScraperControls
             run={run}
             onError={setError}
-            onStatusChange={(status) => setRun((prev) => (prev ? { ...prev, status } : prev))}
+            onStatusChange={applyStatus}
           />
+          <RefreshButton run={run} hasSession={hasSession} onReset={reset} />
           <StartButton onClick={() => handleStart()} disabled={starting || isRunning} running={isRunning} starting={starting}>
             Run scraper
           </StartButton>
@@ -134,6 +104,8 @@ export default function UnisonPanel() {
       </LaunchBar>
 
       {run && <RunStatusPanel run={run} />}
+      {/* The run's log, streaming into the panel that launched it. */}
+      <SessionActivity portal="unison" />
       {run && <UnisonResults bids={run.bids} />}
     </div>
   );

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import CategorySelect from "@/components/CategorySelect";
 import MyFloridaSweep from "@/components/MyFloridaSweep";
@@ -10,13 +10,14 @@ import RunStatusPanel from "@/components/RunStatus";
 import { Card, ErrorBanner, LaunchBar, SegmentedControl, StartButton } from "@/components/ui";
 import LiveMonitor from "@/components/LiveMonitor";
 import StopButton from "@/components/StopButton";
+import RefreshButton from "@/components/RefreshButton";
 import ScraperControls from "@/components/ScraperControls";
+import SessionActivity from "@/components/SessionActivity";
+import { usePortalSession } from "@/lib/usePortalSession";
 import {
   getCategories,
   getMyFloridaAccounts,
-  getRunStatus,
   isRunActive,
-  getSweepRunStatus,
   startMyFloridaScrape,
   startMyFloridaSweep,
   SWEEP_SCRAPER,
@@ -25,7 +26,6 @@ import {
   type AdType,
   type Category,
   type MyFloridaAccount,
-  type RunStatus,
   type SearchMode,
 } from "@/lib/api";
 
@@ -36,8 +36,6 @@ import {
  * (myflorida_sweep) and its own classifier — see app/scrapers/myflorida/sweep.
  */
 type PanelMode = SearchMode | "sweep";
-
-const POLL_INTERVAL_MS = 3000;
 
 export default function MyFloridaPanel() {
   const [categories, setCategories] = useState<Category[]>([]);
@@ -58,10 +56,14 @@ export default function MyFloridaPanel() {
   // same window across modes would expect.
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
-  const [run, setRun] = useState<RunStatus | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [starting, setStarting] = useState(false);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // The run, its log tail, its error banner and the launching flag all live in
+  // the global session registry — not here. That is what lets this panel be
+  // unmounted and remounted (or simply hidden) without the scrape noticing.
+  // The sweep shares this slot: one portal, one browser, one session. What it
+  // does not share is its status endpoint, which is why the launch says which
+  // kind of run it is handing over.
+  const { run, error, starting, setError, launch, applyStatus, hasSession, reset } =
+    usePortalSession("myflorida");
 
   useEffect(() => {
     getCategories()
@@ -97,61 +99,36 @@ export default function MyFloridaPanel() {
     setSelectedKeywords(current?.keywords ?? []);
   }, [current]);
 
-  const stopPolling = useCallback(() => {
-    if (pollRef.current) {
-      clearInterval(pollRef.current);
-      pollRef.current = null;
-    }
-  }, []);
-
-  useEffect(() => stopPolling, [stopPolling]);
-
-  const handleStart = async (livePreview = false) => {
-    setError(null);
-    setStarting(true);
-    // The sweep polls its own endpoint; everything else is the niche flow's.
+  const handleStart = (livePreview = false) => {
+    // The sweep runs on its own endpoint and its own run key, so the session
+    // carries which one owns it — that is all the engine needs to keep polling
+    // the right status URL after this panel is out of sight.
     const isSweep = mode === "sweep";
-    const poll = isSweep
-      ? (id: string) => getSweepRunStatus(id)
-      : (id: string) => getRunStatus("myflorida", id);
-    try {
-      const { run_id } = isSweep
-        ? await startMyFloridaSweep({
-            adStatuses: sweepStatuses,
-            maxBids: sweepMaxBids,
-            account,
-            startDate: startDate || null,
-            endDate: endDate || null,
-            livePreview,
-          })
-        : await startMyFloridaScrape({
-            category: selected,
-            mode,
-            codes: selectedCodes,
-            keywords: selectedKeywords,
-            adStatuses,
-            adTypes,
-            account,
-            startDate: startDate || null,
-            endDate: endDate || null,
-            livePreview,
-          });
-      setRun(await poll(run_id));
-      stopPolling();
-      pollRef.current = setInterval(async () => {
-        try {
-          const latest = await poll(run_id);
-          setRun(latest);
-          if (latest.status === "completed" || latest.status === "failed" || latest.status === "stopped") stopPolling();
-        } catch {
-          // transient poll failure — keep trying
-        }
-      }, POLL_INTERVAL_MS);
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setStarting(false);
-    }
+    return launch(
+      () =>
+        isSweep
+          ? startMyFloridaSweep({
+              adStatuses: sweepStatuses,
+              maxBids: sweepMaxBids,
+              account,
+              startDate: startDate || null,
+              endDate: endDate || null,
+              livePreview,
+            })
+          : startMyFloridaScrape({
+              category: selected,
+              mode,
+              codes: selectedCodes,
+              keywords: selectedKeywords,
+              adStatuses,
+              adTypes,
+              account,
+              startDate: startDate || null,
+              endDate: endDate || null,
+              livePreview,
+            }),
+      { kind: isSweep ? "sweep" : "portal" },
+    );
   };
 
   // Paused is still running as far as this panel is concerned: the form stays
@@ -250,8 +227,9 @@ export default function MyFloridaPanel() {
           <ScraperControls
             run={run}
             onError={setError}
-            onStatusChange={(status) => setRun((prev) => (prev ? { ...prev, status } : prev))}
+            onStatusChange={applyStatus}
           />
+          <RefreshButton run={run} hasSession={hasSession} onReset={reset} />
           <StartButton
             onClick={() => handleStart()}
             disabled={
@@ -271,6 +249,8 @@ export default function MyFloridaPanel() {
       </LaunchBar>
 
       {run && <RunStatusPanel run={run} />}
+      {/* The run's log, streaming into the panel that launched it. */}
+      <SessionActivity portal="myflorida" />
       {/* Keyed off the run, not the `mode` tab: the results stay on screen when
           the user switches tabs, so the table has to match the run that
           produced the rows rather than whatever is selected now. */}

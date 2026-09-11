@@ -1,62 +1,36 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useState } from "react";
 
 import EmmaResults from "@/components/EmmaResults";
 import RunStatusPanel from "@/components/RunStatus";
 import { Card, ErrorBanner, Field, LaunchBar, StartButton } from "@/components/ui";
 import LiveMonitor from "@/components/LiveMonitor";
 import StopButton from "@/components/StopButton";
+import RefreshButton from "@/components/RefreshButton";
 import ScraperControls from "@/components/ScraperControls";
-import { getRunStatus, isRunActive, startEmmaScrape, type RunStatus } from "@/lib/api";
-
-const POLL_INTERVAL_MS = 3000;
+import SessionActivity from "@/components/SessionActivity";
+import { usePortalSession } from "@/lib/usePortalSession";
+import { isRunActive, startEmmaScrape } from "@/lib/api";
 
 export default function EmmaPanel() {
   const [keyword, setKeyword] = useState("");
   const [status, setStatus] = useState("");
   const [category, setCategory] = useState("");
-  const [run, setRun] = useState<RunStatus | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [starting, setStarting] = useState(false);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  const stopPolling = useCallback(() => {
-    if (pollRef.current) {
-      clearInterval(pollRef.current);
-      pollRef.current = null;
-    }
-  }, []);
-
-  useEffect(() => stopPolling, [stopPolling]);
-
-  const handleStart = async (livePreview = false) => {
-    setError(null);
-    setStarting(true);
-    try {
-      const { run_id } = await startEmmaScrape({
+  // The run, its log tail, its error banner and the launching flag all live in
+  // the global session registry — not here. That is what lets this panel be
+  // unmounted and remounted (or simply hidden) without the scrape noticing.
+  const { run, error, starting, setError, launch, applyStatus, hasSession, reset } =
+    usePortalSession("emma");
+  const handleStart = (livePreview = false) =>
+    launch(() =>
+      startEmmaScrape({
         keyword: keyword.trim(),
         status: status.trim(),
         category: category.trim(),
         livePreview,
-      });
-      setRun(await getRunStatus("emma", run_id));
-      stopPolling();
-      pollRef.current = setInterval(async () => {
-        try {
-          const latest = await getRunStatus("emma", run_id);
-          setRun(latest);
-          if (latest.status === "completed" || latest.status === "failed" || latest.status === "stopped") stopPolling();
-        } catch {
-          // transient poll failure — keep trying
-        }
-      }, POLL_INTERVAL_MS);
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setStarting(false);
-    }
-  };
+      }),
+    );
 
   // Paused is still running as far as this panel is concerned: the form stays
   // locked and Start stays disabled until the run really ends.
@@ -109,8 +83,9 @@ export default function EmmaPanel() {
           <ScraperControls
             run={run}
             onError={setError}
-            onStatusChange={(status) => setRun((prev) => (prev ? { ...prev, status } : prev))}
+            onStatusChange={applyStatus}
           />
+          <RefreshButton run={run} hasSession={hasSession} onReset={reset} />
           <StartButton onClick={() => handleStart()} disabled={starting || isRunning} running={isRunning} starting={starting}>
             Search &amp; scrape
           </StartButton>
@@ -118,6 +93,8 @@ export default function EmmaPanel() {
       </LaunchBar>
 
       {run && <RunStatusPanel run={run} />}
+      {/* The run's log, streaming into the panel that launched it. */}
+      <SessionActivity portal="emma" />
       {run && <EmmaResults bids={run.bids} />}
     </div>
   );

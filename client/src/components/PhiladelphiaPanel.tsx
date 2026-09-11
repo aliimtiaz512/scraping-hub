@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useState } from "react";
 
 import PhiladelphiaResults from "@/components/PhiladelphiaResults";
 import PhiladelphiaSearch from "@/components/PhiladelphiaSearch";
@@ -8,17 +8,15 @@ import RunStatusPanel from "@/components/RunStatus";
 import { ErrorBanner, LaunchBar, MiniButton, StartButton } from "@/components/ui";
 import LiveMonitor from "@/components/LiveMonitor";
 import StopButton from "@/components/StopButton";
+import RefreshButton from "@/components/RefreshButton";
 import ScraperControls from "@/components/ScraperControls";
+import SessionActivity from "@/components/SessionActivity";
+import { usePortalSession } from "@/lib/usePortalSession";
 import {
-  getRunStatus,
   isRunActive,
-  isTerminalStatus,
   startPhiladelphiaScrape,
   type PhiladelphiaFilters,
-  type RunStatus,
 } from "@/lib/api";
-
-const POLL_INTERVAL_MS = 3000;
 
 /**
  * PHLContracts: the whole Open Bids list, or a search of it.
@@ -29,50 +27,19 @@ const POLL_INTERVAL_MS = 3000;
  * — and this one does not.
  */
 export default function PhiladelphiaPanel() {
-  const [run, setRun] = useState<RunStatus | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [starting, setStarting] = useState(false);
+  // The run, its log tail, its error banner and the launching flag all live in
+  // the global session registry — not here. That is what lets this panel be
+  // unmounted and remounted (or simply hidden) without the scrape noticing.
+  const { run, error, starting, setError, launch, applyStatus, hasSession, reset } =
+    usePortalSession("philadelphia");
   const [advanced, setAdvanced] = useState(false);
   const [filters, setFilters] = useState<PhiladelphiaFilters>({});
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const stopPolling = useCallback(() => {
-    if (pollRef.current) {
-      clearInterval(pollRef.current);
-      pollRef.current = null;
-    }
-  }, []);
-
-  useEffect(() => stopPolling, [stopPolling]);
-
-  const handleStart = async (livePreview = false) => {
-    setError(null);
-    setStarting(true);
-    try {
-      // Criteria only count while the panel is open: closing it is how you go
-      // back to the whole list, and a filter still applying after it has been
-      // put away would be a run doing something the screen does not show.
-      const { run_id } = await startPhiladelphiaScrape(
-        livePreview,
-        advanced ? filters : {},
-      );
-      setRun(await getRunStatus("philadelphia", run_id));
-      stopPolling();
-      pollRef.current = setInterval(async () => {
-        try {
-          const latest = await getRunStatus("philadelphia", run_id);
-          setRun(latest);
-          if (isTerminalStatus(latest.status)) stopPolling();
-        } catch {
-          // transient poll failure — keep trying
-        }
-      }, POLL_INTERVAL_MS);
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setStarting(false);
-    }
-  };
+  // Criteria only count while the panel is open: closing it is how you go back
+  // to the whole list, and a filter still applying after it has been put away
+  // would be a run doing something the screen does not show.
+  const handleStart = (livePreview = false) =>
+    launch(() => startPhiladelphiaScrape(livePreview, advanced ? filters : {}));
 
   // Paused is still running as far as this panel is concerned: the form stays
   // locked and Start stays disabled until the run really ends.
@@ -106,8 +73,9 @@ export default function PhiladelphiaPanel() {
           <ScraperControls
             run={run}
             onError={setError}
-            onStatusChange={(status) => setRun((prev) => (prev ? { ...prev, status } : prev))}
+            onStatusChange={applyStatus}
           />
+          <RefreshButton run={run} hasSession={hasSession} onReset={reset} />
           <StartButton
             onClick={() => handleStart()}
             disabled={starting || isRunning}
@@ -130,6 +98,8 @@ export default function PhiladelphiaPanel() {
       )}
 
       {run && <RunStatusPanel run={run} />}
+      {/* The run's log, streaming into the panel that launched it. */}
+      <SessionActivity portal="philadelphia" />
       {run && <PhiladelphiaResults bids={run.bids} />}
     </div>
   );

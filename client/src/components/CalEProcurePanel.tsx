@@ -1,13 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
-
 import { Card, ErrorBanner, LaunchBar, RunBadge, StartButton } from "@/components/ui";
 import StopButton from "@/components/StopButton";
+import RefreshButton from "@/components/RefreshButton";
 import ScraperControls from "@/components/ScraperControls";
-import { getRunStatus, isRunActive, startCalEProcureScrape, type RunStatus } from "@/lib/api";
-
-const POLL_INTERVAL_MS = 3000;
+import SessionActivity from "@/components/SessionActivity";
+import { usePortalSession } from "@/lib/usePortalSession";
+import { isRunActive, startCalEProcureScrape } from "@/lib/api";
 
 /**
  * Cal eProcure is being built one step at a time. The only functionality so far
@@ -15,42 +14,12 @@ const POLL_INTERVAL_MS = 3000;
  * the session, and this panel reports the outcome. Search + export come next.
  */
 export default function CalEProcurePanel() {
-  const [run, setRun] = useState<RunStatus | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [starting, setStarting] = useState(false);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  const stopPolling = useCallback(() => {
-    if (pollRef.current) {
-      clearInterval(pollRef.current);
-      pollRef.current = null;
-    }
-  }, []);
-
-  useEffect(() => stopPolling, [stopPolling]);
-
-  const handleStart = async () => {
-    setError(null);
-    setStarting(true);
-    try {
-      const { run_id } = await startCalEProcureScrape();
-      setRun(await getRunStatus("caleprocure", run_id));
-      stopPolling();
-      pollRef.current = setInterval(async () => {
-        try {
-          const latest = await getRunStatus("caleprocure", run_id);
-          setRun(latest);
-          if (latest.status === "completed" || latest.status === "failed" || latest.status === "stopped") stopPolling();
-        } catch {
-          // transient poll failure — keep trying
-        }
-      }, POLL_INTERVAL_MS);
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setStarting(false);
-    }
-  };
+  // The run, its log tail, its error banner and the launching flag all live in
+  // the global session registry — not here. That is what lets this panel be
+  // unmounted and remounted (or simply hidden) without the scrape noticing.
+  const { run, error, starting, setError, launch, applyStatus, hasSession, reset } =
+    usePortalSession("caleprocure");
+  const handleStart = () => launch(() => startCalEProcureScrape());
 
   // Paused is still running as far as this panel is concerned: the form stays
   // locked and Start stays disabled until the run really ends.
@@ -78,14 +47,16 @@ export default function CalEProcurePanel() {
           <ScraperControls
             run={run}
             onError={setError}
-            onStatusChange={(status) => setRun((prev) => (prev ? { ...prev, status } : prev))}
+            onStatusChange={applyStatus}
           />
+          <RefreshButton run={run} hasSession={hasSession} onReset={reset} />
           <StartButton onClick={handleStart} disabled={starting || isRunning} running={isRunning} starting={starting}>
             Test login
           </StartButton>
         </div>
       </LaunchBar>
 
+      <SessionActivity portal="caleprocure" />
       {run && (
         <section className="overflow-hidden rounded-xl border border-ink-200 bg-white shadow-sm">
           <header className="flex flex-wrap items-center justify-between gap-3 border-b border-ink-100 px-5 py-3.5">

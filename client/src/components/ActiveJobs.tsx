@@ -1,16 +1,16 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import {
   getJobLogs,
-  getJobs,
   runDownloadUrl,
   stopScrape,
   type Job,
-  type JobCapacity,
   type JobLogLine,
+  type RunStatus,
 } from "@/lib/api";
+import { useJobsFeed, useSlots } from "@/lib/sessions";
 import { LinkButton } from "@/components/ui";
 import { PORTALS } from "@/lib/portals";
 
@@ -32,43 +32,29 @@ const POLL_INTERVAL_MS = 3000;
  * bar keeps only what it alone can offer — a cross-portal view, and Stop.
  */
 export default function ActiveJobs() {
-  const [jobs, setJobs] = useState<Job[]>([]);
+  // The jobs list comes from the session engine, which polls `GET /runs` once
+  // for the whole console. This bar used to run that poll a second time on its
+  // own interval; now it reads the same snapshot the panels do, so the footer
+  // and the portal views can never disagree about what is running.
+  const { jobs, capacity } = useJobsFeed();
   // Jobs stopped from this bar, held here after the server drops them from the
   // active list. Without this a stopped run vanishes the instant it is stopped,
   // and the results it kept are only reachable by navigating to the history
   // tab — which is the trip this whole feature exists to remove.
   const [stopped, setStopped] = useState<Job[]>([]);
-  const [capacity, setCapacity] = useState<JobCapacity | null>(null);
   const [expanded, setExpanded] = useState(false);
   const [openLog, setOpenLog] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const poll = useCallback(async () => {
-    try {
-      const { jobs: fetched, capacity: cap } = await getJobs(true);
-      setJobs(fetched);
-      setCapacity(cap);
-      setError(null);
-      // A stopped run keeps working for a moment: it finishes the page it was
-      // on, writes its rows and packages them. Refresh the held rows from the
-      // full list until `partial_results` lands, so the Download button appears
-      // by itself rather than on the next page load.
-      setStopped((held) => {
-        if (held.length === 0) return held;
-        const byId = new Map(fetched.map((j) => [j.run_id, j]));
-        return held.map((j) => byId.get(j.run_id) ?? j);
-      });
-    } catch {
-      // The API being briefly unreachable is not worth shouting about — the
-      // next tick will either recover or the user has bigger problems.
-    }
-  }, []);
-
-  useEffect(() => {
-    poll();
-    const timer = setInterval(poll, POLL_INTERVAL_MS);
-    return () => clearInterval(timer);
-  }, [poll]);
+  // A stopped run keeps working for a moment after it leaves the active list:
+  // it finishes the page it was on, writes its rows and packages them. The
+  // session registry is what sees that happen — the engine keeps polling a run
+  // for a short grace period past its terminal status — so a held row reads its
+  // freshest state from there and the Download button appears by itself rather
+  // than on the next page load.
+  const slots = useSlots();
+  const liveRun = (runId: string) =>
+    Object.values(slots).find((sl) => sl?.runId === runId)?.run ?? null;
 
   // Nothing running and nothing waiting to be collected: the bar stays out of
   // the way entirely.
@@ -91,7 +77,6 @@ export default function ActiveJobs() {
           ? held
           : [...held, { ...job, status: "stopped" as const }]
       );
-      poll();
     } catch (e) {
       setError((e as Error).message);
     }
@@ -148,6 +133,7 @@ export default function ActiveJobs() {
               <StoppedRow
                 key={job.run_id}
                 job={job}
+                run={liveRun(job.run_id)}
                 onDismiss={() => dismissStopped(job.run_id)}
               />
             ))}
@@ -275,10 +261,22 @@ function LogTail({ runId }: { runId: string }) {
  *  `partial_results` arrives the Download button replaces that line by itself,
  *  with no reload.
  */
-function StoppedRow({ job, onDismiss }: { job: Job; onDismiss: () => void }) {
+function StoppedRow({
+  job,
+  run,
+  onDismiss,
+}: {
+  /** The row as it stood when Stop was pressed. */
+  job: Job;
+  /** The same run as the engine last saw it, if it is still watching. */
+  run: RunStatus | null;
+  onDismiss: () => void;
+}) {
   const portal = PORTALS.find((p) => p.key === job.scraper);
-  const ready = Boolean(job.partial_results);
-  const count = job.partial_record_count;
+  // The engine's copy first: it is the one that gains `partial_results` when
+  // the flush finishes, seconds after the row stopped being "active".
+  const ready = Boolean(run?.partial_results ?? job.partial_results);
+  const count = run?.partial_record_count ?? job.partial_record_count;
 
   return (
     <li className="rounded-lg border border-amber-200 bg-amber-50/60 px-3 py-2">

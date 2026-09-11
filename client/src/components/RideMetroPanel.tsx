@@ -1,41 +1,31 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 
 import RideMetroResults from "@/components/RideMetroResults";
 import RunStatusPanel from "@/components/RunStatus";
 import { Card, ErrorBanner, LaunchBar, SegmentedControl, StartButton } from "@/components/ui";
 import LiveMonitor from "@/components/LiveMonitor";
 import StopButton from "@/components/StopButton";
+import RefreshButton from "@/components/RefreshButton";
 import ScraperControls from "@/components/ScraperControls";
+import SessionActivity from "@/components/SessionActivity";
+import { usePortalSession } from "@/lib/usePortalSession";
 import {
   getRideMetroAccounts,
-  getRunStatus,
   isRunActive,
   startRideMetroScrape,
   type RideMetroAccount,
-  type RunStatus,
 } from "@/lib/api";
-
-const POLL_INTERVAL_MS = 3000;
 
 export default function RideMetroPanel() {
   const [accounts, setAccounts] = useState<RideMetroAccount[]>([]);
   const [account, setAccount] = useState<string>("");
-  const [run, setRun] = useState<RunStatus | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [starting, setStarting] = useState(false);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  const stopPolling = useCallback(() => {
-    if (pollRef.current) {
-      clearInterval(pollRef.current);
-      pollRef.current = null;
-    }
-  }, []);
-
-  useEffect(() => stopPolling, [stopPolling]);
-
+  // The run, its log tail, its error banner and the launching flag all live in
+  // the global session registry — not here. That is what lets this panel be
+  // unmounted and remounted (or simply hidden) without the scrape noticing.
+  const { run, error, starting, setError, launch, applyStatus, hasSession, reset } =
+    usePortalSession("ridemetro");
   // The accounts and which is configured are the server's to say — the picker
   // is built from what it reports rather than from a list hardcoded here, so an
   // account added to .env shows up without a frontend change.
@@ -63,29 +53,8 @@ export default function RideMetroPanel() {
   const isRunning = isRunActive(run);
   const blocked = accounts.length > 0 && !selected?.configured;
 
-  const handleStart = async (livePreview = false) => {
-    setError(null);
-    setStarting(true);
-    try {
-      const { run_id } = await startRideMetroScrape(account, livePreview);
-      const status = await getRunStatus("ridemetro", run_id);
-      setRun(status);
-      stopPolling();
-      pollRef.current = setInterval(async () => {
-        try {
-          const latest = await getRunStatus("ridemetro", run_id);
-          setRun(latest);
-          if (latest.status === "completed" || latest.status === "failed" || latest.status === "stopped") stopPolling();
-        } catch {
-          // transient poll failure — keep trying
-        }
-      }, POLL_INTERVAL_MS);
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setStarting(false);
-    }
-  };
+  const handleStart = (livePreview = false) =>
+    launch(() => startRideMetroScrape(account, livePreview));
 
   return (
     <div className="space-y-6">
@@ -130,8 +99,9 @@ export default function RideMetroPanel() {
           <ScraperControls
             run={run}
             onError={setError}
-            onStatusChange={(status) => setRun((prev) => (prev ? { ...prev, status } : prev))}
+            onStatusChange={applyStatus}
           />
+          <RefreshButton run={run} hasSession={hasSession} onReset={reset} />
           <StartButton
             onClick={() => handleStart()}
             disabled={starting || isRunning || blocked || !account}
@@ -144,6 +114,8 @@ export default function RideMetroPanel() {
       </LaunchBar>
 
       {run && <RunStatusPanel run={run} />}
+      {/* The run's log, streaming into the panel that launched it. */}
+      <SessionActivity portal="ridemetro" />
       {run && <RideMetroResults bids={run.bids} agencies={run.agencies} />}
     </div>
   );

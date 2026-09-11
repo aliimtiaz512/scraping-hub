@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useState } from "react";
 
 import NaicsFileImport from "@/components/NaicsFileImport";
 import NaicsSelect from "@/components/NaicsSelect";
@@ -9,10 +9,12 @@ import SamResults from "@/components/SamResults";
 import { Card, ErrorBanner, LaunchBar, StartButton } from "@/components/ui";
 import LiveMonitor from "@/components/LiveMonitor";
 import StopButton from "@/components/StopButton";
+import RefreshButton from "@/components/RefreshButton";
 import ScraperControls from "@/components/ScraperControls";
-import { getRunStatus, isRunActive, startSamScrape, type RunStatus } from "@/lib/api";
+import SessionActivity from "@/components/SessionActivity";
+import { usePortalSession } from "@/lib/usePortalSession";
+import { isRunActive, startSamScrape } from "@/lib/api";
 
-const POLL_INTERVAL_MS = 3000;
 const inputClass =
   "w-full rounded-lg border border-ink-200 bg-white px-3 py-2 text-sm text-ink-900 shadow-sm transition placeholder:text-ink-400 focus:border-gold-400 focus:outline-none focus:ring-2 focus:ring-gold-400/25 disabled:cursor-not-allowed disabled:bg-ink-50 disabled:text-ink-400";
 
@@ -22,47 +24,21 @@ export default function SamPanel() {
   const [naicsCodes, setNaicsCodes] = useState<string[]>([]);
   const [awardNotice, setAwardNotice] = useState(false);
 
-  const [run, setRun] = useState<RunStatus | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [starting, setStarting] = useState(false);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const runIdRef = useRef<string | null>(null);
+  // The run, its log tail, its error banner and the launching flag all live in
+  // the global session registry — not here. That is what lets this panel be
+  // unmounted and remounted (or simply hidden) without the scrape noticing.
+  const { run, error, starting, setError, launch, applyStatus, hasSession, reset } =
+    usePortalSession("sam");
 
-  const stopTimers = useCallback(() => {
-    if (pollRef.current) clearInterval(pollRef.current);
-    pollRef.current = null;
-  }, []);
-
-  useEffect(() => stopTimers, [stopTimers]);
-
-  const handleStart = async () => {
-    setError(null);
-    setStarting(true);
-    try {
-      const { run_id } = await startSamScrape({
+  const handleStart = () =>
+    launch(() =>
+      startSamScrape({
         dateFrom: dateFrom.trim(),
         dateTo: dateTo.trim(),
         naicsCodes,
         awardNotice,
-      });
-      runIdRef.current = run_id;
-      setRun(await getRunStatus("sam", run_id));
-      stopTimers();
-      pollRef.current = setInterval(async () => {
-        try {
-          const latest = await getRunStatus("sam", run_id);
-          setRun(latest);
-          if (latest.status === "completed" || latest.status === "failed") stopTimers();
-        } catch {
-          // transient — keep trying
-        }
-      }, POLL_INTERVAL_MS);
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setStarting(false);
-    }
-  };
+      }),
+    );
 
   // Paused is still running as far as this panel is concerned: the form stays
   // locked and Start stays disabled until the run really ends.
@@ -110,8 +86,9 @@ export default function SamPanel() {
           <ScraperControls
             run={run}
             onError={setError}
-            onStatusChange={(status) => setRun((prev) => (prev ? { ...prev, status } : prev))}
+            onStatusChange={applyStatus}
           />
+          <RefreshButton run={run} hasSession={hasSession} onReset={reset} />
           <StartButton onClick={() => handleStart()} disabled={starting || isRunning} running={isRunning} starting={starting}>
             Start scrape
           </StartButton>
@@ -119,6 +96,8 @@ export default function SamPanel() {
       </LaunchBar>
 
       {run && <RunStatusPanel run={run} />}
+      {/* The run's log, streaming into the panel that launched it. */}
+      <SessionActivity portal="sam" />
 
       {run && <SamResults bids={run.bids} />}
     </div>

@@ -9,7 +9,10 @@ import RunStatusPanel, { stepLabel } from "@/components/RunStatus";
 import { Button, ErrorBanner, LaunchBar, StartButton } from "@/components/ui";
 import LiveMonitor from "@/components/LiveMonitor";
 import StopButton from "@/components/StopButton";
+import RefreshButton from "@/components/RefreshButton";
 import ScraperControls from "@/components/ScraperControls";
+import SessionActivity from "@/components/SessionActivity";
+import { usePortalSession } from "@/lib/usePortalSession";
 import {
   getBidnetFilters,
   getBidnetNiches,
@@ -34,9 +37,11 @@ export default function BidnetPanel() {
   const [niches, setNiches] = useState<BidnetNiche[]>([]);
   const [selectedNiche, setSelectedNiche] = useState("");
   const [filters, setFilters] = useState<Filters>({});
-  const [run, setRun] = useState<RunStatus | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [starting, setStarting] = useState(false);
+  // The scrape's run, log tail, error banner and launching flag all live in the
+  // global session registry — not here. That is what lets this panel be
+  // unmounted and remounted (or simply hidden) without the scrape noticing.
+  const { run, error, starting, setError, launch, applyStatus, hasSession, reset } =
+    usePortalSession("bidnet");
   // Off by default: a run opens no window. On, this run alone gets a visible
   // browser — it does not change how the scrape behaves, only whether it can be
   // watched. Deliberately not remembered between runs: leaving it on by
@@ -46,7 +51,6 @@ export default function BidnetPanel() {
   // produces no bids and nothing to download, so it must not land in `run` and
   // be rendered as a (broken) scrape result.
   const [refreshRun, setRefreshRun] = useState<RunStatus | null>(null);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const refreshPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const loadCatalog = useCallback(
@@ -72,20 +76,23 @@ export default function BidnetPanel() {
   }, [loadCatalog]);
 
   const stopPolling = useCallback(() => {
-    for (const ref of [pollRef, refreshPollRef]) {
-      if (ref.current) {
-        clearInterval(ref.current);
-        ref.current = null;
-      }
+    if (refreshPollRef.current) {
+      clearInterval(refreshPollRef.current);
+      refreshPollRef.current = null;
     }
   }, []);
 
   useEffect(() => stopPolling, [stopPolling]);
 
-  /** Poll one run to completion into `setState`, then run `onFinish`. */
+  /** Poll one run to completion into `setState`, then run `onFinish`.
+   *
+   *  Only the option-discovery run uses this. A scrape is watched by the global
+   *  session engine instead, which is why a BidNet batch keeps reporting while
+   *  you are looking at another portal — but the option refresh produces no
+   *  bids, holds no slot and is over in a moment, so it stays local. */
   const poll = useCallback(
     (
-      ref: typeof pollRef,
+      ref: typeof refreshPollRef,
       runId: string,
       setState: (run: RunStatus) => void,
       onFinish?: () => void,
@@ -108,57 +115,26 @@ export default function BidnetPanel() {
     [],
   );
 
-  const handleStart = async (livePreview = false) => {
-    setError(null);
-    setStarting(true);
-    try {
-      const { run_id } = await startBidnetScrape(
-        selectedNiche, filters, livePreview || showBrowser,
-      );
-      setRun(await getRunStatus("bidnet", run_id));
-      poll(pollRef, run_id, setRun);
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setStarting(false);
-    }
-  };
+  const handleStart = (livePreview = false) =>
+    launch(() => startBidnetScrape(selectedNiche, filters, livePreview || showBrowser));
 
   /** Mode A — every niche in one execution, one after another. The same filters
    *  apply to all of them, and the execution downloads as one ZIP of per-niche
    *  spreadsheets — so this is a control that ignores the niche dropdown. */
-  const handleStartAll = async () => {
-    setError(null);
-    setStarting(true);
-    try {
-      // The toggle applies here too: a batch runs its niches one after another,
-      // so it is one window at a time, not one per niche.
+  const handleStartAll = () =>
+    // The toggle applies here too: a batch runs its niches one after another,
+    // so it is one window at a time, not one per niche. A batch is one run id
+    // like any other, so it occupies the slot and the engine watches it.
+    launch(async () => {
       const { batch_id } = await startBidnetBatch(undefined, filters, showBrowser);
-      setRun(await getRunStatus("bidnet", batch_id));
-      poll(pollRef, batch_id, setRun);
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setStarting(false);
-    }
-  };
+      return { run_id: batch_id };
+    });
 
   /** Mode B — every member agency bid the sidebar allows, in one sheet. No
    *  niche, no keywords: the filters are the entire input, which is why this
    *  button is enabled by them alone. */
-  const handleStartMemberAgencies = async () => {
-    setError(null);
-    setStarting(true);
-    try {
-      const { run_id } = await startBidnetMemberAgencySweep(filters, showBrowser);
-      setRun(await getRunStatus("bidnet", run_id));
-      poll(pollRef, run_id, setRun);
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setStarting(false);
-    }
-  };
+  const handleStartMemberAgencies = () =>
+    launch(() => startBidnetMemberAgencySweep(filters, showBrowser));
 
   /** Harvest BidNet's full option lists, then reload the catalog with them. */
   const handleRefreshOptions = async () => {
@@ -235,8 +211,9 @@ export default function BidnetPanel() {
           <ScraperControls
             run={run}
             onError={setError}
-            onStatusChange={(status) => setRun((prev) => (prev ? { ...prev, status } : prev))}
+            onStatusChange={applyStatus}
           />
+          <RefreshButton run={run} hasSession={hasSession} onReset={reset} />
           <Button
             variant="secondary"
             size="lg"
@@ -297,6 +274,8 @@ export default function BidnetPanel() {
       {run?.is_batch && <BatchProgress run={run} />}
       {run?.member_agency_sweep && <AgencyBreakdown run={run} />}
       {run && <RunStatusPanel run={run} />}
+      {/* The run's log, streaming into the panel that launched it. */}
+      <SessionActivity portal="bidnet" />
       {run && !run.is_batch && <BidnetResults bids={run.bids} />}
     </div>
   );

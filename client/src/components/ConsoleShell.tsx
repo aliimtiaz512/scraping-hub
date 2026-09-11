@@ -4,12 +4,15 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 
 import ActiveJobs from "@/components/ActiveJobs";
+import PortalPanelHost from "@/components/PortalPanelHost";
+import SessionEngine from "@/components/SessionEngine";
 
 import Logo from "@/components/Logo";
 import PortalIcon from "@/components/PortalIcon";
 import { LinkButton } from "@/components/ui";
 import { apiDocsUrl, type Portal } from "@/lib/api";
-import { PORTALS } from "@/lib/portals";
+import { isPortal, PORTALS } from "@/lib/portals";
+import { useActivePortals } from "@/lib/sessions";
 
 const SECTIONS = [
   { key: "", label: "Console" },
@@ -22,12 +25,22 @@ const SECTIONS = [
  *
  * Both nav dimensions live in the URL (`/console/{portal}/{section}`), so the
  * shell derives its active state from the pathname rather than holding any.
+ *
+ * It also owns the two things that must outlive a page. `SessionEngine` watches
+ * every run on every portal for as long as the console is open, and
+ * `PortalPanelHost` keeps the portal panels themselves mounted across
+ * navigation. Both live here because a layout survives the routes under it —
+ * which is exactly what a scrape in flight needs and a page cannot give it.
  */
 export default function ConsoleShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const segments = pathname.split("/").filter(Boolean); // ["console", portal, section?]
   const portal = (segments[1] ?? "") as Portal;
   const section = segments[2] ?? "";
+  // Portals with a run in flight, so the rail can say so while you are looking
+  // at another one — the point of the whole exercise is that a run you navigated
+  // away from is still going.
+  const live = useActivePortals();
 
   const href = (p: string, s: string) => `/console/${p}${s ? `/${s}` : ""}`;
 
@@ -82,6 +95,9 @@ export default function ConsoleShell({ children }: { children: React.ReactNode }
         </div>
       </header>
 
+      {/* Watches every run on every portal, independent of what is mounted. */}
+      <SessionEngine />
+
       <div className="flex min-h-0 flex-1">
         {/* Source rail */}
         <aside className="sticky top-16 hidden h-[calc(100vh-4rem)] w-64 shrink-0 flex-col border-r border-ink-200/70 bg-white/60 lg:flex">
@@ -115,6 +131,13 @@ export default function ConsoleShell({ children }: { children: React.ReactNode }
                         </span>
                         <span className="block truncate text-xs text-ink-500">{p.tagline}</span>
                       </span>
+                      {live.has(p.key) && (
+                        <span className="relative flex h-2 w-2 shrink-0" title="Scraping now">
+                          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
+                          <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
+                          <span className="sr-only">Scraping now</span>
+                        </span>
+                      )}
                     </Link>
                   </li>
                 );
@@ -138,7 +161,15 @@ export default function ConsoleShell({ children }: { children: React.ReactNode }
                       isActive ? "border-ink-900 bg-ink-900 font-medium text-white" : "border-ink-200 bg-white text-ink-600"
                     }`}
                   >
-                    <span className={`h-1.5 w-1.5 rounded-full ${isActive ? "bg-gold-400" : p.accent.dot}`} />
+                    <span
+                      className={`h-1.5 w-1.5 rounded-full ${
+                        live.has(p.key)
+                          ? "bg-emerald-500"
+                          : isActive
+                            ? "bg-gold-400"
+                            : p.accent.dot
+                      }`}
+                    />
                     {p.label}
                   </Link>
                 );
@@ -146,7 +177,15 @@ export default function ConsoleShell({ children }: { children: React.ReactNode }
             </nav>
           </div>
 
-          <main className="mx-auto w-full max-w-5xl flex-1 px-5 py-8 sm:px-8">{children}</main>
+          <main className="mx-auto w-full max-w-5xl flex-1 px-5 py-8 sm:px-8">
+            {/* The portal panels are rendered here, by the layout, rather than
+                by `[portal]/page.tsx` — that page renders nothing. A page is
+                torn down on navigation; this is not, which is what lets a
+                running scrape keep its view. The section pages (History,
+                Downloads) still come through as children. */}
+            <PortalPanelHost portal={isPortal(portal) ? portal : null} visible={section === ""} />
+            {children}
+          </main>
 
           {/* Every in-flight scrape, on every portal. Lives in the shell, not
               on a page, so moving between portals never loses sight of a run —
