@@ -322,15 +322,15 @@ Run the API:
 
 ```bash
 cd server
-.venv/bin/uvicorn main:app --reload --port 9000
+.venv/bin/uvicorn main:app --reload --port 9001
 ```
 
-`--port 9000` is not optional. Without it uvicorn takes its own default of 8000,
+`--port 9001` is not optional. Without it uvicorn takes its own default of 8000,
 and that failure is quiet in both directions: every panel in the console reports
-"Failed to fetch" (the client is built against `NEXT_PUBLIC_API_URL=http://localhost:9000`),
+"Failed to fetch" (the client is built against `NEXT_PUBLIC_API_URL=http://localhost:9001`),
 and every download link in a completion email points at `PUBLIC_BASE_URL`, which
 nothing is then serving. If the console cannot reach the API, check the port
-first: `curl -s localhost:9000/`.
+first: `curl -s localhost:9001/`.
 
 Credentials in `server/.env`:
 
@@ -417,7 +417,7 @@ One-time setup:
 ```bash
 cd client
 npm install
-cp .env.example .env   # then set NEXT_PUBLIC_API_URL=http://localhost:9000
+cp .env.example .env   # then set NEXT_PUBLIC_API_URL=http://localhost:9001
 ```
 
 Run the console:
@@ -428,7 +428,7 @@ npm run dev
 ```
 
 Open http://localhost:4000 and pick a portal from the console. The API must
-already be running on 9000, or every panel loads empty.
+already be running on 9001, or every panel loads empty.
 
 ## Notes
 
@@ -443,7 +443,7 @@ already be running on 9000, or every panel loads empty.
 - Results live only as archives under `ARCHIVE_DIR` — nothing is written to
   `data/documents` for new runs. Runs made before this change are still
   downloadable from their old location.
-- The API listens on `9000` and the console on `4000` (`npm run dev` passes
+- The API listens on `9001` and the console on `4000` (`npm run dev` passes
   `-p 4000`; the API port is the `--port` flag above). CORS allows any
   `localhost` / `127.0.0.1` port, so Next auto-incrementing past `4000` when it
   is taken still reaches the API.
