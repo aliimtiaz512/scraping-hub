@@ -823,6 +823,7 @@ export interface StartSamScrapeOptions {
   dateTo?: string;
   naicsCodes?: string[];
   awardNotice?: boolean;
+  sourceSought?: boolean;
   livePreview?: boolean;
 }
 
@@ -831,6 +832,7 @@ export function startSamScrape({
   dateTo = "",
   naicsCodes = [],
   awardNotice = false,
+  sourceSought = false,
   livePreview = false,
 }: StartSamScrapeOptions): Promise<{ run_id: string; search: string; folder: string }> {
   return request(`/sam/scrape${livePreviewQuery(livePreview)}`, {
@@ -840,6 +842,7 @@ export function startSamScrape({
       date_to: dateTo || null,
       naics_codes: naicsCodes,
       award_notice: awardNotice,
+      source_sought: sourceSought,
     }),
   });
 }

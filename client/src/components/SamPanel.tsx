@@ -23,6 +23,7 @@ export default function SamPanel() {
   const [dateTo, setDateTo] = useState("");
   const [naicsCodes, setNaicsCodes] = useState<string[]>([]);
   const [awardNotice, setAwardNotice] = useState(false);
+  const [sourceSought, setSourceSought] = useState(false);
 
   // The run, its log tail, its error banner and the launching flag all live in
   // the global session registry — not here. That is what lets this panel be
@@ -37,6 +38,7 @@ export default function SamPanel() {
         dateTo: dateTo.trim(),
         naicsCodes,
         awardNotice,
+        sourceSought,
       }),
     );
 
@@ -75,6 +77,10 @@ export default function SamPanel() {
           <label className="flex items-center gap-2 text-sm text-ink-700">
             <input type="checkbox" checked={awardNotice} disabled={isRunning} onChange={(e) => setAwardNotice(e.target.checked)} className="h-4 w-4 rounded border-ink-300 text-indigo-600 focus:ring-indigo-400" />
             Include Award Notices
+          </label>
+          <label className="flex items-center gap-2 text-sm text-ink-700">
+            <input type="checkbox" checked={sourceSought} disabled={isRunning} onChange={(e) => setSourceSought(e.target.checked)} className="h-4 w-4 rounded border-ink-300 text-indigo-600 focus:ring-indigo-400" />
+            Include Source Sought
           </label>
         </div>
       </Card>

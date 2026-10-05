@@ -69,6 +69,7 @@ try:
         click_next_page as _click_next_page,
         apply_ui_date_filters as _apply_ui_date_filters,
         apply_naics_filter as _apply_naics_filter,
+        apply_source_sought_filter as _apply_source_sought_filter,
         is_past_date_window as _is_past_date_window,
     )
     from .page_parser import (
@@ -108,6 +109,7 @@ except ImportError:
         click_next_page as _click_next_page,
         apply_ui_date_filters as _apply_ui_date_filters,
         apply_naics_filter as _apply_naics_filter,
+        apply_source_sought_filter as _apply_source_sought_filter,
         is_past_date_window as _is_past_date_window,
     )
     from page_parser import (
@@ -166,12 +168,14 @@ class SAMGovScraper:
         naics_codes: list[str] | None = None,
         award_notice: bool = False,
         run_id: str | None = None,
+        source_sought: bool = False,
     ):
         # Both are read by _load_config(), so both are set before it runs.
         # `run_id` used to be left as a bare local in this signature and read by
         # name inside _load_config, where it does not exist — every construction
         # raised NameError, so no SAM run could start at all.
         self.award_notice = award_notice
+        self.source_sought = source_sought
         self.run_id = run_id
         self._load_config()
 
@@ -373,6 +377,15 @@ class SAMGovScraper:
             return
         logger.info("[SEARCH EXECUTED]: Filters Applied -> NAICS: %s", self.naics_codes)
         self.naics_filter_failures = _apply_naics_filter(self.driver, self.naics_codes) or []
+
+    # ------------------------------------------------------------------
+    # Source Sought filter
+    # ------------------------------------------------------------------
+    def _apply_source_sought_filter(self):
+        """Delegates to navigation.apply_source_sought_filter."""
+        if self.source_sought:
+            logger.info("[SEARCH EXECUTED]: Filters Applied -> Source Sought")
+            _apply_source_sought_filter(self.driver, self.source_sought)
 
     # ------------------------------------------------------------------
     # Timing helpers
@@ -874,6 +887,9 @@ class SAMGovScraper:
 
                 # ── Apply NAICS code filter ────────────────────────────────
                 self._apply_naics_filter()
+
+                # ── Apply Source Sought filter ─────────────────────────────
+                self._apply_source_sought_filter()
 
             else:
                 # ── Page 2+: click the Next button to stay in-session ────

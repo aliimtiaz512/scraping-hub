@@ -444,6 +444,95 @@ def apply_naics_filter(driver, naics_codes: list[str]) -> list[str]:
     return failed
 
 
+# ── Source Sought filter ───────────────────────────────────────────────────
+
+def apply_source_sought_filter(driver, source_sought: bool) -> bool:
+    """
+    Apply the Source Sought filter via the UI.
+    """
+    if not source_sought:
+        return True
+    try:
+        # Expand "Notice Type" accordion
+        accordion_btn = None
+        btns = driver.find_elements(By.CSS_SELECTOR, "button.usa-accordion__button")
+        for btn in btns:
+            if "notice type" in btn.text.lower():
+                accordion_btn = btn
+                break
+        
+        if accordion_btn:
+            if accordion_btn.get_attribute("aria-expanded") != "true":
+                driver.execute_script("arguments[0].scrollIntoView({block:'center'});", accordion_btn)
+                time.sleep(0.5)
+                accordion_btn.click()
+                time.sleep(1)
+                
+        # Enter each Notice Type
+        notice_types = [
+            "Sources Sought",
+            
+        ]
+        
+        for nt in notice_types:
+            try:
+                el = WebDriverWait(driver, 10).until(
+                    EC.presence_of_element_located((By.ID, "type-of-notice-filter"))
+                )
+                driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
+                time.sleep(0.5)
+                el.click()
+                time.sleep(0.3)
+                
+                # Clear existing text cross-platform
+                el.send_keys(Keys.COMMAND + "a")
+                el.send_keys(Keys.BACKSPACE)
+                el.send_keys(Keys.CONTROL + "a")
+                el.send_keys(Keys.BACKSPACE)
+                el.clear()
+                time.sleep(0.2)
+                
+                el.send_keys(nt)
+                time.sleep(2)
+                
+                options = []
+                for locator in (
+                    (By.CSS_SELECTOR, "li.sds-autocomplete__item"),
+                ):
+                    try:
+                        options = [o for o in driver.find_elements(*locator) if o.is_displayed()]
+                    except Exception:
+                        options = []
+                    if options:
+                        break
+                
+                match = None
+                for o in options:
+                    text = (o.text or "").strip().lower()
+                    if text == nt.lower():
+                        match = o
+                        break
+                        
+                if match:
+                    try:
+                        match.click()
+                    except Exception:
+                        driver.execute_script("arguments[0].click();", match)
+                    logger.info(f"Notice Type: selected {nt}")
+                    time.sleep(1)
+                else:
+                    logger.error(f"Could not find matching option for Notice Type: {nt}")
+                    
+            except Exception as exc:
+                logger.error(f"Failed to apply Notice Type {nt}: {exc}")
+                
+        logger.info("Finished applying Notice Type filters")
+        return True
+    except Exception as exc:
+        logger.error(f"Failed to apply Source Sought filter: {exc}")
+        return False
+
+
 # ── Date-window boundary detector ─────────────────────────────────────────
 
 def is_past_date_window(
