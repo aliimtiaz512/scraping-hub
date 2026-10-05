@@ -20,6 +20,7 @@ class ScrapeRequest(BaseModel):
     date_to: str | None = None              # YYYY-MM-DD (end of range)
     naics_codes: list[str] | None = None    # 6-digit NAICS codes to filter
     award_notice: bool = False              # include Award Notice type
+    source_sought: bool = False             # include Source Sought explicitly
 
 
 class EvaluateRequest(BaseModel):
@@ -41,6 +42,7 @@ def start_scrape(request: ScrapeRequest, live_preview: bool = False) -> dict:
             f"to={date_to}" if date_to else "",
             f"naics={'/'.join(naics_codes)}" if naics_codes else "",
             "award_notice" if request.award_notice else "",
+            "source_sought" if request.source_sought else "",
         ) if part
     ) or "all active solicitations"
 
@@ -57,6 +59,7 @@ def start_scrape(request: ScrapeRequest, live_preview: bool = False) -> dict:
             "date_to": date_to,
             "naics_codes": naics_codes,
             "award_notice": request.award_notice,
+            "source_sought": request.source_sought,
             "excel_exported": False,
             "live_preview": live_preview,
         },
@@ -68,6 +71,7 @@ def start_scrape(request: ScrapeRequest, live_preview: bool = False) -> dict:
         naics_codes,
         request.award_notice,
         not live_preview,  # headless unless this is a live-preview run
+        request.source_sought,
     )
     return {"run_id": run["run_id"], "search": search, "folder": run["folder"]}
 

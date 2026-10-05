@@ -65,6 +65,7 @@ def execute_run(
     naics_codes: list[str] | None = None,
     award_notice: bool = False,
     headless: bool = True,
+    source_sought: bool = False,
 ) -> None:
     seed_defaults()  # ensure the evaluator has its kill-word list on a fresh DB
     run_manager.update_run(run_id, status="running")
@@ -170,6 +171,7 @@ def execute_run(
             # two concurrent SAM runs can otherwise delete each other's while
             # extracting text from the same notice.
             run_id=run_id,
+            source_sought=source_sought,
         )
         scraper._stop_event = stop_event
         scraper.skip_csv = True            # DB-only; no CSV files
