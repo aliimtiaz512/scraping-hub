@@ -31,15 +31,23 @@ export default function Landing() {
   const [region, setRegion] = useState<"US" | "PK">("US");
   const activePortals = PORTALS.filter((p) => p.region === region);
 
+  const activeDefaultPortal =
+    activePortals.length > 0 ? activePortals[0].key : DEFAULT_PORTAL;
+  const consoleLink = `/console/${activeDefaultPortal}`;
+
   return (
     <div className="flex min-h-screen flex-col">
-      <LandingNav region={region} setRegion={setRegion} />
+      <LandingNav region={region} setRegion={setRegion} consoleLink={consoleLink} />
 
       <main className="flex-1">
-        <Hero portalCount={activePortals.length} region={region} />
+        <Hero
+          portalCount={activePortals.length}
+          region={region}
+          consoleLink={consoleLink}
+        />
         <Sources portals={activePortals} region={region} />
         <HowItWorks />
-        <ClosingCta />
+        <ClosingCta consoleLink={consoleLink} />
       </main>
 
       <footer className="border-t border-ink-200/70 px-6 py-10">
@@ -60,9 +68,11 @@ export default function Landing() {
 function LandingNav({
   region,
   setRegion,
+  consoleLink,
 }: {
   region: "US" | "PK";
   setRegion: (r: "US" | "PK") => void;
+  consoleLink: string;
 }) {
   return (
     <header className="sticky top-0 z-30 border-b border-ink-200/60 bg-paper/85 backdrop-blur">
@@ -110,7 +120,7 @@ function LandingNav({
         </div>
 
         <Link
-          href={`/console/${DEFAULT_PORTAL}`}
+          href={consoleLink}
           className="inline-flex items-center gap-2 rounded-lg bg-ink-900 px-4 py-2 text-sm font-medium text-white shadow-sm ring-1 ring-ink-900 transition hover:bg-ink-800"
         >
           Open console
@@ -124,9 +134,11 @@ function LandingNav({
 function Hero({
   portalCount,
   region,
+  consoleLink,
 }: {
   portalCount: number;
   region: "US" | "PK";
+  consoleLink: string;
 }) {
   return (
     <section className="relative overflow-hidden">
@@ -160,7 +172,7 @@ function Hero({
 
         <div className="reveal mt-10 flex flex-wrap items-center gap-3" style={{ animationDelay: "180ms" }}>
           <Link
-            href={`/console/${DEFAULT_PORTAL}`}
+            href={consoleLink}
             className="inline-flex items-center gap-2 rounded-lg bg-ink-900 px-5 py-3 text-sm font-medium text-white shadow-sm ring-1 ring-ink-900 transition hover:bg-ink-800"
           >
             Open console
@@ -268,7 +280,7 @@ function HowItWorks() {
   );
 }
 
-function ClosingCta() {
+function ClosingCta({ consoleLink }: { consoleLink: string }) {
   return (
     <section className="px-6 pb-20">
       <div className="relative mx-auto max-w-6xl overflow-hidden rounded-2xl bg-ink-900 px-8 py-16 text-center sm:px-16">
@@ -285,7 +297,7 @@ function ClosingCta() {
             Pick a source, choose your keywords, and let the crawler bring the work back to you.
           </p>
           <Link
-            href={`/console/${DEFAULT_PORTAL}`}
+            href={consoleLink}
             className="mt-9 inline-flex items-center gap-2 rounded-lg bg-white px-5 py-3 text-sm font-medium text-ink-900 shadow-sm transition hover:bg-gold-50"
           >
             Open console
