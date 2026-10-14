@@ -13,6 +13,7 @@ import SamPanel from "@/components/SamPanel";
 import SeptaPanel from "@/components/SeptaPanel";
 import UnisonPanel from "@/components/UnisonPanel";
 import WisconsinPanel from "@/components/WisconsinPanel";
+import PpraPanel from "@/components/PpraPanel";
 import type { Portal } from "@/lib/api";
 import { portalMeta, type PortalMeta } from "@/lib/portals";
 
@@ -33,6 +34,7 @@ export default function PortalConsole({ portal }: { portal: Portal }) {
       {portal === "caleprocure" && <CalEProcurePanel />}
       {portal === "emma" && <EmmaPanel />}
       {portal === "philadelphia" && <PhiladelphiaPanel />}
+      {portal === "ppra" && <PpraPanel />}
     </div>
   );
 }

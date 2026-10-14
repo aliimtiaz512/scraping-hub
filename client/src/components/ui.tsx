@@ -226,6 +226,7 @@ export function Field({
   onChange,
   disabled,
   placeholder,
+  type = "text",
 }: {
   label: string;
   hint?: string;
@@ -233,12 +234,13 @@ export function Field({
   onChange: (v: string) => void;
   disabled?: boolean;
   placeholder?: string;
+  type?: string;
 }) {
   return (
     <div>
       <label className="mb-1.5 block text-xs font-semibold text-ink-700">{label}</label>
       <input
-        type="text"
+        type={type}
         value={value}
         disabled={disabled}
         placeholder={placeholder}

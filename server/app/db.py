@@ -32,6 +32,7 @@ def init_db() -> None:
     from app.scrapers.unison import models as _unison_models  # noqa: F401
     from app.scrapers.naics import models as _naics_models  # noqa: F401
     from app.scrapers.philadelphia import models as _philadelphia_models  # noqa: F401
+    from app.scrapers.ppra import models as _ppra_models  # noqa: F401
 
     Base.metadata.create_all(bind=engine)
 

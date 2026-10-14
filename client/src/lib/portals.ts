@@ -32,7 +32,8 @@ export interface PortalMeta {
     | "catalog"
     | "bear"
     | "crab"
-    | "liberty";
+    | "liberty"
+    | "crescent";
   accent: {
     /** Icon tile: background + foreground. */
     tile: string;
@@ -262,6 +263,24 @@ export const PORTALS: PortalMeta[] = [
       wash: "from-indigo-50",
     },
   },
+  {
+    key: "ppra",
+    label: "PPRA Pakistan",
+    region: "PK",
+    operator: "Public Procurement Regulatory Authority",
+    host: "epms.ppra.gov.pk",
+    tagline: "Active federal procurement tenders",
+    description:
+      "Automate public tender discovery across Pakistan's federal e-Procurement system (EPMS), filter by organization, sector, category and closing date, and export all matching active notices into structured Excel workbooks.",
+    outputs: ["Tender & Corrigendum grid", "Multi-filter discovery", "Live table tracking", "Excel workbook"],
+    icon: "crescent",
+    accent: {
+      tile: "bg-emerald-50 text-emerald-700 ring-emerald-200",
+      dot: "bg-emerald-600",
+      rail: "bg-emerald-600",
+      wash: "from-emerald-50",
+    },
+  },
 ];
 
 export function portalMeta(key: Portal): PortalMeta {
@@ -275,3 +294,46 @@ export function isPortal(value: string): value is Portal {
 
 /** The source a bare /console visit lands on. */
 export const DEFAULT_PORTAL: Portal = "myflorida";
+
+export type Region = "US" | "PK";
+
+export interface RegionMeta {
+  id: Region;
+  label: string;
+  name: string;
+  flag: string;
+  defaultPortal: Portal;
+  heroCopy: string;
+}
+
+export const REGIONS: Record<Region, RegionMeta> = {
+  US: {
+    id: "US",
+    label: "US Portals",
+    name: "United States",
+    flag: "🇺🇸",
+    defaultPortal: "myflorida",
+    heroCopy: "American",
+  },
+  PK: {
+    id: "PK",
+    label: "Pakistan Portals",
+    name: "Pakistan",
+    flag: "🇵🇰",
+    defaultPortal: "ppra",
+    heroCopy: "Pakistani",
+  },
+};
+
+export function portalsForRegion(region: Region): PortalMeta[] {
+  return PORTALS.filter((p) => p.region === region);
+}
+
+export function regionForPortal(key: Portal | string): Region {
+  const p = PORTALS.find((item) => item.key === key);
+  return p ? p.region : "US";
+}
+
+export function pluralize(count: number, singular: string, plural: string): string {
+  return count === 1 ? `${count} ${singular}` : `${count} ${plural}`;
+}
