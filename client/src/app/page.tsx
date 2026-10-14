@@ -7,7 +7,15 @@ import LandingStats from "@/components/LandingStats";
 import Logo from "@/components/Logo";
 import PortalIcon from "@/components/PortalIcon";
 import { Eyebrow } from "@/components/ui";
-import { PORTALS, DEFAULT_PORTAL, PortalMeta } from "@/lib/portals";
+import {
+  PORTALS,
+  DEFAULT_PORTAL,
+  PortalMeta,
+  REGIONS,
+  Region,
+  portalsForRegion,
+  pluralize,
+} from "@/lib/portals";
 
 const STEPS = [
   {
@@ -28,11 +36,10 @@ const STEPS = [
 ];
 
 export default function Landing() {
-  const [region, setRegion] = useState<"US" | "PK">("US");
-  const activePortals = PORTALS.filter((p) => p.region === region);
+  const [region, setRegion] = useState<Region>("US");
+  const activePortals = portalsForRegion(region);
 
-  const activeDefaultPortal =
-    activePortals.length > 0 ? activePortals[0].key : DEFAULT_PORTAL;
+  const activeDefaultPortal = REGIONS[region]?.defaultPortal || DEFAULT_PORTAL;
   const consoleLink = `/console/${activeDefaultPortal}`;
 
   return (
@@ -70,8 +77,8 @@ function LandingNav({
   setRegion,
   consoleLink,
 }: {
-  region: "US" | "PK";
-  setRegion: (r: "US" | "PK") => void;
+  region: Region;
+  setRegion: (r: Region) => void;
   consoleLink: string;
 }) {
   return (
@@ -85,28 +92,24 @@ function LandingNav({
         {/* Center regional switcher & nav links */}
         <div className="flex items-center gap-4">
           <div className="hidden sm:flex items-center rounded-xl bg-ink-100/50 p-1 border border-ink-200/60">
-            <button
-              type="button"
-              onClick={() => setRegion("US")}
-              className={`rounded-lg px-3 py-1 text-xs font-medium transition ${
-                region === "US"
-                  ? "bg-white text-ink-900 shadow-sm ring-1 ring-ink-200/50"
-                  : "text-ink-500 hover:text-ink-900"
-              }`}
-            >
-              🇺🇸 US Portals
-            </button>
-            <button
-              type="button"
-              onClick={() => setRegion("PK")}
-              className={`rounded-lg px-3 py-1 text-xs font-medium transition ${
-                region === "PK"
-                  ? "bg-white text-ink-900 shadow-sm ring-1 ring-ink-200/50"
-                  : "text-ink-500 hover:text-ink-900"
-              }`}
-            >
-              🇵🇰 Pakistan Portals
-            </button>
+            {(["US", "PK"] as const).map((r) => {
+              const reg = REGIONS[r];
+              const isSelected = region === r;
+              return (
+                <button
+                  key={r}
+                  type="button"
+                  onClick={() => setRegion(r)}
+                  className={`rounded-lg px-3 py-1 text-xs font-medium transition ${
+                    isSelected
+                      ? "bg-white text-ink-900 shadow-sm ring-1 ring-ink-200/50"
+                      : "text-ink-500 hover:text-ink-900"
+                  }`}
+                >
+                  {reg.flag} {reg.label}
+                </button>
+              );
+            })}
           </div>
 
           <nav className="hidden items-center gap-1 sm:flex" aria-label="Landing">
@@ -137,7 +140,7 @@ function Hero({
   consoleLink,
 }: {
   portalCount: number;
-  region: "US" | "PK";
+  region: Region;
   consoleLink: string;
 }) {
   return (
@@ -149,7 +152,7 @@ function Hero({
       />
       <div className="relative mx-auto max-w-6xl px-6 pb-20 pt-20 sm:pt-28">
         <div className="reveal" style={{ animationDelay: "0ms" }}>
-          <Eyebrow>Bid intelligence — {region === "US" ? "United States" : "Pakistan"}</Eyebrow>
+          <Eyebrow>Bid intelligence — {REGIONS[region].name}</Eyebrow>
         </div>
 
         <h1
@@ -165,7 +168,7 @@ function Hero({
           className="reveal mt-8 max-w-xl text-base leading-relaxed text-ink-600"
           style={{ animationDelay: "120ms" }}
         >
-          Scraping Hub watches {portalCount} public procurement portals, runs the searches you
+          Scraping Hub watches {pluralize(portalCount, "public procurement portal", "public procurement portals")}, runs the searches you
           care about, collects every matching solicitation with its documents, and hands you a
           spreadsheet — without anyone clicking through a government website.
         </p>
@@ -199,14 +202,14 @@ function Sources({
   region,
 }: {
   portals: PortalMeta[];
-  region: "US" | "PK";
+  region: Region;
 }) {
   return (
     <section id="sources" className="scroll-mt-16 border-t border-ink-200/70 bg-white/60">
       <div className="mx-auto max-w-6xl px-6 py-20">
         <Eyebrow>The sources</Eyebrow>
         <h2 className="mt-5 max-w-2xl font-display text-3xl leading-tight text-ink-900 sm:text-4xl">
-          {portals.length} {region === "US" ? "American" : "Pakistani"} portals, one console.
+          {pluralize(portals.length, `${REGIONS[region].heroCopy} portal`, `${REGIONS[region].heroCopy} portals`)}, one console.
         </h2>
         <p className="mt-4 max-w-xl text-sm leading-relaxed text-ink-600">
           Each source has its own login, search quirks and export format. Scraping Hub hides all of
