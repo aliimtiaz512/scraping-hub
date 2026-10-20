@@ -12,8 +12,7 @@ export type Portal =
   | "naics"
   | "caleprocure"
   | "emma"
-  | "philadelphia"
-  | "ppra";
+  | "philadelphia";
 
 export interface CommodityCode {
   code: string;
@@ -1220,95 +1219,4 @@ export function runAttachmentsDownloadUrl(runId: string): string {
 /** FastAPI's generated interactive reference, served by the backend at /docs. */
 export function apiDocsUrl(): string {
   return `${API_URL}/docs`;
-}
-
-export interface PpraFiltersPayload {
-  keyword?: string | null;
-  tender_number?: string | null;
-  closing_date?: string | null;
-  tender_type?: string | null;
-  category?: string | null;
-  sector?: string | null;
-  nature?: string | null;
-  organization?: string | null;
-  country?: string | null;
-  advertise_from?: string | null;
-  advertise_to?: string | null;
-  status?: string | null;
-  city?: string | null;
-}
-
-export interface PpraOptionsPayload {
-  apply_closing_filter?: boolean;
-  deep_detail?: boolean;
-  delay_ms?: number | null;
-}
-
-export function startPpraScrape(
-  filters: PpraFiltersPayload = {},
-  options: PpraOptionsPayload = {},
-  livePreview = false
-): Promise<{ run_id: string; search: string; folder: string }> {
-  return request("/ppra/scrape", {
-    method: "POST",
-    body: JSON.stringify({ filters, options, live_preview: livePreview }),
-  });
-}
-
-export function refreshPpraScrape(
-  parentRunId: string
-): Promise<{ run_id: string; parent_run_id: string; folder: string }> {
-  return request(`/ppra/scrape/refresh/${parentRunId}`, {
-    method: "POST",
-  });
-}
-
-/** One row of `GET /ppra/bids` (shape of `_bid_dict` in server/app/scrapers/ppra/router.py). */
-export interface PpraBid {
-  id: number;
-  run_id: string;
-  page_no: number;
-  position: number;
-  tender_no: string;
-  title: string;
-  description: string | null;
-  sector: string | null;
-  tender_ref_no: string | null;
-  tender_type: string | null;
-  category: string | null;
-  nature: string | null;
-  organization: string | null;
-  department: string | null;
-  city: string | null;
-  country: string | null;
-  status: string | null;
-  advertised_on: string | null;
-  closing_at: string | null;
-  detail_url: string | null;
-  invoice_url: string | null;
-  change_status: string;
-  diff: Record<string, unknown> | null;
-  scraped_at: string | null;
-}
-
-export function listPpraBids(params: {
-  run_id?: string;
-  query?: string;
-  after_id?: number;
-  limit?: number;
-}): Promise<{ bids: PpraBid[]; count: number }> {
-  const q = new URLSearchParams();
-  if (params.run_id) q.set("run_id", params.run_id);
-  if (params.query) q.set("query", params.query);
-  if (params.after_id !== undefined) q.set("after_id", String(params.after_id));
-  if (params.limit !== undefined) q.set("limit", String(params.limit));
-  return request(`/ppra/bids?${q.toString()}`);
-}
-
-export function pauseRun(runId: string): Promise<{ paused: boolean; run_id: string }> {
-  return request(`/runs/${runId}/pause`, { method: "POST" });
-}
-
-export function resumeRun(runId: string): Promise<{ resumed: boolean; run_id: string }> {
-  return request(`/runs/${runId}/resume`, { method: "POST" });
 }

@@ -166,20 +166,6 @@ class Settings(BaseSettings):
     unison_email: str = ""
     unison_password: str = ""
 
-    # PPRA (Pakistan Public Procurement Regulatory Authority)
-    ppra_base_url: str = "https://epms.ppra.gov.pk"
-    ppra_active_tenders_path: str = "/public/tenders/active-tenders"
-    ppra_delay_min_ms: int = 1000
-    ppra_delay_max_ms: int = 2500
-    ppra_page_load_timeout_s: int = 45
-    ppra_element_wait_timeout_s: int = 20
-    ppra_max_retries: int = 3
-    ppra_pause_idle_timeout_min: int = 30
-    ppra_apply_closing_filter: bool = True
-    ppra_deep_detail: bool = False
-    ppra_local_mirror: bool = True
-    ppra_filter_cache_ttl_hours: int = 24
-
     # Post-scrape notifications (SAM + SEPTA for now) — same mechanism as the
     # sam-septa project: on a successful run, upload the run's Excel to S3 and
     # email it to RECIPIENT_EMAILS via AWS SES SMTP. All optional: if

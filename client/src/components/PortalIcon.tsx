@@ -142,13 +142,5 @@ export default function PortalIcon({ name, className = "h-5 w-5" }: { name: Port
           <path d="M12.6 8.2l-1.2 2.4 1 1.4-.9 1.9" />
         </svg>
       );
-    case "crescent":
-      // Crescent and star: Pakistan / PPRA national procurement emblem.
-      return (
-        <svg {...common}>
-          <path d="M14.5 4.5A7.5 7.5 0 1 0 18 16a8.5 8.5 0 0 1-3.5-11.5Z" />
-          <path d="M16 6.5l.6 1.3 1.4.2-1 1 .2 1.4-1.2-.7-1.2.7.2-1.4-1-1 1.4-.2z" fill="currentColor" stroke="none" />
-        </svg>
-      );
   }
 }

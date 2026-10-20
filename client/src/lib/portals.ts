@@ -10,7 +10,7 @@ import type { Portal } from "@/lib/api";
 export interface PortalMeta {
   key: Portal;
   label: string;
-  region: "US" | "PK";
+  region: Region;
   /** Governing body / operator shown under the name in navigation. */
   operator: string;
   host: string;
@@ -32,8 +32,7 @@ export interface PortalMeta {
     | "catalog"
     | "bear"
     | "crab"
-    | "liberty"
-    | "crescent";
+    | "liberty";
   accent: {
     /** Icon tile: background + foreground. */
     tile: string;
@@ -263,24 +262,6 @@ export const PORTALS: PortalMeta[] = [
       wash: "from-indigo-50",
     },
   },
-  {
-    key: "ppra",
-    label: "PPRA Pakistan",
-    region: "PK",
-    operator: "Public Procurement Regulatory Authority",
-    host: "epms.ppra.gov.pk",
-    tagline: "Active federal procurement tenders",
-    description:
-      "Automate public tender discovery across Pakistan's federal e-Procurement system (EPMS), filter by organization, sector, category and closing date, and export all matching active notices into structured Excel workbooks.",
-    outputs: ["Tender & Corrigendum grid", "Multi-filter discovery", "Live table tracking", "Excel workbook"],
-    icon: "crescent",
-    accent: {
-      tile: "bg-emerald-50 text-emerald-700 ring-emerald-200",
-      dot: "bg-emerald-600",
-      rail: "bg-emerald-600",
-      wash: "from-emerald-50",
-    },
-  },
 ];
 
 export function portalMeta(key: Portal): PortalMeta {
@@ -295,7 +276,8 @@ export function isPortal(value: string): value is Portal {
 /** The source a bare /console visit lands on. */
 export const DEFAULT_PORTAL: Portal = "myflorida";
 
-export type Region = "US" | "PK";
+/** Only US sources live in this hub; Pakistan portals have their own app. */
+export type Region = "US";
 
 export interface RegionMeta {
   id: Region;
@@ -314,14 +296,6 @@ export const REGIONS: Record<Region, RegionMeta> = {
     flag: "🇺🇸",
     defaultPortal: "myflorida",
     heroCopy: "American",
-  },
-  PK: {
-    id: "PK",
-    label: "Pakistan Portals",
-    name: "Pakistan",
-    flag: "🇵🇰",
-    defaultPortal: "ppra",
-    heroCopy: "Pakistani",
   },
 };
 

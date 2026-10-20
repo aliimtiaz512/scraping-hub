@@ -68,31 +68,6 @@ export default function ConsoleShell({ children }: { children: React.ReactNode }
 
           <span className="mx-1 hidden h-6 w-px bg-ink-200 sm:block" />
 
-          {/* Region Switcher: Clicking another region navigates to its default portal.
-              Clicking the active region stays on the current portal. */}
-          <div className="hidden sm:flex items-center rounded-xl bg-ink-100/60 p-0.5 border border-ink-200/60">
-            {(["US", "PK"] as const).map((r) => {
-              const regMeta = REGIONS[r];
-              const isCurrent = activeRegion === r;
-              const targetPortal = isCurrent ? portal : regMeta.defaultPortal;
-              return (
-                <Link
-                  key={r}
-                  href={href(targetPortal, section)}
-                  className={`rounded-lg px-2.5 py-1 text-xs font-medium transition ${
-                    isCurrent
-                      ? "bg-white text-ink-900 shadow-sm ring-1 ring-ink-200/50"
-                      : "text-ink-500 hover:text-ink-900"
-                  }`}
-                >
-                  {regMeta.flag} {regMeta.id}
-                </Link>
-              );
-            })}
-          </div>
-
-          <span className="mx-1 hidden h-6 w-px bg-ink-200 sm:block" />
-
           <nav className="no-scrollbar flex min-w-0 flex-1 items-center gap-1 overflow-x-auto" aria-label="Sections">
             {SECTIONS.map((s) => {
               const isActive = s.key === section;
@@ -199,26 +174,9 @@ export default function ConsoleShell({ children }: { children: React.ReactNode }
           {/* Source switcher for narrow screens */}
           <div className="border-b border-ink-200/70 bg-white/60 lg:hidden">
             <div className="flex items-center justify-between px-5 pt-3">
-              <div className="flex items-center rounded-lg bg-ink-100/60 p-0.5 border border-ink-200/60">
-                {(["US", "PK"] as const).map((r) => {
-                  const regMeta = REGIONS[r];
-                  const isCurrent = activeRegion === r;
-                  const targetPortal = isCurrent ? portal : regMeta.defaultPortal;
-                  return (
-                    <Link
-                      key={r}
-                      href={href(targetPortal, section)}
-                      className={`rounded-md px-2 py-0.5 text-xs font-medium transition ${
-                        isCurrent
-                          ? "bg-white text-ink-900 shadow-sm"
-                          : "text-ink-500 hover:text-ink-900"
-                      }`}
-                    >
-                      {regMeta.flag} {regMeta.id}
-                    </Link>
-                  );
-                })}
-              </div>
+              <span className="text-xs font-medium text-ink-500">
+                {REGIONS[activeRegion].flag} {REGIONS[activeRegion].name}
+              </span>
               <span className="text-xs text-ink-400">
                 {pluralize(visiblePortals.length, "portal", "portals")}
               </span>

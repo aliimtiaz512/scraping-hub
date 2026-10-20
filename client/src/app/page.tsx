@@ -1,6 +1,5 @@
 "use client";
 
-import { useState } from "react";
 import Link from "next/link";
 
 import LandingStats from "@/components/LandingStats";
@@ -36,7 +35,7 @@ const STEPS = [
 ];
 
 export default function Landing() {
-  const [region, setRegion] = useState<Region>("US");
+  const region: Region = "US";
   const activePortals = portalsForRegion(region);
 
   const activeDefaultPortal = REGIONS[region]?.defaultPortal || DEFAULT_PORTAL;
@@ -44,7 +43,7 @@ export default function Landing() {
 
   return (
     <div className="flex min-h-screen flex-col">
-      <LandingNav region={region} setRegion={setRegion} consoleLink={consoleLink} />
+      <LandingNav consoleLink={consoleLink} />
 
       <main className="flex-1">
         <Hero
@@ -72,15 +71,7 @@ export default function Landing() {
   );
 }
 
-function LandingNav({
-  region,
-  setRegion,
-  consoleLink,
-}: {
-  region: Region;
-  setRegion: (r: Region) => void;
-  consoleLink: string;
-}) {
+function LandingNav({ consoleLink }: { consoleLink: string }) {
   return (
     <header className="sticky top-0 z-30 border-b border-ink-200/60 bg-paper/85 backdrop-blur">
       <div className="mx-auto flex h-16 max-w-6xl items-center justify-between gap-4 px-6">
@@ -89,29 +80,7 @@ function LandingNav({
           <span className="font-display text-base text-ink-900">Scraping Hub</span>
         </Link>
 
-        {/* Center regional switcher & nav links */}
         <div className="flex items-center gap-4">
-          <div className="hidden sm:flex items-center rounded-xl bg-ink-100/50 p-1 border border-ink-200/60">
-            {(["US", "PK"] as const).map((r) => {
-              const reg = REGIONS[r];
-              const isSelected = region === r;
-              return (
-                <button
-                  key={r}
-                  type="button"
-                  onClick={() => setRegion(r)}
-                  className={`rounded-lg px-3 py-1 text-xs font-medium transition ${
-                    isSelected
-                      ? "bg-white text-ink-900 shadow-sm ring-1 ring-ink-200/50"
-                      : "text-ink-500 hover:text-ink-900"
-                  }`}
-                >
-                  {reg.flag} {reg.label}
-                </button>
-              );
-            })}
-          </div>
-
           <nav className="hidden items-center gap-1 sm:flex" aria-label="Landing">
             <a href="#sources" className="rounded-lg px-3 py-1.5 text-sm font-medium text-ink-500 transition hover:bg-ink-50 hover:text-ink-900">
               Sources
