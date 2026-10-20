@@ -98,6 +98,9 @@ export default function RunStatus({ run }: { run: RunStatusData }) {
   const download = runDownloadable(run);
   const excelOnly = downloadKind(run.scraper ?? "") === "excel";
   const attachments = runAttachmentsDownloadable(run);
+  // An EMMA run limited to a Publish Date range. Scoped to EMMA because SAM runs
+  // carry date_from / date_to too, and theirs mean a different date.
+  const emmaRange = run.scraper === "emma" && !!(run.date_from || run.date_to);
   // A stopped run that kept its rows. The panel says so rather than dressing it
   // up as a finished one: the reviewer is about to open a spreadsheet that is
   // missing everything after the point they pressed Stop.
@@ -177,8 +180,18 @@ export default function RunStatus({ run }: { run: RunStatusData }) {
         <Stat label="Results" value={run.excel_exported ? "Ready" : "—"} muted={!run.excel_exported} />
       </div>
 
-      {(run.errors.length > 0 || run.no_results || (run.warnings?.length ?? 0) > 0 || run.status === "completed" || run.status === "stopped" || !!run.min_days_until_close) && (
+      {(run.errors.length > 0 || run.no_results || (run.warnings?.length ?? 0) > 0 || run.status === "completed" || run.status === "stopped" || !!run.min_days_until_close || emmaRange) && (
         <div className="space-y-3 border-t border-ink-100 p-5">
+          {emmaRange && (
+            <DateRangeNote
+              from={run.date_from}
+              to={run.date_to}
+              outside={run.bids_skipped_outside_date_range}
+              noDate={run.bids_skipped_no_publish_date}
+              stoppedEarly={run.stopped_paging_early}
+            />
+          )}
+
           {!!run.min_days_until_close && (
             <ClosingFilterNote
               minDays={run.min_days_until_close}
@@ -359,6 +372,43 @@ function ClosingFilterNote({
         {unreadable > 0
           ? ` ${unreadable} with an unreadable close date ${unreadable === 1 ? "was" : "were"} kept.`
           : ""}
+      </p>
+    </div>
+  );
+}
+
+/**
+ * Informational note for a run limited to a Publish Date range (EMMA). Says
+ * what the range discarded, so a short or empty result reads as the range
+ * doing its job rather than a broken search. The counts arrive once the
+ * results grid has been read; until then only the range itself is shown.
+ */
+function DateRangeNote({
+  from,
+  to,
+  outside,
+  noDate,
+  stoppedEarly,
+}: {
+  from?: string | null;
+  to?: string | null;
+  outside?: number;
+  noDate?: number;
+  stoppedEarly?: boolean;
+}) {
+  const range = from && to ? `${from} to ${to}` : from ? `on or after ${from}` : `on or before ${to}`;
+  const counted = outside !== undefined || noDate !== undefined;
+  return (
+    <div className="rounded-lg border border-ink-200 bg-ink-50 p-3.5">
+      <p className="mb-1 text-xs font-semibold text-ink-700">Publish-date range · {range}</p>
+      <p className="text-sm text-ink-600">
+        Only bids published {range} are kept.
+        {counted &&
+          ((outside ?? 0) > 0
+            ? ` ${outside} published outside it ${outside === 1 ? "was" : "were"} discarded.`
+            : " None were outside it.")}
+        {(noDate ?? 0) > 0 ? ` ${noDate} with no readable publish date ${noDate === 1 ? "was" : "were"} discarded.` : ""}
+        {stoppedEarly ? " Paging stopped early: the rest of the list was published before the range." : ""}
       </p>
     </div>
   );

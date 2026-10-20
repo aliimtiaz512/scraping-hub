@@ -24,6 +24,7 @@ export default function EmmaResults({ bids }: { bids: BidResult[] }) {
         { label: "Category" },
         { label: "Type" },
         { label: "Issuing Agency" },
+        { label: "Published" },
         { label: "Due / Close" },
         { label: "Status" },
       ]}
@@ -49,6 +50,8 @@ export default function EmmaResults({ bids }: { bids: BidResult[] }) {
           <td className="max-w-[11rem] truncate px-4 py-3 text-xs text-ink-600" title={bid.issuing_agency ?? ""}>
             {bid.issuing_agency ?? "—"}
           </td>
+          {/* Shown so a date-range run's choices can be checked at a glance. */}
+          <td className="tabular whitespace-nowrap px-4 py-3 text-xs text-ink-600">{bid.publish_date || "—"}</td>
           <td className="tabular whitespace-nowrap px-4 py-3 text-xs text-ink-600">{bid.close_date ?? "—"}</td>
           <td className="px-4 py-3">
             {bid.status ? (

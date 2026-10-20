@@ -250,6 +250,40 @@ export function Field({
   );
 }
 
+/** A native date input. The console speaks ISO throughout; the server converts
+ *  to whatever format the portal's own fields take. `min` / `max` (ISO) stop the
+ *  picker offering a date that would make a range run backwards. */
+export function DateField({
+  label,
+  value,
+  disabled,
+  onChange,
+  min,
+  max,
+}: {
+  label: string;
+  value: string;
+  disabled?: boolean;
+  onChange: (value: string) => void;
+  min?: string;
+  max?: string;
+}) {
+  return (
+    <div>
+      <label className="mb-1.5 block text-xs font-semibold text-ink-700">{label}</label>
+      <input
+        type="date"
+        value={value}
+        disabled={disabled}
+        min={min || undefined}
+        max={max || undefined}
+        onChange={(event) => onChange(event.target.value)}
+        className="rounded-lg border border-ink-200 bg-white px-3 py-1.5 text-sm text-ink-900 shadow-sm focus:border-gold-400 focus:outline-none focus:ring-2 focus:ring-gold-400/25 disabled:cursor-not-allowed disabled:bg-ink-50"
+      />
+    </div>
+  );
+}
+
 /**
  * A labelled dropdown, in the same language as `Field`.
  *
