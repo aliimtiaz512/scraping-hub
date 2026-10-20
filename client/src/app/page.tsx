@@ -1,20 +1,10 @@
-"use client";
-
 import Link from "next/link";
 
 import LandingStats from "@/components/LandingStats";
 import Logo from "@/components/Logo";
 import PortalIcon from "@/components/PortalIcon";
 import { Eyebrow } from "@/components/ui";
-import {
-  PORTALS,
-  DEFAULT_PORTAL,
-  PortalMeta,
-  REGIONS,
-  Region,
-  portalsForRegion,
-  pluralize,
-} from "@/lib/portals";
+import { PORTALS, DEFAULT_PORTAL } from "@/lib/portals";
 
 const STEPS = [
   {
@@ -35,25 +25,15 @@ const STEPS = [
 ];
 
 export default function Landing() {
-  const region: Region = "US";
-  const activePortals = portalsForRegion(region);
-
-  const activeDefaultPortal = REGIONS[region]?.defaultPortal || DEFAULT_PORTAL;
-  const consoleLink = `/console/${activeDefaultPortal}`;
-
   return (
     <div className="flex min-h-screen flex-col">
-      <LandingNav consoleLink={consoleLink} />
+      <LandingNav />
 
       <main className="flex-1">
-        <Hero
-          portalCount={activePortals.length}
-          region={region}
-          consoleLink={consoleLink}
-        />
-        <Sources portals={activePortals} region={region} />
+        <Hero />
+        <Sources />
         <HowItWorks />
-        <ClosingCta consoleLink={consoleLink} />
+        <ClosingCta />
       </main>
 
       <footer className="border-t border-ink-200/70 px-6 py-10">
@@ -71,7 +51,7 @@ export default function Landing() {
   );
 }
 
-function LandingNav({ consoleLink }: { consoleLink: string }) {
+function LandingNav() {
   return (
     <header className="sticky top-0 z-30 border-b border-ink-200/60 bg-paper/85 backdrop-blur">
       <div className="mx-auto flex h-16 max-w-6xl items-center justify-between gap-4 px-6">
@@ -80,19 +60,17 @@ function LandingNav({ consoleLink }: { consoleLink: string }) {
           <span className="font-display text-base text-ink-900">Scraping Hub</span>
         </Link>
 
-        <div className="flex items-center gap-4">
-          <nav className="hidden items-center gap-1 sm:flex" aria-label="Landing">
-            <a href="#sources" className="rounded-lg px-3 py-1.5 text-sm font-medium text-ink-500 transition hover:bg-ink-50 hover:text-ink-900">
-              Sources
-            </a>
-            <a href="#how" className="rounded-lg px-3 py-1.5 text-sm font-medium text-ink-500 transition hover:bg-ink-50 hover:text-ink-900">
-              How it works
-            </a>
-          </nav>
-        </div>
+        <nav className="hidden items-center gap-1 sm:flex" aria-label="Landing">
+          <a href="#sources" className="rounded-lg px-3 py-1.5 text-sm font-medium text-ink-500 transition hover:bg-ink-50 hover:text-ink-900">
+            Sources
+          </a>
+          <a href="#how" className="rounded-lg px-3 py-1.5 text-sm font-medium text-ink-500 transition hover:bg-ink-50 hover:text-ink-900">
+            How it works
+          </a>
+        </nav>
 
         <Link
-          href={consoleLink}
+          href={`/console/${DEFAULT_PORTAL}`}
           className="inline-flex items-center gap-2 rounded-lg bg-ink-900 px-4 py-2 text-sm font-medium text-white shadow-sm ring-1 ring-ink-900 transition hover:bg-ink-800"
         >
           Open console
@@ -103,15 +81,7 @@ function LandingNav({ consoleLink }: { consoleLink: string }) {
   );
 }
 
-function Hero({
-  portalCount,
-  region,
-  consoleLink,
-}: {
-  portalCount: number;
-  region: Region;
-  consoleLink: string;
-}) {
+function Hero() {
   return (
     <section className="relative overflow-hidden">
       {/* Warm wash behind the headline, fading into the paper canvas. */}
@@ -121,7 +91,7 @@ function Hero({
       />
       <div className="relative mx-auto max-w-6xl px-6 pb-20 pt-20 sm:pt-28">
         <div className="reveal" style={{ animationDelay: "0ms" }}>
-          <Eyebrow>Bid intelligence — {REGIONS[region].name}</Eyebrow>
+          <Eyebrow>Bid intelligence</Eyebrow>
         </div>
 
         <h1
@@ -137,14 +107,14 @@ function Hero({
           className="reveal mt-8 max-w-xl text-base leading-relaxed text-ink-600"
           style={{ animationDelay: "120ms" }}
         >
-          Scraping Hub watches {pluralize(portalCount, "public procurement portal", "public procurement portals")}, runs the searches you
+          Scraping Hub watches {PORTALS.length} public procurement portals, runs the searches you
           care about, collects every matching solicitation with its documents, and hands you a
           spreadsheet — without anyone clicking through a government website.
         </p>
 
         <div className="reveal mt-10 flex flex-wrap items-center gap-3" style={{ animationDelay: "180ms" }}>
           <Link
-            href={consoleLink}
+            href={`/console/${DEFAULT_PORTAL}`}
             className="inline-flex items-center gap-2 rounded-lg bg-ink-900 px-5 py-3 text-sm font-medium text-white shadow-sm ring-1 ring-ink-900 transition hover:bg-ink-800"
           >
             Open console
@@ -166,63 +136,51 @@ function Hero({
   );
 }
 
-function Sources({
-  portals,
-  region,
-}: {
-  portals: PortalMeta[];
-  region: Region;
-}) {
+function Sources() {
   return (
     <section id="sources" className="scroll-mt-16 border-t border-ink-200/70 bg-white/60">
       <div className="mx-auto max-w-6xl px-6 py-20">
         <Eyebrow>The sources</Eyebrow>
         <h2 className="mt-5 max-w-2xl font-display text-3xl leading-tight text-ink-900 sm:text-4xl">
-          {pluralize(portals.length, `${REGIONS[region].heroCopy} portal`, `${REGIONS[region].heroCopy} portals`)}, one console.
+          {PORTALS.length} portals, one console.
         </h2>
         <p className="mt-4 max-w-xl text-sm leading-relaxed text-ink-600">
           Each source has its own login, search quirks and export format. Scraping Hub hides all of
           that behind one interface.
         </p>
 
-        {portals.length === 0 ? (
-          <div className="mt-12 rounded-xl border border-dashed border-ink-200 p-12 text-center text-sm text-ink-500 bg-white/50">
-            No active portals available for this region yet.
-          </div>
-        ) : (
-          <div className="mt-12 grid gap-5 sm:grid-cols-2">
-            {portals.map((p) => (
-              <Link
-                key={p.key}
-                href={`/console/${p.key}`}
-                className="group relative flex flex-col overflow-hidden rounded-xl border border-ink-200/70 bg-white p-6 shadow-sm shadow-ink-900/[0.03] transition hover:-translate-y-0.5 hover:shadow-md hover:shadow-ink-900/[0.06]"
-              >
-                <div className="flex items-start justify-between gap-4">
-                  <span className={`flex h-11 w-11 items-center justify-center rounded-xl ring-1 ${p.accent.tile}`}>
-                    <PortalIcon name={p.icon} className="h-5 w-5" />
+        <div className="mt-12 grid gap-5 sm:grid-cols-2">
+          {PORTALS.map((p) => (
+            <Link
+              key={p.key}
+              href={`/console/${p.key}`}
+              className="group relative flex flex-col overflow-hidden rounded-xl border border-ink-200/70 bg-white p-6 shadow-sm shadow-ink-900/[0.03] transition hover:-translate-y-0.5 hover:shadow-md hover:shadow-ink-900/[0.06]"
+            >
+              <div className="flex items-start justify-between gap-4">
+                <span className={`flex h-11 w-11 items-center justify-center rounded-xl ring-1 ${p.accent.tile}`}>
+                  <PortalIcon name={p.icon} className="h-5 w-5" />
+                </span>
+                <span className="text-ink-300 transition group-hover:translate-x-0.5 group-hover:text-gold-500">
+                  <Arrow />
+                </span>
+              </div>
+
+              <h3 className="mt-5 font-display text-xl text-ink-900">{p.label}</h3>
+              <p className="mt-1 text-xs text-ink-500">{p.operator}</p>
+              <p className="mt-4 flex-1 text-sm leading-relaxed text-ink-600">{p.description}</p>
+
+              <div className="mt-6 flex flex-wrap gap-1.5">
+                {p.outputs.map((o) => (
+                  <span key={o} className="rounded-full bg-ink-50 px-2 py-0.5 text-xs font-medium text-ink-600">
+                    {o}
                   </span>
-                  <span className="text-ink-300 transition group-hover:translate-x-0.5 group-hover:text-gold-500">
-                    <Arrow />
-                  </span>
-                </div>
+                ))}
+              </div>
 
-                <h3 className="mt-5 font-display text-xl text-ink-900">{p.label}</h3>
-                <p className="mt-1 text-xs text-ink-500">{p.operator}</p>
-                <p className="mt-4 flex-1 text-sm leading-relaxed text-ink-600">{p.description}</p>
-
-                <div className="mt-6 flex flex-wrap gap-1.5">
-                  {p.outputs.map((o) => (
-                    <span key={o} className="rounded-full bg-ink-50 px-2 py-0.5 text-xs font-medium text-ink-600">
-                      {o}
-                    </span>
-                  ))}
-                </div>
-
-                <p className="mt-5 border-t border-ink-100 pt-4 font-mono text-xs text-ink-400">{p.host}</p>
-              </Link>
-            ))}
-          </div>
-        )}
+              <p className="mt-5 border-t border-ink-100 pt-4 font-mono text-xs text-ink-400">{p.host}</p>
+            </Link>
+          ))}
+        </div>
       </div>
     </section>
   );
@@ -252,7 +210,7 @@ function HowItWorks() {
   );
 }
 
-function ClosingCta({ consoleLink }: { consoleLink: string }) {
+function ClosingCta() {
   return (
     <section className="px-6 pb-20">
       <div className="relative mx-auto max-w-6xl overflow-hidden rounded-2xl bg-ink-900 px-8 py-16 text-center sm:px-16">
@@ -269,7 +227,7 @@ function ClosingCta({ consoleLink }: { consoleLink: string }) {
             Pick a source, choose your keywords, and let the crawler bring the work back to you.
           </p>
           <Link
-            href={consoleLink}
+            href={`/console/${DEFAULT_PORTAL}`}
             className="mt-9 inline-flex items-center gap-2 rounded-lg bg-white px-5 py-3 text-sm font-medium text-ink-900 shadow-sm transition hover:bg-gold-50"
           >
             Open console

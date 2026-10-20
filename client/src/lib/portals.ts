@@ -10,7 +10,6 @@ import type { Portal } from "@/lib/api";
 export interface PortalMeta {
   key: Portal;
   label: string;
-  region: Region;
   /** Governing body / operator shown under the name in navigation. */
   operator: string;
   host: string;
@@ -49,7 +48,6 @@ export const PORTALS: PortalMeta[] = [
   {
     key: "myflorida",
     label: "MyFlorida",
-    region: "US",
     operator: "Florida Dept. of Management Services",
     host: "vendor.myfloridamarketplace.com",
     tagline: "Statewide vendor advertisements",
@@ -67,7 +65,6 @@ export const PORTALS: PortalMeta[] = [
   {
     key: "ridemetro",
     label: "RideMetro",
-    region: "US",
     operator: "Houston Metropolitan Transit Authority",
     host: "ridemetro.bonfirehub.com",
     tagline: "Open public opportunities",
@@ -85,7 +82,6 @@ export const PORTALS: PortalMeta[] = [
   {
     key: "bidnet",
     label: "BidNet Direct",
-    region: "US",
     operator: "Multi-state purchasing network",
     host: "bidnetdirect.com",
     tagline: "Member agency solicitations",
@@ -103,7 +99,6 @@ export const PORTALS: PortalMeta[] = [
   {
     key: "wisconsin",
     label: "Wisconsin eSupplier",
-    region: "US",
     operator: "State of Wisconsin",
     host: "esupplier.wi.gov",
     tagline: "Current solicitations",
@@ -121,7 +116,6 @@ export const PORTALS: PortalMeta[] = [
   {
     key: "northdakota",
     label: "North Dakota",
-    region: "US",
     operator: "State of North Dakota (ND Buys)",
     host: "public.ndbuys.nd.gov",
     tagline: "Public solicitation requests",
@@ -139,7 +133,6 @@ export const PORTALS: PortalMeta[] = [
   {
     key: "septa",
     label: "SEPTA",
-    region: "US",
     operator: "SE Pennsylvania Transportation Authority",
     host: "epsadmin.septa.org",
     tagline: "Open vendor quotes",
@@ -157,7 +150,6 @@ export const PORTALS: PortalMeta[] = [
   {
     key: "sam",
     label: "SAM.gov",
-    region: "US",
     operator: "U.S. federal contract opportunities",
     host: "sam.gov",
     tagline: "Federal solicitations, auto-evaluated",
@@ -175,7 +167,6 @@ export const PORTALS: PortalMeta[] = [
   {
     key: "unison",
     label: "Unison Marketplace",
-    region: "US",
     operator: "Unison Global (formerly FedBid)",
     host: "marketplace.unisonglobal.com",
     tagline: "Buyer requests",
@@ -193,7 +184,6 @@ export const PORTALS: PortalMeta[] = [
   {
     key: "naics",
     label: "NAICS Codes",
-    region: "US",
     operator: "Reference tool",
     host: "naics.com",
     tagline: "Searchable code reference",
@@ -211,7 +201,6 @@ export const PORTALS: PortalMeta[] = [
   {
     key: "caleprocure",
     label: "Cal eProcure",
-    region: "US",
     operator: "State of California",
     host: "caleprocure.ca.gov",
     tagline: "California eProcurement portal",
@@ -229,7 +218,6 @@ export const PORTALS: PortalMeta[] = [
   {
     key: "emma",
     label: "EMMA",
-    region: "US",
     operator: "State of Maryland",
     host: "emma.maryland.gov",
     tagline: "Public solicitations",
@@ -247,7 +235,6 @@ export const PORTALS: PortalMeta[] = [
   {
     key: "philadelphia",
     label: "PHLContracts",
-    region: "US",
     operator: "City of Philadelphia",
     host: "phlcontracts.phila.gov",
     tagline: "Open bids",
@@ -275,39 +262,3 @@ export function isPortal(value: string): value is Portal {
 
 /** The source a bare /console visit lands on. */
 export const DEFAULT_PORTAL: Portal = "myflorida";
-
-/** Only US sources live in this hub; Pakistan portals have their own app. */
-export type Region = "US";
-
-export interface RegionMeta {
-  id: Region;
-  label: string;
-  name: string;
-  flag: string;
-  defaultPortal: Portal;
-  heroCopy: string;
-}
-
-export const REGIONS: Record<Region, RegionMeta> = {
-  US: {
-    id: "US",
-    label: "US Portals",
-    name: "United States",
-    flag: "🇺🇸",
-    defaultPortal: "myflorida",
-    heroCopy: "American",
-  },
-};
-
-export function portalsForRegion(region: Region): PortalMeta[] {
-  return PORTALS.filter((p) => p.region === region);
-}
-
-export function regionForPortal(key: Portal | string): Region {
-  const p = PORTALS.find((item) => item.key === key);
-  return p ? p.region : "US";
-}
-
-export function pluralize(count: number, singular: string, plural: string): string {
-  return count === 1 ? `${count} ${singular}` : `${count} ${plural}`;
-}

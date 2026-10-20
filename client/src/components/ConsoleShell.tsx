@@ -11,15 +11,7 @@ import Logo from "@/components/Logo";
 import PortalIcon from "@/components/PortalIcon";
 import { LinkButton } from "@/components/ui";
 import { apiDocsUrl, type Portal } from "@/lib/api";
-import {
-  isPortal,
-  PORTALS,
-  REGIONS,
-  Region,
-  regionForPortal,
-  portalsForRegion,
-  pluralize,
-} from "@/lib/portals";
+import { isPortal, PORTALS } from "@/lib/portals";
 import { useActivePortals } from "@/lib/sessions";
 
 const SECTIONS = [
@@ -45,11 +37,6 @@ export default function ConsoleShell({ children }: { children: React.ReactNode }
   const segments = pathname.split("/").filter(Boolean); // ["console", portal, section?]
   const portal = (segments[1] ?? "") as Portal;
   const section = segments[2] ?? "";
-
-  // The active region is derived directly and solely from the URL portal
-  const activeRegion: Region = regionForPortal(portal);
-  const visiblePortals = portalsForRegion(activeRegion);
-
   // Portals with a run in flight, so the rail can say so while you are looking
   // at another one — the point of the whole exercise is that a run you navigated
   // away from is still going.
@@ -95,9 +82,7 @@ export default function ConsoleShell({ children }: { children: React.ReactNode }
               <span className="status-pulse absolute inline-flex h-full w-full rounded-full bg-emerald-400" />
               <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-emerald-500" />
             </span>
-            <span className="whitespace-nowrap text-xs font-medium text-ink-600">
-              {pluralize(visiblePortals.length, "source", "sources")}
-            </span>
+            <span className="whitespace-nowrap text-xs font-medium text-ink-600">{PORTALS.length} sources</span>
           </div>
 
           <LinkButton href={apiDocsUrl()} target="_blank" rel="noopener noreferrer" size="sm">
@@ -114,75 +99,58 @@ export default function ConsoleShell({ children }: { children: React.ReactNode }
       <SessionEngine />
 
       <div className="flex min-h-0 flex-1">
-        {/* Source rail - top-aligned, only renders the active region's portals */}
+        {/* Source rail */}
         <aside className="sticky top-16 hidden h-[calc(100vh-4rem)] w-64 shrink-0 flex-col border-r border-ink-200/70 bg-white/60 lg:flex">
           <nav className="flex-1 overflow-y-auto p-3" aria-label="Data sources">
-            <div className="mb-4">
-              <div className="flex items-center justify-between px-3 pb-1 pt-2">
-                <p className="eyebrow text-[10px] uppercase tracking-wider text-ink-400">
-                  {REGIONS[activeRegion].flag} {REGIONS[activeRegion].name}
-                </p>
-                <span className="text-[10px] font-medium text-ink-400">
-                  {visiblePortals.length}
-                </span>
-              </div>
-              <ul className="space-y-1">
-                {visiblePortals.map((p) => {
-                  const isActive = p.key === portal;
-                  return (
-                    <li key={p.key}>
-                      <Link
-                        href={href(p.key, section)}
-                        aria-current={isActive ? "page" : undefined}
-                        className={`group relative flex w-full items-center gap-3 rounded-lg px-3 py-2.5 transition ${
-                          isActive ? "bg-white shadow-sm shadow-ink-900/[0.04] ring-1 ring-ink-200/70" : "hover:bg-white/70"
+            <p className="eyebrow px-3 pb-2 pt-3 text-ink-400">Data sources</p>
+            <ul className="space-y-1">
+              {PORTALS.map((p) => {
+                const isActive = p.key === portal;
+                return (
+                  <li key={p.key}>
+                    <Link
+                      href={href(p.key, section)}
+                      aria-current={isActive ? "page" : undefined}
+                      className={`group relative flex w-full items-center gap-3 rounded-lg px-3 py-2.5 transition ${
+                        isActive ? "bg-white shadow-sm shadow-ink-900/[0.04] ring-1 ring-ink-200/70" : "hover:bg-white/70"
+                      }`}
+                    >
+                      {isActive && (
+                        <span className="absolute left-0 top-1/2 h-7 w-1 -translate-y-1/2 rounded-r-full bg-gold-500" />
+                      )}
+                      <span
+                        className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg ring-1 transition ${
+                          isActive ? p.accent.tile : "bg-ink-50 text-ink-400 ring-ink-100 group-hover:text-ink-600"
                         }`}
                       >
-                        {isActive && (
-                          <span className="absolute left-0 top-1/2 h-7 w-1 -translate-y-1/2 rounded-r-full bg-gold-500" />
-                        )}
-                        <span
-                          className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg ring-1 transition ${
-                            isActive ? p.accent.tile : "bg-ink-50 text-ink-400 ring-ink-100 group-hover:text-ink-600"
-                          }`}
-                        >
-                          <PortalIcon name={p.icon} />
+                        <PortalIcon name={p.icon} />
+                      </span>
+                      <span className="min-w-0 flex-1">
+                        <span className={`block truncate text-sm ${isActive ? "font-semibold text-ink-900" : "font-medium text-ink-700"}`}>
+                          {p.label}
                         </span>
-                        <span className="min-w-0 flex-1">
-                          <span className={`block truncate text-sm ${isActive ? "font-semibold text-ink-900" : "font-medium text-ink-700"}`}>
-                            {p.label}
-                          </span>
-                          <span className="block truncate text-xs text-ink-500">{p.tagline}</span>
+                        <span className="block truncate text-xs text-ink-500">{p.tagline}</span>
+                      </span>
+                      {live.has(p.key) && (
+                        <span className="relative flex h-2 w-2 shrink-0" title="Scraping now">
+                          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
+                          <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
+                          <span className="sr-only">Scraping now</span>
                         </span>
-                        {live.has(p.key) && (
-                          <span className="relative flex h-2 w-2 shrink-0" title="Scraping now">
-                            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
-                            <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
-                            <span className="sr-only">Scraping now</span>
-                          </span>
-                        )}
-                      </Link>
-                    </li>
-                  );
-                })}
-              </ul>
-            </div>
+                      )}
+                    </Link>
+                  </li>
+                );
+              })}
+            </ul>
           </nav>
         </aside>
 
         <div className="flex min-w-0 flex-1 flex-col">
           {/* Source switcher for narrow screens */}
           <div className="border-b border-ink-200/70 bg-white/60 lg:hidden">
-            <div className="flex items-center justify-between px-5 pt-3">
-              <span className="text-xs font-medium text-ink-500">
-                {REGIONS[activeRegion].flag} {REGIONS[activeRegion].name}
-              </span>
-              <span className="text-xs text-ink-400">
-                {pluralize(visiblePortals.length, "portal", "portals")}
-              </span>
-            </div>
             <nav className="no-scrollbar flex gap-2 overflow-x-auto px-5 py-3" aria-label="Data sources">
-              {visiblePortals.map((p) => {
+              {PORTALS.map((p) => {
                 const isActive = p.key === portal;
                 return (
                   <Link
