@@ -142,7 +142,7 @@ function Sources() {
       <div className="mx-auto max-w-6xl px-6 py-20">
         <Eyebrow>The sources</Eyebrow>
         <h2 className="mt-5 max-w-2xl font-display text-3xl leading-tight text-ink-900 sm:text-4xl">
-          Four portals, one console.
+          {PORTALS.length} portals, one console.
         </h2>
         <p className="mt-4 max-w-xl text-sm leading-relaxed text-ink-600">
           Each source has its own login, search quirks and export format. Scraping Hub hides all of
