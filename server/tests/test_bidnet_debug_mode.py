@@ -67,6 +67,9 @@ def test_the_browser_is_forced_visible_only_while_headed(scraper, monkeypatch):
     monkeypatch.setattr(scraper, "login", _stop)
     monkeypatch.setattr(scraper, "_save_run_row", lambda: None)
     monkeypatch.setattr(scraper, "cleanup", lambda: None)
+    # The stop unwinds into deliver_partial, whose archive_run zips the day's real
+    # BidNet session root — minutes of compressing documents/ for a driver-flag test.
+    monkeypatch.setattr("app.core.exports.archive_run", lambda run_id: None)
     monkeypatch.setattr(bidnet.run_manager, "remove_empty_folder", lambda run_id: None)
 
     monkeypatch.setattr(bidnet, "HEADLESS_MODE", False)

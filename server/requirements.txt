@@ -20,6 +20,8 @@ python-docx
 pandas
 requests
 PyYAML
+# Imported directly by app/scrapers/ppra/repository.py (also pulled in by pandas).
+python-dateutil
 ollama
 # Post-scrape S3 upload for the email notifier (SES email itself uses stdlib smtplib).
 boto3

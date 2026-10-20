@@ -17,6 +17,7 @@ from app.scrapers.ppra.schemas import (
     PpraBidOut,
     PpraFilterOptionOut,
     PpraFilters,
+    PpraOptions,
     PpraScrapeRequest,
 )
 from app.scrapers.ppra.scraper import execute_run

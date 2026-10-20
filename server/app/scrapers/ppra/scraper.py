@@ -3,6 +3,7 @@
 import logging
 import random
 import time
+from datetime import datetime
 from typing import Any
 from urllib.parse import urlencode, urljoin
 
@@ -241,16 +242,21 @@ def execute_run(
     try:
         scraper.run()
         archive_run(run_id)
-        notify_scrape_completion(run_id, "ppra", scraper.rows_scraped_total)
         run_manager.update_run(run_id, status="completed", step="completed")
+        repository.update_run_progress(run_id, status="completed", finished_at=datetime.now())
+        notify_scrape_completion(run_id, "ppra", scraper.rows_scraped_total)
     except StopRequested:
         logger.info("[run %s] stopped gracefully by user", run_id)
         archive_run(run_id)
         run_manager.update_run(run_id, status="stopped", step="stopped")
+        repository.update_run_progress(run_id, status="stopped", finished_at=datetime.now())
     except Exception as exc:
         logger.exception("[run %s] PPRA run failed: %s", run_id, exc)
         run_manager.add_error(run_id, scraper.describe_failure(exc))
         run_manager.update_run(run_id, status="failed", step="failed")
+        repository.update_run_progress(
+            run_id, status="failed", error=str(exc), finished_at=datetime.now()
+        )
     finally:
         scraper.cleanup()
 

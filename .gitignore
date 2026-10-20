@@ -1,6 +1,8 @@
 # Python / server
 server/.venv/
 server/documents/
+# SAM engine's per-run attachment downloads (sam_scraper.py _temp_docs_dir)
+server/app/scrapers/sam/engine/temp_docs/
 data/
 __pycache__/
 *.pyc

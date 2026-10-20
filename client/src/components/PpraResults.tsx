@@ -1,16 +1,16 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { listPpraBids } from "@/lib/api";
+import { listPpraBids, type PpraBid } from "@/lib/api";
 
 export default function PpraResults({
   runId,
   initialBids = [],
 }: {
   runId?: string;
-  initialBids?: any[];
+  initialBids?: PpraBid[];
 }) {
-  const [bids, setBids] = useState<any[]>(initialBids);
+  const [bids, setBids] = useState<PpraBid[]>(initialBids);
   const [filterQuery, setFilterQuery] = useState("");
 
   useEffect(() => {
@@ -31,7 +31,7 @@ export default function PpraResults({
           });
           lastId = Math.max(...res.bids.map((b) => b.id));
         }
-      } catch (err) {
+      } catch {
         // Silently tolerate transient polling error
       }
     };
@@ -105,7 +105,7 @@ export default function PpraResults({
                   <td className="max-w-xs truncate px-3 py-2.5" title={b.title}>
                     {b.title}
                   </td>
-                  <td className="max-w-xs truncate px-3 py-2.5 text-ink-600" title={b.organization}>
+                  <td className="max-w-xs truncate px-3 py-2.5 text-ink-600" title={b.organization ?? undefined}>
                     {b.organization || "—"}
                   </td>
                   <td className="whitespace-nowrap px-3 py-2.5 text-ink-500">

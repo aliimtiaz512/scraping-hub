@@ -1302,9 +1302,13 @@ def test_match_any_flips_the_criteria_switch(browser, tmp_path):
     assert checkbox.is_selected(), "Match Criteria stayed on All"
 
 
-def test_the_search_button_is_clicked_and_the_wait_is_for_rows(browser, tmp_path):
+def test_the_search_button_is_clicked_and_the_wait_is_for_rows(browser, tmp_path, monkeypatch):
     """The button runs a PrimeFaces AJAX update rather than navigating, so what
     is waited on is content — and an empty panel is an answer, not a failure."""
+    from app.scrapers.philadelphia import scraper as phl
+
+    # The fixture never answers with rows, so the wait always runs to its end.
+    monkeypatch.setattr(phl, "SEARCH_RESULTS_TIMEOUT", 1)
     scraper = _scraper_on(_render(browser, ADVANCED_SEARCH_HTML), tmp_path)
     clicks: list[str] = []
     real_execute = browser.execute_script

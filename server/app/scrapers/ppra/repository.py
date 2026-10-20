@@ -3,7 +3,7 @@
 import json
 import logging
 import re
-from datetime import date, datetime, timezone
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +15,7 @@ from app.config import settings
 from app.core.closing_filter import parse_close_date
 from app.db import SessionLocal
 from app.scrapers.ppra.models import PpraBid, PpraRun
+from app.scrapers.ppra.parsers import PKT
 
 logger = logging.getLogger(__name__)
 
@@ -46,24 +47,27 @@ def _safe_date(val: Any) -> date | None:
 
 
 def _safe_datetime(val: Any) -> datetime | None:
-    """Coerce string/datetime into UTC-aware datetime or None. Never returns invalid strings."""
+    """Coerce string/datetime into a tz-aware datetime or None. Never returns invalid strings.
+
+    PPRA publishes closing times in Pakistan time, so a naive value is read as PKT.
+    """
     if not val:
         return None
     if isinstance(val, datetime):
-        return val if val.tzinfo else val.replace(tzinfo=timezone.utc)
+        return val if val.tzinfo else val.replace(tzinfo=PKT)
     if isinstance(val, date):
-        return datetime(val.year, val.month, val.day, tzinfo=timezone.utc)
+        return datetime(val.year, val.month, val.day, tzinfo=PKT)
     s = str(val).strip()
     if not re.search(r"\b20\d{2}\b", s):
         return None
     try:
         dt = dt_parser.parse(s)
-        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+        return dt if dt.tzinfo else dt.replace(tzinfo=PKT)
     except Exception:
         pass
     d = _safe_date(val)
     if d:
-        return datetime(d.year, d.month, d.day, tzinfo=timezone.utc)
+        return datetime(d.year, d.month, d.day, tzinfo=PKT)
     return None
 
 
@@ -181,7 +185,9 @@ def upsert_bids(
             }
 
             stmt = pg_insert(PpraBid).values(**values).on_conflict_do_update(
-                constraint="uq_ppra_run_tender",
+                # Conflict target by columns, not constraint name: the SQL migration and
+                # create_all name the (run_id, tender_no) unique constraint differently.
+                index_elements=["run_id", "tender_no"],
                 set_={k: v for k, v in values.items() if k not in ("run_id", "tender_no")},
             )
             session.execute(stmt)

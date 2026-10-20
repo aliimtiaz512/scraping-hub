@@ -71,8 +71,8 @@ export default function PpraPanel() {
       } else {
         await pauseRun(run.run_id);
       }
-    } catch (err: any) {
-      setError(err?.message || "Failed to toggle pause");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to toggle pause");
     } finally {
       setPausing(false);
     }
@@ -278,7 +278,7 @@ export default function PpraPanel() {
 
       {run && <RunStatusPanel run={run} />}
       <SessionActivity portal="ppra" />
-      {run && <PpraResults runId={run.run_id} initialBids={run.bids} />}
+      {run && <PpraResults runId={run.run_id} />}
     </div>
   );
 }

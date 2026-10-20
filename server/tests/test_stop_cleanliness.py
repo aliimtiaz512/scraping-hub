@@ -113,6 +113,9 @@ def test_bidnet_logs_a_stop_as_a_stop_not_a_failure(caplog, monkeypatch, tmp_pat
     monkeypatch.setattr(instance, "screenshot", lambda name: shots.append(name))
     monkeypatch.setattr(instance, "_save_run_row", lambda: None)
     monkeypatch.setattr(instance, "cleanup", lambda: None)
+    # The stop unwinds into deliver_partial, whose archive_run zips the day's real
+    # BidNet session root — minutes of compressing documents/ for a logging test.
+    monkeypatch.setattr("app.core.exports.archive_run", lambda run_id: None)
     # The user pressed Stop while the browser was starting.
     monkeypatch.setattr(instance, "start_driver", _raise_stop)
     monkeypatch.setattr(bidnet.run_manager, "remove_empty_folder", lambda run_id: None)

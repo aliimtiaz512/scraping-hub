@@ -1263,12 +1263,40 @@ export function refreshPpraScrape(
   });
 }
 
+/** One row of `GET /ppra/bids` (shape of `_bid_dict` in server/app/scrapers/ppra/router.py). */
+export interface PpraBid {
+  id: number;
+  run_id: string;
+  page_no: number;
+  position: number;
+  tender_no: string;
+  title: string;
+  description: string | null;
+  sector: string | null;
+  tender_ref_no: string | null;
+  tender_type: string | null;
+  category: string | null;
+  nature: string | null;
+  organization: string | null;
+  department: string | null;
+  city: string | null;
+  country: string | null;
+  status: string | null;
+  advertised_on: string | null;
+  closing_at: string | null;
+  detail_url: string | null;
+  invoice_url: string | null;
+  change_status: string;
+  diff: Record<string, unknown> | null;
+  scraped_at: string | null;
+}
+
 export function listPpraBids(params: {
   run_id?: string;
   query?: string;
   after_id?: number;
   limit?: number;
-}): Promise<{ bids: any[]; count: number }> {
+}): Promise<{ bids: PpraBid[]; count: number }> {
   const q = new URLSearchParams();
   if (params.run_id) q.set("run_id", params.run_id);
   if (params.query) q.set("query", params.query);
