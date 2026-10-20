@@ -11,8 +11,9 @@ which is why the real Log in button must be clicked (never a bare form.submit).
 Flow: sign in -> open the "Sourcing" nav dropdown and click "Public Solicitations"
 (/page.aspx/en/rfp/request_browse_public) -> optionally apply the filter bar
 (Keywords / Status / Category) and Search -> page through the whole results grid
-(#body_x_grid_grd) -> keep only solicitations still >= 7 days from close (shared
-closing_filter) -> screen every bid against the keyword blocklist (see
+(#body_x_grid_grd) -> keep only solicitations published inside the requested
+date range, if one was given (see `publish_window_verdict`) -> keep only
+solicitations still >= 7 days from close (shared closing_filter) -> screen every bid against the keyword blocklist (see
 `evaluation`) -> persist the ones that pass -> build one Excel from the DB.
 
 Screening runs in two stages, which is what makes a run affordable. The first
@@ -28,7 +29,7 @@ entire deliverable, which is why EMMA is an EXCEL_ONLY portal.
 import logging
 import shutil
 import time
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -40,10 +41,11 @@ from selenium.webdriver.support import expected_conditions as EC
 from app.config import settings
 from app.core import partials, run_manager
 from app.core.base_scraper import BaseScraper, StopRequested
-from app.core.closing_filter import MIN_DAYS_UNTIL_CLOSE, days_until_close
+from app.core.closing_filter import MIN_DAYS_UNTIL_CLOSE, days_until_close, parse_close_date
 from app.core.exports import archive_run
 from app.core.filenames import sanitize_filename
 from app.scrapers.emma import evaluation, export
+from app.scrapers.myflorida.dates import PostingDateRange
 from app.services.notifier import notify_scrape_completion
 
 logger = logging.getLogger(__name__)
@@ -101,6 +103,9 @@ RECYCLE_EVERY = 75
 
 MAX_PAGES = 200       # pagination safety guard
 PREVIEW_LIMIT = 100   # rows mirrored to the live run state for the UI table
+# How many discarded bids are named in the log, so the date range's decisions
+# can be checked without opening the database.
+LOG_DISCARDED_LIMIT = 10
 
 # Read every grid row via one JS pass. Column order confirmed from the live grid:
 # td[0]=edit/detail link, [1]=ID, [2]=Title, [3]=Status, [4]=Due/Close Date,
@@ -135,6 +140,37 @@ _JS_SCRAPE = """
 """
 
 
+def publish_window_verdict(raw: str | None, window: PostingDateRange) -> str:
+    """Where a bid's Publish Date falls against the requested range.
+
+    Returns "in", "before", "after" or "unreadable". Both ends are inclusive and
+    compared as calendar days, so a bid published at 11:59 PM on the To day is
+    kept — EMMA's times are US Eastern, and comparing days keeps time zones out
+    of it. The caller discards anything but "in": only a bid provably inside the
+    range is kept, so an unreadable date is dropped (and counted) rather than
+    waved through.
+    """
+    published = parse_close_date(raw)
+    if published is None:
+        return "unreadable"
+    if window.start and published < window.start:
+        return "before"
+    if window.end and published > window.end:
+        return "after"
+    return "in"
+
+
+def describe_window(window: PostingDateRange) -> str:
+    """The range in words, for the run summary and the Matched Filters column."""
+    if window.start and window.end:
+        return f"published {window.start.isoformat()} to {window.end.isoformat()}"
+    if window.start:
+        return f"published on or after {window.start.isoformat()}"
+    if window.end:
+        return f"published on or before {window.end.isoformat()}"
+    return ""
+
+
 class EmmaScraper(BaseScraper):
     def __init__(
         self,
@@ -142,11 +178,15 @@ class EmmaScraper(BaseScraper):
         keyword: str = "",
         status: str = "",
         category: str = "",
+        date_range: PostingDateRange | None = None,
     ):
         super().__init__(run_id)
         self.keyword = (keyword or "").strip()
         self.status = (status or "").strip()
         self.category = (category or "").strip()
+        # Publish Date range. Applied on our side, before any detail page is
+        # opened; an empty range keeps everything.
+        self.date_range = date_range or PostingDateRange()
         self.excel_path: Path | None = None
         # Full in-memory copy of every kept row — the Excel fallback source if the
         # DB is unavailable.
@@ -156,6 +196,12 @@ class EmmaScraper(BaseScraper):
         self._kept_unreadable_close = 0
         # Bids dropped by the keyword blocklist (see app/scrapers/emma/evaluation).
         self._rejected_by_keyword = 0
+        # Publish-date range tallies: outside the range, and no readable date.
+        self._skipped_outside_range = 0
+        self._skipped_no_publish_date = 0
+        # Set when paging stopped because the grid proved newest-first and a
+        # whole page was already older than the range's start.
+        self._stopped_paging_early = False
 
     # -- helpers ------------------------------------------------------------
 
@@ -172,11 +218,17 @@ class EmmaScraper(BaseScraper):
                 f"keyword={self.keyword}" if self.keyword else "",
                 f"status={self.status}" if self.status else "",
                 f"category={self.category}" if self.category else "",
+                describe_window(self.date_range),
             ) if part
         ) or "all public solicitations"
 
     def _has_filters(self) -> bool:
+        """Whether the portal's own filter bar has anything to apply. The
+        publish-date range is not one of them: it is applied on our side."""
         return bool(self.keyword or self.status or self.category)
+
+    def _has_criteria(self) -> bool:
+        return self._has_filters() or self.date_range.is_set
 
     def _safe_click(self, element) -> bool:
         """Click, falling back to a JS click if something overlays the target."""
@@ -449,7 +501,7 @@ class EmmaScraper(BaseScraper):
             if not row.get("emma_id"):
                 continue
             row["detail_url"] = self._abs_url(row.get("detail_url"))
-            row["matched_filters"] = self._filters_summary() if self._has_filters() else ""
+            row["matched_filters"] = self._filters_summary() if self._has_criteria() else ""
             row["documents"] = []
             rows.append(row)
         return rows
@@ -541,15 +593,49 @@ class EmmaScraper(BaseScraper):
         seen: set[str] = set()
         scraped = 0
         pages = 0
+        # Stopping early needs a newest-first grid. That is checked on every row
+        # rather than assumed: one publish date newer than the one before it
+        # proves the grid is not sorted that way, and paging runs to the end.
+        newest_first = True
+        previous_published: date | None = None
+        logged_discards = 0
 
         while pages < MAX_PAGES:
             pages += 1
+            page_newest: date | None = None
             for rec in self._read_rows():
+                published = parse_close_date(rec.get("publish_date"))
+                if published is not None:
+                    if previous_published is not None and published > previous_published:
+                        newest_first = False
+                    previous_published = published
+                    if page_newest is None or published > page_newest:
+                        page_newest = published
+
                 key = rec.get("emma_id")
                 if key and key in seen:
                     continue
                 if key:
                     seen.add(key)
+
+                # The publish-date range comes first, so a bid outside it never
+                # reaches the close-date rule, the keyword screen or its detail page.
+                if self.date_range.is_set:
+                    verdict = publish_window_verdict(rec.get("publish_date"), self.date_range)
+                    if verdict != "in":
+                        if verdict == "unreadable":
+                            self._skipped_no_publish_date += 1
+                        else:
+                            self._skipped_outside_range += 1
+                        if logged_discards < LOG_DISCARDED_LIMIT:
+                            logged_discards += 1
+                            logger.info(
+                                "[run %s] discarded %s: published %r (%s the range)",
+                                self.run_id, rec.get("bpm_code") or key,
+                                rec.get("publish_date"),
+                                "unreadable for" if verdict == "unreadable" else verdict,
+                            )
+                        continue
 
                 # Keep only solicitations still at least MIN_DAYS_UNTIL_CLOSE days
                 # from their Due/Close Date; an unreadable close date is kept.
@@ -569,10 +655,30 @@ class EmmaScraper(BaseScraper):
             )
             logger.info("[run %s] page %s scraped (kept total %s)", self.run_id, pages, scraped)
 
+            # Every later page of a newest-first grid is older still, so once a
+            # whole page — its newest row included — is older than the range's
+            # start, there is nothing left to find. Waiting for a whole page
+            # rather than its last row costs one page on a sorted grid, and means
+            # the order has to hold across a page boundary before it is trusted:
+            # one page that merely happens to be in order proves nothing.
+            if (
+                newest_first
+                and self.date_range.start
+                and page_newest is not None
+                and page_newest < self.date_range.start
+            ):
+                self._stopped_paging_early = True
+                logger.info(
+                    "[run %s] stopped paging after page %s: the grid is newest-first and "
+                    "this whole page is older than the range start %s (newest row %s)",
+                    self.run_id, pages, self.date_range.start.isoformat(), page_newest.isoformat(),
+                )
+                break
+
             if not self._go_next_page():
                 break
 
-        if pages >= MAX_PAGES:
+        if pages >= MAX_PAGES and not self._stopped_paging_early:
             run_manager.add_error(self.run_id, f"stopped at page cap ({MAX_PAGES})")
 
     # -- documents ----------------------------------------------------------
@@ -962,6 +1068,19 @@ class EmmaScraper(BaseScraper):
                 bids_skipped_closing_soon=self._skipped_closing_soon,
                 bids_kept_unreadable_close=self._kept_unreadable_close,
             )
+            if self.date_range.is_set:
+                run_manager.update_run(
+                    self.run_id,
+                    bids_skipped_outside_date_range=self._skipped_outside_range,
+                    bids_skipped_no_publish_date=self._skipped_no_publish_date,
+                    stopped_paging_early=self._stopped_paging_early,
+                )
+                logger.info(
+                    "[run %s] publish-date range (%s): discarded %s outside it, %s with no readable date%s",
+                    self.run_id, describe_window(self.date_range), self._skipped_outside_range,
+                    self._skipped_no_publish_date,
+                    "; stopped paging early" if self._stopped_paging_early else "",
+                )
             logger.info(
                 "[run %s] close-date filter (≥%sd): kept %s, skipped %s closing soon, %s unreadable kept",
                 self.run_id, MIN_DAYS_UNTIL_CLOSE, len(self._records),
@@ -1067,5 +1186,6 @@ def execute_run(
     keyword: str = "",
     status: str = "",
     category: str = "",
+    date_range: PostingDateRange | None = None,
 ) -> None:
-    EmmaScraper(run_id, keyword, status, category).run()
+    EmmaScraper(run_id, keyword, status, category, date_range).run()
