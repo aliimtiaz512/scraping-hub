@@ -17,7 +17,7 @@ export default function EmmaPanel() {
   const [keyword, setKeyword] = useState("");
   const [status, setStatus] = useState("");
   const [category, setCategory] = useState("");
-  // Publish Date range, ISO (yyyy-mm-dd) from the native pickers. Either end may
+  // Publish Date Range, ISO (yyyy-mm-dd) from the native pickers. Either end may
   // be blank; the server discards every bid published outside the range.
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
@@ -60,7 +60,7 @@ export default function EmmaPanel() {
 
       <Card
         title="Filters"
-        description="The same three filters the portal shows above Public Solicitations, plus a Publish Date range — all optional and combinable. Leave them blank to capture every public solicitation. Bids published outside the range are discarded; only solicitations closing at least 7 days out are kept."
+        description="The same three filters the portal shows above Public Solicitations, plus a Publish Date Range — all optional and combinable. Leave them blank to capture every public solicitation. Bids published outside the range are discarded; only solicitations closing at least 7 days out are kept."
       >
         <div className="grid gap-4 sm:grid-cols-3">
           <Field
@@ -87,7 +87,7 @@ export default function EmmaPanel() {
         </div>
 
         <div className="mt-5 border-t border-ink-100 pt-5">
-          <p className="mb-3 text-xs font-semibold text-ink-700">Publish Date range</p>
+          <p className="mb-3 text-xs font-semibold text-ink-700">Publish Date Range</p>
           <div className="flex flex-wrap items-end gap-4">
             <DateField
               label="From"

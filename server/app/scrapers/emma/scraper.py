@@ -194,8 +194,11 @@ class EmmaScraper(BaseScraper):
         # Close-date filter tallies (see app/core/closing_filter).
         self._skipped_closing_soon = 0
         self._kept_unreadable_close = 0
-        # Bids dropped by the keyword blocklist (see app/scrapers/emma/evaluation).
+        # Bids dropped by the keyword blocklist (see app/scrapers/emma/evaluation),
+        # and how many of those went at the first stage, on their grid fields
+        # alone, before a detail page was opened.
         self._rejected_by_keyword = 0
+        self._rejected_before_opening = 0
         # Publish-date range tallies: outside the range, and no readable date.
         self._skipped_outside_range = 0
         self._skipped_no_publish_date = 0
@@ -788,11 +791,17 @@ class EmmaScraper(BaseScraper):
             "[run %s] keyword screen: %s passed, %s rejected (of %s)",
             self.run_id, len(passed), self._rejected_by_keyword, len(self._records),
         )
+        # How many reached the screen, recorded before the list is cut down to
+        # the passing bids — "Bids found" drops to the passed count here, and
+        # without this the run would not say where the rest went.
+        checked = len(self._records)
         self._records = passed
         run_manager.update_run(
             self.run_id,
             bids_found=len(passed),
             bids_processed=len(passed),
+            bids_keyword_checked=checked,
+            bids_rejected_before_opening=self._rejected_before_opening,
             bids_rejected_by_keyword=self._rejected_by_keyword,
             bids=[{**r, "error": None} for r in passed[:PREVIEW_LIMIT]],
         )
@@ -840,6 +849,8 @@ class EmmaScraper(BaseScraper):
 
         if verdict["decision"] == "REJECT":
             self._rejected_by_keyword += 1
+            if stage == "pre":
+                self._rejected_before_opening += 1
             logger.info(
                 "[run %s] %s REJECTED (%s, %s) — %r found in %s",
                 self.run_id, code, stage, verdict["matched_rule"],

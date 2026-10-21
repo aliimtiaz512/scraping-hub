@@ -279,6 +279,13 @@ export interface RunStatus {
   bids_skipped_outside_date_range?: number;
   bids_skipped_no_publish_date?: number;
   stopped_paging_early?: boolean;
+  // EMMA-only: the keyword screen. `bids_keyword_checked` reached it; of those,
+  // `bids_rejected_by_keyword` were rejected — `bids_rejected_before_opening`
+  // on their own text, the rest after their detail page and documents were
+  // read. `bids_found` is the number that passed.
+  bids_keyword_checked?: number;
+  bids_rejected_by_keyword?: number;
+  bids_rejected_before_opening?: number;
   // RideMetro-only: the Euna Supplier Network sweep. `agencies` is the whole My
   // Network roster in portal order — including the Incomplete ones the run
   // skipped and the Complete ones that had nothing open, neither of which

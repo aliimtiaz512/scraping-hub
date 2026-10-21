@@ -101,6 +101,9 @@ export default function RunStatus({ run }: { run: RunStatusData }) {
   // An EMMA run limited to a Publish Date range. Scoped to EMMA because SAM runs
   // carry date_from / date_to too, and theirs mean a different date.
   const emmaRange = run.scraper === "emma" && !!(run.date_from || run.date_to);
+  // Set once EMMA's keyword screen has finished, which is when "Bids found"
+  // drops to the passed count.
+  const emmaScreened = run.scraper === "emma" && run.bids_keyword_checked !== undefined;
   // A stopped run that kept its rows. The panel says so rather than dressing it
   // up as a finished one: the reviewer is about to open a spreadsheet that is
   // missing everything after the point they pressed Stop.
@@ -180,7 +183,7 @@ export default function RunStatus({ run }: { run: RunStatusData }) {
         <Stat label="Results" value={run.excel_exported ? "Ready" : "—"} muted={!run.excel_exported} />
       </div>
 
-      {(run.errors.length > 0 || run.no_results || (run.warnings?.length ?? 0) > 0 || run.status === "completed" || run.status === "stopped" || !!run.min_days_until_close || emmaRange) && (
+      {(run.errors.length > 0 || run.no_results || (run.warnings?.length ?? 0) > 0 || run.status === "completed" || run.status === "stopped" || !!run.min_days_until_close || emmaRange || emmaScreened) && (
         <div className="space-y-3 border-t border-ink-100 p-5">
           {emmaRange && (
             <DateRangeNote
@@ -197,6 +200,15 @@ export default function RunStatus({ run }: { run: RunStatusData }) {
               minDays={run.min_days_until_close}
               skipped={run.bids_skipped_closing_soon ?? 0}
               unreadable={run.bids_kept_unreadable_close ?? 0}
+            />
+          )}
+
+          {emmaScreened && (
+            <KeywordScreenNote
+              checked={run.bids_keyword_checked ?? 0}
+              rejected={run.bids_rejected_by_keyword ?? 0}
+              beforeOpening={run.bids_rejected_before_opening ?? 0}
+              passed={run.bids_found}
             />
           )}
 
@@ -372,6 +384,38 @@ function ClosingFilterNote({
         {unreadable > 0
           ? ` ${unreadable} with an unreadable close date ${unreadable === 1 ? "was" : "were"} kept.`
           : ""}
+      </p>
+    </div>
+  );
+}
+
+/**
+ * Informational note for EMMA's keyword screen. "Bids found" drops to the
+ * passed count when screening ends; this says where the rest went, and how many
+ * were caught on their own text before a page was opened or a file downloaded.
+ */
+function KeywordScreenNote({
+  checked,
+  rejected,
+  beforeOpening,
+  passed,
+}: {
+  checked: number;
+  rejected: number;
+  beforeOpening: number;
+  passed: number;
+}) {
+  const afterOpening = rejected - beforeOpening;
+  return (
+    <div className="rounded-lg border border-ink-200 bg-ink-50 p-3.5">
+      <p className="mb-1 text-xs font-semibold text-ink-700">
+        Keyword screen · {checked} checked → {rejected} rejected → {passed} passed
+      </p>
+      <p className="text-sm text-ink-600">
+        Bids naming out-of-scope work, open only to master-contract holders, or that are Requests for Information are rejected.
+        {rejected > 0
+          ? ` ${beforeOpening} ${beforeOpening === 1 ? "was" : "were"} rejected on ${beforeOpening === 1 ? "its" : "their"} own text before any page was opened; ${afterOpening} after ${afterOpening === 1 ? "its" : "their"} details and documents were read.`
+          : " None were rejected."}
       </p>
     </div>
   );
