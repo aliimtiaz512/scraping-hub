@@ -7,7 +7,7 @@ import MyFloridaSweep from "@/components/MyFloridaSweep";
 import MyFloridaSweepResults from "@/components/MyFloridaSweepResults";
 import ResultsTable from "@/components/ResultsTable";
 import RunStatusPanel from "@/components/RunStatus";
-import { Card, ErrorBanner, LaunchBar, SegmentedControl, StartButton } from "@/components/ui";
+import { Card, DateField, ErrorBanner, LaunchBar, SegmentedControl, StartButton } from "@/components/ui";
 import LiveMonitor from "@/components/LiveMonitor";
 import StopButton from "@/components/StopButton";
 import RefreshButton from "@/components/RefreshButton";
@@ -398,32 +398,5 @@ function PostingDateWindow({
         </p>
       )}
     </Card>
-  );
-}
-
-/** A native date input. The console speaks ISO throughout; the server converts
- *  to the mm/dd/yyyy the portal's own fields take. */
-function DateField({
-  label,
-  value,
-  disabled,
-  onChange,
-}: {
-  label: string;
-  value: string;
-  disabled?: boolean;
-  onChange: (value: string) => void;
-}) {
-  return (
-    <div>
-      <label className="mb-1.5 block text-xs font-semibold text-ink-700">{label}</label>
-      <input
-        type="date"
-        value={value}
-        disabled={disabled}
-        onChange={(event) => onChange(event.target.value)}
-        className="rounded-lg border border-ink-200 bg-white px-3 py-1.5 text-sm text-ink-900 shadow-sm focus:border-gold-400 focus:outline-none focus:ring-2 focus:ring-gold-400/25 disabled:cursor-not-allowed disabled:bg-ink-50"
-      />
-    </div>
   );
 }

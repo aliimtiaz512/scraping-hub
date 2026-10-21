@@ -272,6 +272,20 @@ export interface RunStatus {
   min_days_until_close?: number;
   bids_skipped_closing_soon?: number;
   bids_kept_unreadable_close?: number;
+  // EMMA-only: what the Publish Date range (`date_from` / `date_to`, below)
+  // discarded — outside the range, or with no readable publish date.
+  // `stopped_paging_early` is set when the grid proved newest-first and the
+  // rest of it was older than the range.
+  bids_skipped_outside_date_range?: number;
+  bids_skipped_no_publish_date?: number;
+  stopped_paging_early?: boolean;
+  // EMMA-only: the keyword screen. `bids_keyword_checked` reached it; of those,
+  // `bids_rejected_by_keyword` were rejected — `bids_rejected_before_opening`
+  // on their own text, the rest after their detail page and documents were
+  // read. `bids_found` is the number that passed.
+  bids_keyword_checked?: number;
+  bids_rejected_by_keyword?: number;
+  bids_rejected_before_opening?: number;
   // RideMetro-only: the Euna Supplier Network sweep. `agencies` is the whole My
   // Network roster in portal order — including the Incomplete ones the run
   // skipped and the Complete ones that had nothing open, neither of which
@@ -289,7 +303,8 @@ export interface RunStatus {
   bids_fully_extracted?: number;
   bids_partial?: number;
   bids_extraction_failed?: number;
-  // SAM-only filters.
+  // SAM: its date filter. EMMA: the Publish Date range (ISO; either end may be
+  // null). Read together with `scraper` — the two mean different dates.
   date_from?: string | null;
   date_to?: string | null;
   naics_codes?: string[];
@@ -960,28 +975,35 @@ export function startCalEProcureScrape(): Promise<{ run_id: string; folder: stri
 
 export interface StartEmmaScrapeOptions {
   // All optional and combinable; all blank captures every public solicitation.
-  // These are the three filters the portal shows above the results grid.
+  // keyword / status / category are the three filters the portal shows above
+  // the results grid. dateFrom / dateTo (ISO yyyy-mm-dd) bound the Publish
+  // Date; the server discards every bid outside them.
   keyword?: string;
   status?: string;
   category?: string;
+  dateFrom?: string;
+  dateTo?: string;
   livePreview?: boolean;
 }
 
 /**
  * Sign in, open Public Solicitations, optionally apply the filter bar (Keywords /
- * Status / Category), scrape the whole grid, open each solicitation to extract
- * all its fields and download its documents, and store every solicitation still
- * closing at least 7 days out.
+ * Status / Category), scrape the whole grid, keep only bids published inside the
+ * date range (if one is given), open each solicitation to extract all its fields
+ * and download its documents, and store every solicitation still closing at
+ * least 7 days out.
  */
 export function startEmmaScrape({
   keyword = "",
   status = "",
   category = "",
+  dateFrom = "",
+  dateTo = "",
   livePreview = false,
 }: StartEmmaScrapeOptions = {}): Promise<{ run_id: string; search: string; folder: string }> {
   return request(`/emma/scrape${livePreviewQuery(livePreview)}`, {
     method: "POST",
-    body: JSON.stringify({ keyword, status, category }),
+    body: JSON.stringify({ keyword, status, category, date_from: dateFrom, date_to: dateTo }),
   });
 }
 

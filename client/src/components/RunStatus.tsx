@@ -98,6 +98,12 @@ export default function RunStatus({ run }: { run: RunStatusData }) {
   const download = runDownloadable(run);
   const excelOnly = downloadKind(run.scraper ?? "") === "excel";
   const attachments = runAttachmentsDownloadable(run);
+  // An EMMA run limited to a Publish Date range. Scoped to EMMA because SAM runs
+  // carry date_from / date_to too, and theirs mean a different date.
+  const emmaRange = run.scraper === "emma" && !!(run.date_from || run.date_to);
+  // Set once EMMA's keyword screen has finished, which is when "Bids found"
+  // drops to the passed count.
+  const emmaScreened = run.scraper === "emma" && run.bids_keyword_checked !== undefined;
   // A stopped run that kept its rows. The panel says so rather than dressing it
   // up as a finished one: the reviewer is about to open a spreadsheet that is
   // missing everything after the point they pressed Stop.
@@ -177,13 +183,32 @@ export default function RunStatus({ run }: { run: RunStatusData }) {
         <Stat label="Results" value={run.excel_exported ? "Ready" : "—"} muted={!run.excel_exported} />
       </div>
 
-      {(run.errors.length > 0 || run.no_results || (run.warnings?.length ?? 0) > 0 || run.status === "completed" || run.status === "stopped" || !!run.min_days_until_close) && (
+      {(run.errors.length > 0 || run.no_results || (run.warnings?.length ?? 0) > 0 || run.status === "completed" || run.status === "stopped" || !!run.min_days_until_close || emmaRange || emmaScreened) && (
         <div className="space-y-3 border-t border-ink-100 p-5">
+          {emmaRange && (
+            <DateRangeNote
+              from={run.date_from}
+              to={run.date_to}
+              outside={run.bids_skipped_outside_date_range}
+              noDate={run.bids_skipped_no_publish_date}
+              stoppedEarly={run.stopped_paging_early}
+            />
+          )}
+
           {!!run.min_days_until_close && (
             <ClosingFilterNote
               minDays={run.min_days_until_close}
               skipped={run.bids_skipped_closing_soon ?? 0}
               unreadable={run.bids_kept_unreadable_close ?? 0}
+            />
+          )}
+
+          {emmaScreened && (
+            <KeywordScreenNote
+              checked={run.bids_keyword_checked ?? 0}
+              rejected={run.bids_rejected_by_keyword ?? 0}
+              beforeOpening={run.bids_rejected_before_opening ?? 0}
+              passed={run.bids_found}
             />
           )}
 
@@ -359,6 +384,75 @@ function ClosingFilterNote({
         {unreadable > 0
           ? ` ${unreadable} with an unreadable close date ${unreadable === 1 ? "was" : "were"} kept.`
           : ""}
+      </p>
+    </div>
+  );
+}
+
+/**
+ * Informational note for EMMA's keyword screen. "Bids found" drops to the
+ * passed count when screening ends; this says where the rest went, and how many
+ * were caught on their own text before a page was opened or a file downloaded.
+ */
+function KeywordScreenNote({
+  checked,
+  rejected,
+  beforeOpening,
+  passed,
+}: {
+  checked: number;
+  rejected: number;
+  beforeOpening: number;
+  passed: number;
+}) {
+  const afterOpening = rejected - beforeOpening;
+  return (
+    <div className="rounded-lg border border-ink-200 bg-ink-50 p-3.5">
+      <p className="mb-1 text-xs font-semibold text-ink-700">
+        Keyword screen · {checked} checked → {rejected} rejected → {passed} passed
+      </p>
+      <p className="text-sm text-ink-600">
+        Bids naming out-of-scope work, open only to master-contract holders, or that are Requests for Information are rejected.
+        {rejected > 0
+          ? ` ${beforeOpening} ${beforeOpening === 1 ? "was" : "were"} rejected on ${beforeOpening === 1 ? "its" : "their"} own text before any page was opened; ${afterOpening} after ${afterOpening === 1 ? "its" : "their"} details and documents were read.`
+          : " None were rejected."}
+      </p>
+    </div>
+  );
+}
+
+/**
+ * Informational note for a run limited to a Publish Date range (EMMA). Says
+ * what the range discarded, so a short or empty result reads as the range
+ * doing its job rather than a broken search. The counts arrive once the
+ * results grid has been read; until then only the range itself is shown.
+ */
+function DateRangeNote({
+  from,
+  to,
+  outside,
+  noDate,
+  stoppedEarly,
+}: {
+  from?: string | null;
+  to?: string | null;
+  outside?: number;
+  noDate?: number;
+  stoppedEarly?: boolean;
+}) {
+  const range = from && to ? `${from} to ${to}` : from ? `on or after ${from}` : `on or before ${to}`;
+  const counted = outside !== undefined || noDate !== undefined;
+  return (
+    <div className="rounded-lg border border-ink-200 bg-ink-50 p-3.5">
+      <p className="mb-1 text-xs font-semibold text-ink-700">Publish-date range · {range}</p>
+      <p className="text-sm text-ink-600">
+        Only bids published {range} are kept.
+        {counted &&
+          ((outside ?? 0) > 0
+            ? ` ${outside} published outside it ${outside === 1 ? "was" : "were"} discarded.`
+            : " None were outside it.")}
+        {(noDate ?? 0) > 0 ? ` ${noDate} with no readable publish date ${noDate === 1 ? "was" : "were"} discarded.` : ""}
+        {stoppedEarly ? " Paging stopped early: the rest of the list was published before the range." : ""}
       </p>
     </div>
   );
