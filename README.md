@@ -6,9 +6,11 @@ Selenium / DB / run-tracking infrastructure in `server/app/core/`. A Next.js
 console (`client/`) drives every portal, shows live run status, and downloads
 results.
 
-Twelve portals plus a reference tool are mounted today. Whatever a portal
-scrapes, every run ends the same way: rows in its own `*_bids` table, a styled
-Excel generated from that table, and one downloadable archive.
+The console lists twelve sources, all US: ten bid portals (MyFlorida also has a
+second, ad-status sweep flow), Cal eProcure (login verification only) and the
+NAICS reference tool. Whatever a portal scrapes, every run ends the same way:
+rows in its own `*_bids` table, a styled Excel generated from that table, and
+one downloadable archive.
 
 ## Portals
 
@@ -49,24 +51,28 @@ Scrape metadata **and** keep each bid's files; the download is a ZIP.
     it; its `Niche` column names the issuing agency.
 
   See `plan_bidnet-direct.md` and `docs/bidnet-*.md`.
-- **City of Philadelphia** (PHLContracts, Periscope BSO) — vendor login through
-  a PrimeFaces overlay, then the Bids tab → Open Bids → View More. Stores the
-  header fields and line items of each bid, downloads its attachments, and runs
-  it through the **shared evaluation matrix** (below). Line items are what let
-  the matrix tell a supply from a service on a one-line description. See
-  `docs/philadelphia-phlcontracts.md`.
 
 ### List-only portals
 
 Metadata → DB → generated Excel. The download is a bare `.xlsx`; no ZIP, because
 a ZIP around a single sheet is a folder to unpack for nothing.
 
+- **City of Philadelphia** (PHLContracts, Periscope BSO) — vendor login through
+  a PrimeFaces overlay, then the Bids tab → Open Bids → View More. Stores the
+  header fields and line items of each bid, and the *count* of documents it
+  publishes — the attachments themselves are no longer downloaded — and runs it
+  through the **shared evaluation matrix** (below). Line items are what let the
+  matrix tell a supply from a service on a one-line description. See
+  `docs/philadelphia-phlcontracts.md`.
 - **EMMA** (eMaryland Marketplace Advantage / Ivalua) — signs in, opens
   **Sourcing → Public Solicitations**, applies the portal's own **Keywords /
-  Status / Category** filters, and pages the whole results grid. Every bid is
-  then screened against a **keyword blocklist** (below) and only the passing
-  ones are reported. Documents are downloaded solely so their text can be
-  screened, then deleted.
+  Status / Category** filters, and pages the whole results grid. An optional
+  **Publish Date range** (From / To) keeps only bids published inside it (see
+  *The Publish Date range — EMMA*, below). Every remaining bid is screened
+  against a **keyword blocklist** (below) and only the passing ones are
+  reported. Documents are downloaded solely so their text can be screened, then
+  deleted. The results table shows each bid's **Published** and **Due / Close**
+  dates.
 - **SEPTA** — ASP.NET vendor portal. One run searches **exactly one module**:
   *Open Quotes* (a parts-requisition feed) or *Open Bids* (actual
   solicitations), with an optional open-ended "opens from" date. The two grids
@@ -87,7 +93,10 @@ a ZIP around a single sheet is a folder to unpack for nothing.
 - **SAM.gov** — searches active solicitations by updated-date range and NAICS
   code, extracts each notice with its attachments, and scores every bid through
   the evaluation matrix. Attachments are read for their text, then deleted. No
-  credentials required.
+  credentials required. An **Include Source Sought** option adds the *Sources
+  Sought* notice type to the search. Note that "sources sought" is also one of
+  the matrix's kill-words, so those notices are scored REJECT unless that
+  kill-word is removed at `/eval-config/kill-words`.
 - **Unison Marketplace** — reads the seller dashboard at **100 per page across
   every page**, opens each buy's detail page, stores its General Buy
   Information, line items and shipping (place of performance), reads every Buy
@@ -142,23 +151,62 @@ instead (`app/scrapers/emma/evaluation.py`): if any blocked phrase appears in
 the bid's own fields **or in any of its documents**, the bid is rejected;
 everything else passes, and only passing bids are exported.
 
-- Two editable lists at the top of that module — the out-of-scope keywords, and
-  master-contract phrases (solicitations open only to existing master-contract
-  holders). Edit the lists; nothing else needs touching.
-- Matching is whole-phrase and word-boundary anchored, so "Construction" never
-  fires on "constructive" and "Audit" never on "auditorium". Whitespace is
-  flexible (a phrase split across lines in extracted PDF text still counts) and
-  the final word matches singular or plural.
-- Screening runs in two stages: first on the grid fields the search already
-  returned — a bid rejected there never has its detail page opened — then on the
-  text of its documents. On live data the first stage alone skips ~40% of bids.
+- Three editable lists at the top of that module, each a different reason, and
+  the run log records which one fired:
+  - `REJECT_KEYWORDS` — out-of-scope work (Construction, Renovation, Audit,
+    Janitorial Services, …);
+  - `MASTER_CONTRACT_PHRASES` — solicitations open only to existing
+    master-contract holders;
+  - `NOT_BIDDABLE_PHRASES` — Requests for Information (including a bare "RFI"),
+    which are not solicitations at all.
 
-### The close-date filter — every scraping portal
+  Edit the lists; nothing else needs touching.
+- Matching is whole-phrase and word-boundary anchored, case-insensitive, so
+  "Construction" never fires on "constructive" or "Reconstruction" and "Audit"
+  never on "auditorium". A hyphen counts as a boundary, so "Re-construction"
+  does match. Whitespace is flexible (a phrase split across lines in extracted
+  PDF text still counts) and the final word matches singular or plural.
+- Screening runs in two stages: first on the grid fields the search already
+  returned — a bid rejected there never has its detail page opened — then on
+  those fields plus the detail page and the text of its documents. On live data
+  the first stage alone skips ~40% of bids. If screening itself errors on a
+  bid, that bid passes rather than being silently dropped.
+- The run status shows the outcome as **Keyword screen · N checked → N rejected
+  → N passed**, split into bids rejected before any page was opened and after
+  their documents were read. "Bids found" is the passed count once screening
+  ends.
+
+### The Publish Date range — EMMA
+
+An EMMA run can be limited to bids **published** between a From and a To date
+(`date_from` / `date_to`, either may be left blank). It is applied on our side,
+first, before every other check:
+
+1. **Publish Date range** — a bid published outside it is discarded, and so is
+   one whose publish date cannot be read (only bids provably inside are kept).
+   Both ends are inclusive and compared as calendar days.
+2. **7-day close rule** (below).
+3. **Keyword screen, stage 1**, on the bid's own fields.
+4. Detail page and documents → **keyword screen, stage 2**.
+
+Because the range comes first, a narrow range also makes a run much faster: a
+discarded bid never reaches a detail page or a download. Paging stops early
+when the results grid has shown itself to be newest-first and a whole page is
+already older than From; on a grid that is not sorted that way, every page is
+read. The run status reports how many bids the range discarded, and whether
+paging stopped early. An inverted range or an unreadable date is rejected by
+the API with a 400.
+
+### The close-date filter — most scraping portals
 
 `app/core/closing_filter.py` keeps only bids closing at least
 `MIN_DAYS_UNTIL_CLOSE` (7) days out, so there is runway to prepare a submission.
 A bid whose close date cannot be read is **kept** and counted — a drop is never
 silent. Each run reports how many it skipped and how many it kept unverified.
+
+It drops bids on BidNet, EMMA, MyFlorida, North Dakota, SAM, SEPTA, Unison and
+Wisconsin. RideMetro only **counts** the bids closing within 7 days, without
+dropping them; Philadelphia does not apply it.
 
 ## Running jobs
 
@@ -204,7 +252,7 @@ cannot disagree about what a run produced:
 - **A ZIP** — the cumulative Excel plus every downloaded document in its
   original folders, for the document-downloading portals.
 - **A bare `.xlsx`** — for portals whose only output is the spreadsheet
-  (`EXCEL_ONLY_PORTALS`: SAM, SEPTA, RideMetro, Unison, EMMA), and for
+  (`EXCEL_ONLY_PORTALS`: SAM, SEPTA, RideMetro, Unison, EMMA, Philadelphia), and for
   individual runs that say so themselves (BidNet's member-agency sweep).
 
 Either way the artifact is:
@@ -295,8 +343,11 @@ Portal-specific extras:
 - **RideMetro:** `GET /ridemetro/accounts` (which accounts are configured)
 - **SEPTA:** `GET /septa/open-bids` (the Bid module's stored rows)
 - **Philadelphia:** `GET /philadelphia/search/fields`
+- **EMMA:** `POST /emma/scrape` takes `keyword`, `status`, `category`,
+  `date_from`, `date_to` — all optional; dates as `yyyy-mm-dd` (or the portal's
+  `m/d/yyyy`)
 - **SAM:** `POST /sam/evaluate`, `POST /sam/scrape/stop/{run_id}`,
-  `GET /sam/screenshot/{run_id}`
+  `GET /sam/screenshot/{run_id}`; `POST /sam/scrape` takes `source_sought`
 - **NAICS:** `GET /naics`, `GET /naics/search`, file import
 - **Eval-config:** `GET /eval-config`, and `POST` / `DELETE` on
   `/eval-config/kill-words`, `/eval-config/excluded-services`,
@@ -409,6 +460,21 @@ in a `raw_data` JSONB column. MyFlorida parses its downloaded Excel into
 `server/migrations/` holds dated `.sql` files for evolving an existing database —
 `create_tables.py` only creates what is missing, so a schema change to an
 existing table is applied from there.
+
+### Tests
+
+`pytest` is not in `requirements.txt`; install it into the venv once, then run
+the suite from `server/`:
+
+```bash
+cd server
+.venv/bin/pip install pytest
+.venv/bin/python -m pytest -q
+```
+
+The suite needs no browser and no portal. Some older tests still write the runs
+they create into the `run_state` table of the database in `DATABASE_URL`; the
+EMMA tests (`test_emma_date_range.py`, `test_emma_screen_tally.py`) do not.
 
 ### Client
 
