@@ -98,6 +98,11 @@ ROSTER_READ_PAUSE = 3
 # gets one more go from a freshly reloaded roster before its row is written off.
 AGENCY_ATTEMPTS = 2
 
+# Restart the browser every N agencies. A sweep of a hundred agency portals
+# grows headless Chrome until it is OOM-killed part way, which ended runs at a
+# different agency each time — and so with a different bid count each time.
+RECYCLE_EVERY = 55
+
 # What `_open_agency` did, which is what tells `_scrape_agency` how to clean up.
 NEW_TAB = "new_tab"    # the agency opened beside My Network; close it afterwards
 SAME_TAB = "same_tab"  # we navigated this tab; My Network has to be reopened
@@ -222,9 +227,11 @@ class RideMetroScraper(BaseScraper):
             logger.warning("[run %s] My Network tab not clickable — navigating to it", self.run_id)
             self.navigate(settings.ridemetro_agencies_url)
 
-        # The roster renders client-side after the tab switch.
+        # The roster renders client-side after the tab switch. Wait for an
+        # agency card itself: a "Go to …" control can be on the page before the
+        # tab has switched, and a roster read then finds no cards at all.
         self.wait(60).until(
-            EC.presence_of_element_located(network.SEL["go_to_agency"])
+            EC.presence_of_element_located(network.SEL["agency_cards"])
         )
 
     def collect_agencies(self) -> None:
@@ -238,17 +245,34 @@ class RideMetroScraper(BaseScraper):
         # subset and calling it the whole network.
         expected = network.active_count(self.driver)
         self._agencies = network.read_agencies(self.driver)
+        previous = -1
         for attempt in range(2, ROSTER_READ_ATTEMPTS + 1):
-            if expected is None or len(self._agencies) >= expected:
+            count = len(self._agencies)
+            if expected is not None and count >= expected:
                 break
+            # No Active count to check against: two equal, non-empty reads in a
+            # row mean the list has stopped filling in.
+            if expected is None and count and count == previous:
+                break
+            previous = count
             logger.info(
-                "[run %s] My Network shows %d agencies but only %d have rendered — "
+                "[run %s] My Network shows %s agencies but only %d have rendered — "
                 "re-reading (attempt %d/%d)",
-                self.run_id, expected, len(self._agencies), attempt, ROSTER_READ_ATTEMPTS,
+                self.run_id, expected if expected is not None else "an unknown number of",
+                count, attempt, ROSTER_READ_ATTEMPTS,
             )
             self.raise_if_stopped()
             time.sleep(ROSTER_READ_PAUSE)
             self._agencies = network.read_agencies(self.driver)
+
+        # An empty roster is a page that did not load, not an account with no
+        # agencies — unless the Active tab itself says 0. Reporting it as
+        # "completed, 0 bids" is what made a failed read look like a result.
+        if not self._agencies and expected != 0:
+            raise RuntimeError(
+                "My Network showed no agencies — the page did not finish loading, so "
+                "nothing was scraped. Run it again."
+            )
 
         if expected is not None and len(self._agencies) < expected:
             message = (
@@ -306,6 +330,14 @@ class RideMetroScraper(BaseScraper):
         scraped = 0
         for index, agency in enumerate(queue, start=1):
             self.raise_if_stopped()
+            if index > 1 and (index - 1) % RECYCLE_EVERY == 0:
+                logger.info(
+                    "[run %s] restarting the browser after %d agencies to keep its "
+                    "memory down", self.run_id, index - 1,
+                )
+                if not self._restart_browser():
+                    self._abandon_sweep(index - 1, len(queue))
+                    break
             self.set_step(f"scraping_agency ({index}/{len(queue)}): {agency.name}")
             # Each agency is isolated: a timeout, a portal that never renders or
             # a control that vanished costs that agency's rows and nothing else.
@@ -339,6 +371,20 @@ class RideMetroScraper(BaseScraper):
                     self._recover_to_network()
                     break
                 except Exception as exc:  # noqa: BLE001 — one agency must not sink the sweep
+                    # A dead browser cannot be recovered by going back to the
+                    # roster: start a new one, then this agency's retry (and the
+                    # rest of the sweep) runs in it.
+                    if self._is_dead_session_error(exc):
+                        logger.warning(
+                            "[run %s] the browser died at agency %s — restarting it",
+                            self.run_id, agency.label,
+                        )
+                        if not self._restart_browser():
+                            del self._records[mark:]
+                            self._closing_soon = closing_soon
+                            self._abandon_sweep(index - 1, len(queue))
+                            self._report_agencies(scraped)
+                            return
                     agency.error = self.describe_failure(exc)
                     del self._records[mark:]
                     self._closing_soon = closing_soon
@@ -357,6 +403,35 @@ class RideMetroScraper(BaseScraper):
                     self._recover_to_network()
             self._report_agencies(scraped)
         self._report_agencies(scraped)
+
+    def _restart_browser(self) -> bool:
+        """Start a fresh browser, sign in again and reopen My Network.
+
+        The roster already read stays as it is: each agency is found again by
+        name. Returns False when the restart itself fails.
+        """
+        try:
+            self.stop_driver()
+            self.start_driver()
+            self.login()
+            self.open_supplier_network()
+            self.open_my_network()
+            return True
+        except StopRequested:
+            raise
+        except Exception:  # noqa: BLE001 — a failed restart ends the sweep, not the run
+            logger.exception("[run %s] could not restart the browser", self.run_id)
+            return False
+
+    def _abandon_sweep(self, done: int, total: int) -> None:
+        """End the sweep early but keep the run: the bids gathered so far are
+        still saved and delivered, and the run says how far it got."""
+        message = (
+            f"The browser could not be restarted after {done} of {total} agencies — "
+            f"the sweep stopped there; the bids gathered so far are kept."
+        )
+        logger.error("[run %s] %s", self.run_id, message)
+        run_manager.add_error(self.run_id, message)
 
     def _recover_to_network(self) -> None:
         """Get back to My Network after a failure, without raising a new one.
