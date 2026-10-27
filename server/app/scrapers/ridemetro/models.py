@@ -71,7 +71,9 @@ class RideMetroBid(Base):
 
     # Opportunities-list fields.
     project: Mapped[str | None] = mapped_column(Text)
-    ref_number: Mapped[str | None] = mapped_column(String(128), index=True)  # "Ref. #"
+    # TEXT, not VARCHAR(128): agencies type whatever they like into "Ref. #",
+    # and one 141-character value rolled back a whole 358-bid save.
+    ref_number: Mapped[str | None] = mapped_column(Text, index=True)  # "Ref. #"
     department: Mapped[str | None] = mapped_column(Text)
     opportunity_type: Mapped[str | None] = mapped_column(String(128))  # "Type"
     status: Mapped[str | None] = mapped_column(String(64))

@@ -1,0 +1,22 @@
+-- Widens ridemetro_bids.ref_number from VARCHAR(128) to TEXT.
+--
+-- It holds whatever each agency typed into its portal's "Ref. #" column, and
+-- across the hundred-plus agencies a Fedpints sweep now covers, that is not
+-- always a short reference: one agency put its whole project title there
+-- ("B25OP04122 Furnish and Deliver Tactile Floor Tiles for a period of 36
+-- months…", 141 characters).
+--
+-- Postgres does not truncate, it aborts — and because a run saves its bids in a
+-- single transaction, that one value rolled back all 358 records of a completed
+-- sweep (run c16911c5e060, "db save failed"). Same failure, same fix as
+-- 2026-08-25_bidnet_widen_date_fields.sql.
+--
+-- On a fresh database create_all makes this column TEXT and this file is not
+-- needed; run it once against an existing database:
+--
+--   psql "$DATABASE_URL" -f server/migrations/2026-10-27_ridemetro_widen_ref_number.sql
+--
+-- Idempotent - safe to run more than once. Widening to TEXT in Postgres is a
+-- catalog-only change: no table rewrite, no data loss.
+
+ALTER TABLE ridemetro_bids ALTER COLUMN ref_number TYPE TEXT;

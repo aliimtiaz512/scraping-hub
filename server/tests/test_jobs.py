@@ -87,6 +87,9 @@ def test_a_waiting_job_reports_its_place_in_the_queue(gate):
 
     for _ in range(jobs.CONCURRENCY):
         jobs.submit(_run(), work)
+    # Every slot taken before the two that must wait are submitted: a job whose
+    # worker thread has not picked it up yet still counts as waiting.
+    assert _wait_for(lambda: jobs.active() == jobs.CONCURRENCY)
     first, second = _run(), _run()
     jobs.submit(first, work)
     jobs.submit(second, work)

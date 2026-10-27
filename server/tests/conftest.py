@@ -20,3 +20,13 @@ def _no_debug_pacing(monkeypatch):
     from app.scrapers.bidnet import scraper as bidnet
 
     monkeypatch.setattr(bidnet, "DEBUG_PAUSE_SECONDS", 0)
+
+
+@pytest.fixture(autouse=True)
+def _no_run_persistence(monkeypatch):
+    """Runs a test creates stay in memory. `run_manager` writes every run through
+    to the real run_state table, which the console's History reads — so without
+    this each suite run added ~300 fake runs to the user's History."""
+    from app.core import run_manager
+
+    monkeypatch.setattr(run_manager, "_persist", lambda run: None)
