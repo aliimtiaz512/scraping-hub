@@ -75,6 +75,7 @@ class EmmaBid(Base):
 # The generated Excel: exactly these columns, in this order (client-specified).
 # Everything else scraped is still stored in emma_bids / raw_data.
 EXCEL_COLUMNS: list[tuple[str, str]] = [
+    ("bpm_code", "Notice ID"),       # EMMA's own "ID" column, e.g. BPM059418
     ("title", "Title"),
     ("close_date", "Due / Close Date"),
     ("publish_date", "Publish Date"),
