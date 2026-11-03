@@ -151,43 +151,19 @@ def _rows_for_run(run_id: str) -> list[EmmaBid]:
         session.close()
 
 
-def _detail_columns(details: list[dict[str, Any]]) -> list[str]:
-    """The ordered union of every detail-field label seen across a run's rows, so
-    the Excel carries all the per-solicitation info even though different
-    solicitations expose different fields. Grid columns (by their header) are
-    excluded so nothing is duplicated."""
-    grid_headers = {header for _, header in EXCEL_COLUMNS}
-    ordered: list[str] = []
-    seen: set[str] = set()
-    for detail in details:
-        for label in detail or {}:
-            if label in seen or label in grid_headers:
-                continue
-            seen.add(label)
-            ordered.append(label)
-    return ordered
-
-
 def generate_excel(run_id: str, out_path: str | Path) -> int:
-    """Build this run's Excel sheet from emma_bids: the fixed grid columns plus a
-    dynamic column for every detail-page field captured. Returns the row count."""
+    """Build this run's Excel sheet from emma_bids: exactly the EXCEL_COLUMNS,
+    nothing else. Returns the row count."""
     rows = _rows_for_run(run_id)
-    details = [(bid.raw_data or {}).get("detail") or {} for bid in rows]
-    detail_cols = _detail_columns(details)
 
     workbook, sheet = excel_style.new_workbook("EMMA Solicitations")
     excel_style.write_table(
         sheet,
-        [header for _, header in EXCEL_COLUMNS] + detail_cols,
-        (
-            [getattr(bid, attr, None) for attr, _ in EXCEL_COLUMNS]
-            + [detail.get(col) for col in detail_cols]
-            for bid, detail in zip(rows, details)
-        ),
+        [header for _, header in EXCEL_COLUMNS],
+        ([getattr(bid, attr, None) for attr, _ in EXCEL_COLUMNS] for bid in rows),
     )
     workbook.save(str(out_path))
-    logger.info("[run %s] wrote %d rows (%d detail cols) to %s",
-                run_id, len(rows), len(detail_cols), out_path)
+    logger.info("[run %s] wrote %d rows to %s", run_id, len(rows), out_path)
     return len(rows)
 
 
@@ -195,20 +171,15 @@ def generate_excel_from_records(records: list[dict[str, Any]], out_path: str | P
     """Build the Excel straight from in-memory records (DB-unavailable fallback).
 
     Mirrors generate_excel: only records that carry an emma_id are written, with
-    the same fixed grid columns plus dynamic detail-field columns.
+    the same columns.
     """
     kept = [r for r in records if r.get("emma_id")]
-    detail_cols = _detail_columns([r.get("detail") or {} for r in kept])
 
     workbook, sheet = excel_style.new_workbook("EMMA Solicitations")
     excel_style.write_table(
         sheet,
-        [header for _, header in EXCEL_COLUMNS] + detail_cols,
-        (
-            [record.get(attr) for attr, _ in EXCEL_COLUMNS]
-            + [(record.get("detail") or {}).get(col) for col in detail_cols]
-            for record in kept
-        ),
+        [header for _, header in EXCEL_COLUMNS],
+        ([record.get(attr) for attr, _ in EXCEL_COLUMNS] for record in kept),
     )
     workbook.save(str(out_path))
     return len(kept)

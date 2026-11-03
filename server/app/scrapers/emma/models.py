@@ -72,19 +72,13 @@ class EmmaBid(Base):
     run: Mapped["EmmaRun"] = relationship(back_populates="bids")
 
 
-# Column order for the generated Excel, mapped to friendly headers.
+# The generated Excel: exactly these columns, in this order (client-specified).
+# Everything else scraped is still stored in emma_bids / raw_data.
 EXCEL_COLUMNS: list[tuple[str, str]] = [
-    ("bpm_code", "ID"),
     ("title", "Title"),
-    ("status", "Status"),
     ("close_date", "Due / Close Date"),
     ("publish_date", "Publish Date"),
-    ("main_category", "Main Category"),
     ("solicitation_type", "Solicitation Type"),
-    ("issuing_agency", "Issuing Agency"),
-    ("time_remaining", "Time Remaining"),
-    ("award_status", "Award Status"),
-    ("procurement_officer", "Procurement Officer / Buyer"),
     ("detail_url", "Bid Link"),
     ("matched_filters", "Matched Filters"),
 ]
