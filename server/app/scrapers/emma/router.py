@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 from app.core import jobs, run_manager
 from app.core.filenames import timestamp
 from app.db import get_session
-from app.scrapers.emma.models import EXCEL_COLUMNS, EmmaBid
+from app.scrapers.emma.models import EmmaBid
 from app.scrapers.emma.scraper import describe_window, execute_run
 from app.scrapers.myflorida.dates import PostingDateRange
 
@@ -121,8 +121,17 @@ def scrape_runs() -> dict:
     return {"runs": run_manager.list_runs(scraper="emma")}
 
 
+# What GET /emma/bids returns per bid. Its own list, not the Excel's: the Excel
+# was cut to six columns, and the API keeps every stored field.
+_API_FIELDS = (
+    "bpm_code", "title", "status", "close_date", "publish_date", "main_category",
+    "solicitation_type", "issuing_agency", "time_remaining", "award_status",
+    "procurement_officer", "detail_url", "matched_filters",
+)
+
+
 def _bid_to_dict(bid: EmmaBid) -> dict:
-    data = {attr: getattr(bid, attr) for attr, _ in EXCEL_COLUMNS}
+    data = {attr: getattr(bid, attr) for attr in _API_FIELDS}
     data.update(id=bid.id, run_id=bid.run_id, emma_id=bid.emma_id, documents=bid.documents or [])
     return data
 
